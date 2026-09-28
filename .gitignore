@@ -1,0 +1,33 @@
+# Build output
+android/build/
+android/app/build/
+android/.gradle/
+android/.kotlin/
+android/local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Node
+node_modules/
+npm-debug.log*
+pc-agent/tools/agent-out.log
+pc-agent/tools/agent-err.log
+pc-agent/tools/sdk-dump-out.txt
+
+# Large third-party binaries are downloaded, not committed.
+# cloudflared is fetched per machine; see README for the download step.
+tools/cloudflared-windows-amd64.exe
+
+# Scratch / local-only
+.tmp/
+*.log
+
+# Editor / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini

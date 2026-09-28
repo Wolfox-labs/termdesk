@@ -1,0 +1,191 @@
+package dev.termdesk.app.ui
+
+import android.app.Application
+import android.content.Context
+import androidx.lifecycle.AndroidViewModel
+import dev.termdesk.app.data.AgentClient
+import dev.termdesk.app.data.ActionResult
+import dev.termdesk.app.data.ChatEvent
+import dev.termdesk.app.data.ChatInfo
+import dev.termdesk.app.data.CodexConfig
+import dev.termdesk.app.data.CodexProviderTemplate
+import dev.termdesk.app.data.DirectoryListing
+import dev.termdesk.app.data.EngineInfo
+import dev.termdesk.app.data.HostStatus
+import dev.termdesk.app.data.LinkState
+import dev.termdesk.app.data.ProcessInfo
+import dev.termdesk.app.data.ServiceInfo
+import dev.termdesk.app.data.SessionDetail
+import dev.termdesk.app.data.SessionInfo
+import dev.termdesk.app.data.TaskDetail
+import dev.termdesk.app.data.TaskEvent
+import dev.termdesk.app.data.TaskSummary
+import dev.termdesk.app.data.TermLine
+import dev.termdesk.app.data.TextFile
+import dev.termdesk.app.data.TransferState
+import dev.termdesk.app.data.WorkspaceInfo
+import dev.termdesk.app.ui.theme.ThemeMode
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+/**
+ * Holds the long-lived connection to the PC and the last known host status.
+ * The stored address/token let the app reconnect on its own after a restart.
+ */
+class AppViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val prefs = app.getSharedPreferences("termdesk", Context.MODE_PRIVATE)
+    private val client = AgentClient(app.applicationContext)
+
+    val link: StateFlow<LinkState> = client.link
+    val status: StateFlow<HostStatus?> = client.status
+    val processes: StateFlow<List<ProcessInfo>> = client.processes
+    val services: StateFlow<List<ServiceInfo>> = client.services
+    val lastAction: StateFlow<ActionResult?> = client.lastAction
+    val loading: StateFlow<Boolean> = client.loading
+
+    // ---- P2 ----
+    val listing: StateFlow<DirectoryListing?> = client.listing
+    val openFile: StateFlow<TextFile?> = client.openFile
+    val transfer: StateFlow<TransferState?> = client.transfer
+
+    // ---- P3 ----
+    val termLines: StateFlow<List<TermLine>> = client.termLines
+    val termSession: StateFlow<String?> = client.termSession
+    val termBusy: StateFlow<Boolean> = client.termBusy
+    val termUnavailable: StateFlow<String?> = client.termUnavailable
+
+    fun openTerminal() = client.openTerminal()
+    fun runCommand(command: String) = client.runCommand(command)
+    fun interruptCommand() = client.interruptCommand()
+    fun closeTerminal() = client.closeTerminal()
+    fun clearTerminal() = client.clearTerminal()
+
+    // ---- Codex provider configuration ----
+    val codexConfig: StateFlow<CodexConfig?> = client.codexConfig
+    val codexTemplates: StateFlow<List<CodexProviderTemplate>> = client.codexTemplates
+
+    fun loadCodexConfig() = client.loadCodexConfig()
+    fun applyCodexProvider(
+        providerId: String,
+        model: String,
+        apiKey: String?,
+        reasoningEffort: String?,
+        contextWindow: Long?,
+    ) = client.applyCodexProvider(providerId, model, apiKey, reasoningEffort, contextWindow)
+
+    fun restoreCodexBackup(name: String?) = client.restoreCodexBackup(name)
+
+    // ---- P4: AI tasks ----
+    val engines: StateFlow<List<EngineInfo>> = client.engines
+    val tasks: StateFlow<List<TaskSummary>> = client.tasks
+    val activeTask: StateFlow<TaskDetail?> = client.activeTask
+    val liveEvents: StateFlow<List<TaskEvent>> = client.liveEvents
+
+    fun loadEngines() = client.loadEngines()
+    fun loadTasks() = client.loadTasks()
+    fun submitTask(engine: String, prompt: String, cwd: String?, resume: Boolean) =
+        client.submitTask(engine, prompt, cwd, resume)
+    fun openTask(taskId: String) = client.openTask(taskId)
+    fun closeTask() = client.closeTask()
+    fun cancelTask(taskId: String) = client.cancelTask(taskId)
+    fun resetEngineSession(engine: String) = client.resetEngineSession(engine)
+
+    /** Default working directory for new AI tasks, mirroring the file browser. */
+    val defaultCwd: String get() = startPath
+
+    // ---- live chats ----
+
+    val chats: StateFlow<List<ChatInfo>> = client.chats
+    val activeChat: StateFlow<ChatInfo?> = client.activeChat
+    val chatEvents: StateFlow<List<ChatEvent>> = client.chatEvents
+    val chatSending: StateFlow<Boolean> = client.chatSending
+
+    fun loadChats() = client.loadChats()
+    fun createChat(cwd: String? = null, title: String? = null) = client.createChat(cwd, title = title)
+    fun openChat(chatId: String) = client.openChat(chatId)
+    fun sendChatMessage(chatId: String, text: String) = client.sendChatMessage(chatId, text)
+    fun cancelChat(chatId: String) = client.cancelChat(chatId)
+    fun closeChat(chatId: String) = client.closeChat(chatId)
+    fun leaveChat() = client.leaveChat()
+
+    // ---- recorded sessions on disk (the drawer's directory index) ----
+
+    val sessions: StateFlow<List<SessionInfo>> = client.sessions
+    val workspaces: StateFlow<List<WorkspaceInfo>> = client.workspaces
+    val sessionDetail: StateFlow<SessionDetail?> = client.sessionDetail
+
+    fun loadSessions(engine: String? = null) = client.loadSessions(engine)
+    fun openSession(session: SessionInfo) = client.openSession(session)
+    fun closeSession() = client.closeSession()
+
+    // ---- theme ----
+
+    private val _themeMode = MutableStateFlow(
+        runCatching { ThemeMode.valueOf(prefs.getString(KEY_THEME, ThemeMode.Dark.name)!!) }
+            .getOrDefault(ThemeMode.Dark),
+    )
+    val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
+
+    fun setThemeMode(mode: ThemeMode) {
+        _themeMode.value = mode
+        prefs.edit().putString(KEY_THEME, mode.name).apply()
+    }
+
+    /** Where the file browser starts. Defaults to the user's home directory. */
+    val startPath: String get() = prefs.getString(KEY_START_PATH, DEFAULT_START_PATH) ?: DEFAULT_START_PATH
+
+    fun refreshProcesses(query: String = "") = client.refreshProcesses(query)
+    fun refreshServices(query: String = "") = client.refreshServices(query)
+    fun killProcess(pid: Int) = client.killProcess(pid)
+    fun controlService(name: String, action: String) = client.controlService(name, action)
+    fun clearLastAction() = client.clearLastAction()
+
+    fun listDirectory(path: String) = client.listDirectory(path)
+    fun readFile(path: String) = client.readFile(path)
+    fun closeOpenFile() = client.closeOpenFile()
+    fun writeFile(path: String, text: String) = client.writeFile(path, text)
+    fun createEntry(dir: String, name: String, isDir: Boolean) = client.createEntry(dir, name, isDir)
+    fun deleteEntry(path: String) = client.deleteEntry(path)
+    fun renameEntry(path: String, newName: String) = client.renameEntry(path, newName)
+    fun downloadFile(path: String, name: String) = client.downloadFile(path, name)
+    fun uploadFile(uri: android.net.Uri, remoteDir: String) = client.uploadFile(uri, remoteDir)
+
+    val savedUrl: String get() = prefs.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL
+    val savedToken: String get() = prefs.getString(KEY_TOKEN, "") ?: ""
+
+    init {
+        // Auto-reconnect when we already have credentials, so returning to the
+        // app from a phone lock does not mean re-pairing every time.
+        val url = savedUrl
+        val token = savedToken
+        if (url.isNotBlank() && token.isNotBlank()) {
+            client.connect(url, token)
+        }
+    }
+
+    fun connect(url: String, token: String) {
+        prefs.edit().putString(KEY_URL, url).putString(KEY_TOKEN, token).apply()
+        client.connect(url, token)
+    }
+
+    fun disconnect() {
+        prefs.edit().remove(KEY_TOKEN).apply()
+        client.disconnect()
+    }
+
+    override fun onCleared() {
+        client.disconnect()
+        super.onCleared()
+    }
+
+    private companion object {
+        const val KEY_URL = "url"
+        const val KEY_TOKEN = "token"
+        const val KEY_START_PATH = "startPath"
+        const val KEY_THEME = "themeMode"
+        const val DEFAULT_URL = "ws://192.168.1.10:7420"
+        const val DEFAULT_START_PATH = "C:\\Users\\user"
+    }
+}

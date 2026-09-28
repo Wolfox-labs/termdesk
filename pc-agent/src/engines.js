@@ -1,0 +1,481 @@
+﻿/**
+ * AI engine layer: drive Codex and DSH from the agent.
+ *
+ * Both engines were probed before this was written (see tools/engine-probe*),
+ * and they behave differently in ways that shape the whole design:
+ *
+ *   Codex — `codex exec --json` emits newline-delimited JSON events. It streams
+ *     `item.started` when a command begins and `item.completed` when it ends, so
+ *     the phone can show live task progress. `codex exec resume <thread_id>`
+ *     genuinely preserves conversation context, so multi-turn works.
+ *
+ *   DSH — `dsh --profile headless "<task>"` is one-shot: it prints the final
+ *     answer and exits, and a second invocation has NO memory of the first
+ *     (verified: it denied any earlier request). There are no progress events.
+ *     To make multi-turn usable at all, prior turns are prepended to the prompt
+ *     as context. That is an approximation, not a real session.
+ *
+ * Both are spawned as child processes. Cancellation kills the process tree,
+ * because a coding agent typically has tool subprocesses of its own.
+ */
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
+
+const MAX_TASKS = 60;
+const MAX_EVENTS_PER_TASK = 400;
+const TASK_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** Resolve the Codex binary: env override, then the known install location. */
+function findCodex() {
+  if (process.env.TERMDESK_CODEX) return process.env.TERMDESK_CODEX;
+  const base = path.join(os.homedir(), 'AppData', 'Local', 'OpenAI', 'Codex', 'bin');
+  try {
+    // bin/<hash>/codex.exe — pick any hash directory that has the binary.
+    for (const entry of fs.readdirSync(base)) {
+      const candidate = path.join(base, entry, 'codex.exe');
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  } catch {
+    // fall through to the PATH name
+  }
+  return 'codex';
+}
+
+/** Resolve the DSH launcher entry script. */
+function findDsh() {
+  if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
+  return path.join(
+    os.homedir(),
+    'AppData',
+    'Roaming',
+    'io.github.hairyf.deepseek-harness-desktop',
+    'dependencies',
+    'dsh',
+    'node_modules',
+    '@deepseek-ai',
+    'dsh',
+    'lib',
+    'bin.js',
+  );
+}
+
+export const ENGINES = ['codex', 'dsh'];
+
+/** One submitted task and everything observed about it. */
+class Task {
+  constructor(id, engine, prompt, cwd) {
+    this.id = id;
+    this.engine = engine;
+    this.prompt = prompt;
+    this.cwd = cwd;
+    this.status = 'running'; // running | completed | failed | cancelled
+    this.events = [];
+    this.startedAt = Date.now();
+    this.finishedAt = null;
+    this.exitCode = null;
+    /** Codex thread id, retained so follow-ups can resume the same conversation. */
+    this.threadId = null;
+    this.finalText = '';
+    this.child = null;
+    this.timer = null;
+  }
+
+  push(event) {
+    this.events.push({ at: Date.now(), ...event });
+    if (this.events.length > MAX_EVENTS_PER_TASK) {
+      this.events.splice(0, this.events.length - MAX_EVENTS_PER_TASK);
+    }
+  }
+}
+
+export class EngineManager {
+  constructor() {
+    this.tasks = new Map();
+    this.nextId = 1;
+    /** Conversation continuity: engine -> thread/session handle. */
+    this.sessions = { codex: null, dsh: [] };
+    this.onEvent = null;
+  }
+
+  attach(onEvent) {
+    this.onEvent = onEvent;
+  }
+
+  detach() {
+    this.onEvent = null;
+  }
+
+  emit(payload) {
+    this.onEvent?.(payload);
+  }
+
+  listTasks() {
+    return [...this.tasks.values()]
+      .map((t) => ({
+        id: t.id,
+        engine: t.engine,
+        prompt: t.prompt.slice(0, 200),
+        status: t.status,
+        startedAt: t.startedAt,
+        finishedAt: t.finishedAt,
+        exitCode: t.exitCode,
+        threadId: t.threadId,
+        eventCount: t.events.length,
+      }))
+      .sort((a, b) => b.startedAt - a.startedAt);
+  }
+
+  getTask(id) {
+    const t = this.tasks.get(id);
+    if (!t) return null;
+    return {
+      id: t.id,
+      engine: t.engine,
+      prompt: t.prompt,
+      cwd: t.cwd,
+      status: t.status,
+      startedAt: t.startedAt,
+      finishedAt: t.finishedAt,
+      exitCode: t.exitCode,
+      threadId: t.threadId,
+      finalText: t.finalText,
+      events: t.events,
+    };
+  }
+
+  /** Stop a running task and everything it spawned. */
+  cancel(id) {
+    const t = this.tasks.get(id);
+    if (!t || t.status !== 'running') return false;
+    t.status = 'cancelled';
+    t.finishedAt = Date.now();
+    this.killTree(t);
+    t.push({ kind: 'cancelled', text: '任务已取消' });
+    this.emit({ event: 'task.finished', taskId: t.id, status: 'cancelled' });
+    return true;
+  }
+
+  /**
+   * Kill the child and its descendants. A coding agent spawns shells, so
+   * killing only the direct child would leave orphans running.
+   */
+  killTree(task) {
+    const child = task.child;
+    if (!child || child.killed) return;
+    try {
+      if (process.platform === 'win32' && child.pid) {
+        spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+          windowsHide: true,
+          stdio: 'ignore',
+        });
+      } else {
+        child.kill('SIGKILL');
+      }
+    } catch {
+      try { child.kill(); } catch { /* already gone */ }
+    }
+  }
+
+  /** Forget stored conversations so the next task starts clean. */
+  resetSession(engine) {
+    if (engine === 'codex') this.sessions.codex = null;
+    else if (engine === 'dsh') this.sessions.dsh = [];
+    else return false;
+    return true;
+  }
+
+  submit({ engine, prompt, cwd, resume }) {
+    if (!ENGINES.includes(engine)) {
+      return { ok: false, code: 'bad_engine', message: `不支持的引擎 "${engine}"` };
+    }
+    const text = String(prompt ?? '').trim();
+    if (text.length === 0) {
+      return { ok: false, code: 'empty_prompt', message: '任务内容不能为空' };
+    }
+    if (this.tasks.size >= MAX_TASKS) {
+      // Drop the oldest finished task to make room.
+      const finished = [...this.tasks.values()]
+        .filter((t) => t.status !== 'running')
+        .sort((a, b) => a.startedAt - b.startedAt);
+      if (finished.length > 0) this.tasks.delete(finished[0].id);
+    }
+
+    const id = `t${this.nextId++}`;
+    const workdir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
+    const task = new Task(id, engine, text, workdir);
+    this.tasks.set(id, task);
+    this.emit({ event: 'task.started', taskId: id, engine, prompt: text });
+
+    if (engine === 'codex') {
+      this.runCodex(task, { resume: Boolean(resume) });
+    } else {
+      this.runDsh(task);
+    }
+    return { ok: true, taskId: id };
+  }
+
+  // --- Codex -------------------------------------------------------------
+
+  runCodex(task, { resume }) {
+    const codex = findCodex();
+    const useResume = resume && this.sessions.codex;
+
+    const args = useResume
+      ? ['exec', 'resume', this.sessions.codex, '--json', '--skip-git-repo-check', task.prompt]
+      : ['exec', '--json', '--skip-git-repo-check', '-C', task.cwd, task.prompt];
+
+    const child = spawn(codex, args, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: task.cwd,
+    });
+    task.child = child;
+
+    task.timer = setTimeout(() => {
+      if (task.status === 'running') {
+        task.push({ kind: 'error', text: '任务超时（30 分钟）' });
+        task.status = 'failed';
+        task.finishedAt = Date.now();
+        this.killTree(task);
+        this.emit({ event: 'task.finished', taskId: task.id, status: 'failed' });
+      }
+    }, TASK_TIMEOUT_MS);
+
+    let buffer = '';
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (line.length === 0) continue;
+        this.handleCodexEvent(task, line);
+      }
+    });
+
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+      if (stderr.length > 8000) stderr = stderr.slice(-8000);
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(task.timer);
+      task.status = 'failed';
+      task.finishedAt = Date.now();
+      task.push({ kind: 'error', text: `无法启动 Codex：${err.message}` });
+      this.emit({ event: 'task.finished', taskId: task.id, status: 'failed' });
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(task.timer);
+      if (task.status === 'cancelled') return;
+      task.exitCode = code;
+      task.status = code === 0 ? 'completed' : 'failed';
+      task.finishedAt = Date.now();
+      if (code !== 0 && stderr.trim().length > 0) {
+        task.push({ kind: 'error', text: stderr.trim().split('\n').slice(-3).join('\n') });
+      }
+      this.emit({
+        event: 'task.finished',
+        taskId: task.id,
+        status: task.status,
+        exitCode: code,
+      });
+    });
+  }
+
+  /** Translate one Codex JSONL event into a task event. */
+  handleCodexEvent(task, line) {
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      return; // Codex occasionally writes non-JSON noise; ignore it.
+    }
+
+    if (ev.type === 'thread.started') {
+      task.threadId = ev.thread_id;
+      this.sessions.codex = ev.thread_id;
+      task.push({ kind: 'system', text: `会话 ${ev.thread_id.slice(0, 8)}` });
+    } else if (ev.type === 'turn.started') {
+      task.push({ kind: 'turn', text: '开始处理', state: 'started' });
+    } else if (ev.type === 'turn.completed') {
+      const usage = ev.usage ?? {};
+      task.push({
+        kind: 'turn',
+        text: '处理完成',
+        state: 'completed',
+        tokens: usage.output_tokens ?? null,
+      });
+    } else if (ev.type === 'item.started' || ev.type === 'item.completed') {
+      const item = ev.item ?? {};
+      const done = ev.type === 'item.completed';
+
+      if (item.type === 'command_execution') {
+        task.push({
+          kind: 'command',
+          text: item.command ?? '',
+          state: done ? 'completed' : 'running',
+          exitCode: done ? item.exit_code ?? null : null,
+          output: done ? (item.aggregated_output ?? '').slice(0, 4000) : '',
+        });
+      } else if (item.type === 'agent_message' && done) {
+        task.finalText = item.text ?? '';
+        task.push({ kind: 'message', text: task.finalText });
+      } else if (item.type === 'reasoning' && done) {
+        task.push({ kind: 'reasoning', text: (item.text ?? '').slice(0, 2000) });
+      } else if (item.type === 'error' && done) {
+        // Codex reports config warnings as errors; keep them but mark them low
+        // severity so they do not look like task failures.
+        task.push({ kind: 'warning', text: item.message ?? '' });
+      } else if (item.type === 'file_change' && done) {
+        const changes = item.changes ?? [];
+        task.push({
+          kind: 'files',
+          text: changes.map((c) => `${c.kind ?? 'change'}: ${c.path ?? ''}`).join('\n'),
+        });
+      }
+    }
+
+    this.emit({ event: 'task.event', taskId: task.id, engine: task.engine });
+  }
+
+  // --- DSH ---------------------------------------------------------------
+
+  runDsh(task) {
+    const bin = findDsh();
+    if (!fs.existsSync(bin)) {
+      task.status = 'failed';
+      task.finishedAt = Date.now();
+      task.push({ kind: 'error', text: `找不到 DSH 入口：${bin}` });
+      this.emit({ event: 'task.finished', taskId: task.id, status: 'failed' });
+      return;
+    }
+
+    // DSH headless has no session continuity, so prior turns are folded into
+    // the prompt. This is an approximation and is labelled as such in the UI.
+    const history = this.sessions.dsh;
+    let prompt = task.prompt;
+    if (history.length > 0) {
+      const transcript = history
+        .slice(-6)
+        .map((h) => `用户：${h.prompt}\n助手：${h.answer}`)
+        .join('\n\n');
+      prompt = `以下是此前的对话记录，请据此理解上下文：\n\n${transcript}\n\n当前任务：${task.prompt}`;
+      task.push({ kind: 'system', text: `已附带 ${Math.min(history.length, 6)} 轮上下文（DSH 无原生会话续接）` });
+    }
+
+    const child = spawn(process.execPath, [bin, '--profile', 'headless', prompt], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: task.cwd,
+    });
+    task.child = child;
+
+    task.timer = setTimeout(() => {
+      if (task.status === 'running') {
+        task.push({ kind: 'error', text: '任务超时（30 分钟）' });
+        task.status = 'failed';
+        task.finishedAt = Date.now();
+        this.killTree(task);
+        this.emit({ event: 'task.finished', taskId: task.id, status: 'failed' });
+      }
+    }, TASK_TIMEOUT_MS);
+
+    // DSH streams reasoning deltas to stderr; surface them as progress.
+    let stderrBuffer = '';
+    child.stderr.on('data', (chunk) => {
+      stderrBuffer += chunk.toString('utf8');
+      let nl;
+      while ((nl = stderrBuffer.indexOf('\n')) !== -1) {
+        const line = stderrBuffer.slice(0, nl).trim();
+        stderrBuffer = stderrBuffer.slice(nl + 1);
+        if (line.length === 0) continue;
+        if (line.startsWith('[ctrl-immune]')) continue; // launcher noise
+        task.push({ kind: 'reasoning', text: line.slice(0, 2000) });
+        this.emit({ event: 'task.event', taskId: task.id, engine: task.engine });
+      }
+    });
+
+    let stdout = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString('utf8');
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(task.timer);
+      task.status = 'failed';
+      task.finishedAt = Date.now();
+      task.push({ kind: 'error', text: `无法启动 DSH：${err.message}` });
+      this.emit({ event: 'task.finished', taskId: task.id, status: 'failed' });
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(task.timer);
+      if (task.status === 'cancelled') return;
+      task.exitCode = code;
+
+      // The launcher writes a banner line to stdout before the answer.
+      const answer = stdout
+        .split(/\r?\n/)
+        .filter((l) => !l.startsWith('[ctrl-immune]'))
+        .join('\n')
+        .trim();
+
+      task.finalText = answer;
+      if (answer.length > 0) task.push({ kind: 'message', text: answer });
+
+      task.status = code === 0 && answer.length > 0 ? 'completed' : 'failed';
+      task.finishedAt = Date.now();
+
+      if (task.status === 'completed') {
+        this.sessions.dsh.push({ prompt: task.prompt, answer });
+        if (this.sessions.dsh.length > 12) this.sessions.dsh.shift();
+      } else if (answer.length === 0) {
+        task.push({ kind: 'error', text: `DSH 未返回内容（退出码 ${code}）` });
+      }
+
+      this.emit({
+        event: 'task.finished',
+        taskId: task.id,
+        status: task.status,
+        exitCode: code,
+      });
+    });
+  }
+
+  /** Engines available on this machine, for the client to offer. */
+  async probeEngines() {
+    const codex = findCodex();
+    const dsh = findDsh();
+    return [
+      {
+        id: 'codex',
+        available: fs.existsSync(codex) || codex === 'codex',
+        path: codex,
+        multiTurn: true,
+        progress: true,
+      },
+      {
+        id: 'dsh',
+        available: fs.existsSync(dsh),
+        path: dsh,
+        multiTurn: false, // context is re-fed manually; no native session resume
+        progress: false,
+      },
+    ];
+  }
+
+  disposeAll() {
+    for (const task of this.tasks.values()) {
+      if (task.status === 'running') {
+        clearTimeout(task.timer);
+        this.killTree(task);
+        task.status = 'cancelled';
+      }
+    }
+  }
+}

@@ -1,0 +1,125 @@
+/**
+ * Session-reading checks against the real session stores on this machine.
+ *
+ * These are read-only. They assert the parser handles the layouts actually
+ * present, including the multi-frame zstd format that a naive single decompress
+ * silently truncates to nothing useful.
+ *
+ *   node tools/sessions-test.js
+ */
+import fs from 'node:fs';
+import {
+  listSessions,
+  readSession,
+  sessionRoots,
+} from '../src/sessions.js';
+
+const results = [];
+const check = (name, passed, detail = '') => {
+  results.push({ name, passed });
+  console.log(`${passed ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+};
+
+const roots = sessionRoots();
+console.log(`codex root: ${roots.codex}`);
+console.log(`dsh root  : ${roots.dsh}`);
+
+try {
+  // --- listing ------------------------------------------------------------
+  const all = await listSessions();
+  check('lists sessions from both engines', all.length > 0, `${all.length} sessions`);
+
+  const codex = all.filter((s) => s.engine === 'codex');
+  const dsh = all.filter((s) => s.engine === 'dsh');
+  check('finds codex sessions', codex.length > 0, `${codex.length}`);
+  check('finds dsh sessions', dsh.length > 0, `${dsh.length}`);
+  check('list is sorted newest-first', (() => {
+    for (let i = 1; i < Math.min(all.length, 40); i += 1) {
+      if (new Date(all[i].updatedAt) > new Date(all[i - 1].updatedAt)) return false;
+    }
+    return true;
+  })());
+
+  check('every entry has an engine and id', all.every((s) => s.engine && s.id));
+  check('every entry has a path', all.every((s) => typeof s.path === 'string' && s.path.length > 0));
+  check('no entry leaked outside the session roots', all.every((s) => {
+    const p = s.path;
+    return p.startsWith(roots.codex) || p.startsWith(roots.dsh);
+  }));
+
+  // Working directory is required for the workspace index in the app.
+  const withCwd = all.filter((s) => s.cwd);
+  check('most entries report a working directory', withCwd.length > all.length * 0.5,
+    `${withCwd.length}/${all.length}`);
+
+  const codexCwd = codex.filter((s) => s.cwd).length;
+  check('codex entries report a cwd', codexCwd > 0, `${codexCwd}/${codex.length}`);
+  const dshCwd = dsh.filter((s) => s.cwd).length;
+  check('dsh entries report a cwd', dshCwd > 0, `${dshCwd}/${dsh.length}`);
+
+  // The DSH workspace directory name must decode back to a Windows path.
+  const sample = dsh.find((s) => s.cwd && /^[A-Z]:\\/.test(s.cwd));
+  check('dsh workspace names decode to drive paths', Boolean(sample), sample?.cwd);
+
+  // --- reading a codex session -------------------------------------------
+  const codexPick = codex.filter((s) => s.sizeBytes > 5000)[0] ?? codex[0];
+  const codexRead = await readSession({ engine: 'codex', id: codexPick.id });
+  check('reads a codex session', Boolean(codexRead), codexPick.id);
+  check('codex session has events', (codexRead?.events.length ?? 0) > 0, `${codexRead?.events.length} events`);
+  check('codex session carries its cwd', Boolean(codexRead?.meta.cwd), codexRead?.meta.cwd);
+  check('codex events are normalised', (codexRead?.events ?? []).every(
+    (e) => typeof e.kind === 'string' && typeof e.text === 'string' && 'role' in e));
+
+  const codexKinds = [...new Set((codexRead?.events ?? []).map((e) => e.kind))];
+  check('codex events include message content', codexKinds.includes('message'), codexKinds.join(','));
+
+  // --- reading a dsh session ---------------------------------------------
+  const dshPick = dsh.filter((s) => s.sizeBytes > 100000)[0] ?? dsh[0];
+  const dshRead = await readSession({ engine: 'dsh', id: dshPick.id });
+  check('reads a dsh session (multi-frame zstd)', Boolean(dshRead), dshPick.id);
+  check('dsh session has events', (dshRead?.events.length ?? 0) > 0, `${dshRead?.events.length} events`);
+
+  const dshKinds = [...new Set((dshRead?.events ?? []).map((e) => e.kind))];
+  check('dsh events include message content', dshKinds.includes('message'), dshKinds.join(','));
+
+  // The engine's own compaction summary must pass through untouched, since the
+  // client displays engine output rather than synthesising its own.
+  const bigDsh = dsh.filter((s) => s.sizeBytes > 500000).slice(0, 12);
+  let sawEngineSummary = false;
+  for (const s of bigDsh) {
+    const r = await readSession({ engine: 'dsh', id: s.id });
+    if (r?.events.some((e) => e.kind === 'engine_summary')) { sawEngineSummary = true; break; }
+  }
+  check('dsh engine summaries pass through verbatim', sawEngineSummary,
+    sawEngineSummary ? 'compaction/summary found' : 'none in sampled sessions');
+
+  // --- truncation guard ---------------------------------------------------
+  const huge = all.filter((s) => s.sizeBytes > 5 * 1024 * 1024)[0];
+  if (huge) {
+    const r = await readSession({ engine: huge.engine, id: huge.id });
+    check('huge session is capped rather than unbounded', (r?.events.length ?? 0) <= 4000,
+      `${r?.events.length} of ${r?.totalEvents} events from ${(huge.sizeBytes / 1048576).toFixed(1)} MB`);
+    // 11 MB of raw lines can compress down to a few hundred displayable events,
+    // so truncation must be reported from the event count, not the byte size.
+    check('truncation flag matches the event count',
+      r?.truncated === ((r?.totalEvents ?? 0) > 4000),
+      `truncated=${r?.truncated} totalEvents=${r?.totalEvents}`);
+  } else {
+    console.log('SKIP  no session larger than 5 MB to test the cap');
+  }
+
+  // --- path safety --------------------------------------------------------
+  const escape = await readSession({ engine: 'codex', sessionPath: 'C:\\Windows\\win.ini' });
+  check('refuses a path outside the session roots', escape === null);
+  const escape2 = await readSession({ engine: 'dsh', sessionPath: 'C:\\Windows\\System32\\drivers\\etc\\hosts' });
+  check('refuses an outside path for dsh too', escape2 === null);
+
+  const missing = await readSession({ engine: 'codex', id: 'no-such-session-id' });
+  check('returns null for an unknown id', missing === null);
+} catch (err) {
+  check('session harness completed', false, err.message);
+}
+
+const failures = results.filter((r) => !r.passed).length;
+console.log(`\nSessions: ${results.length - failures}/${results.length} passed`);
+process.exit(failures === 0 ? 0 : 1);
