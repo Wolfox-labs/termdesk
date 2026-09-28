@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>侧栏诊断</title>
+<style>
+  body{font:13px/1.5 -apple-system,system-ui,sans-serif;margin:0;padding:12px;background:#282c34;color:#abb2bf}
+  h1{font-size:15px;margin:0 0 8px}
+  pre{background:#21252b;padding:8px;border-radius:6px;overflow:auto;white-space:pre-wrap;font-size:11px;max-height:60vh}
+  button{background:#61afef;color:#282c34;border:0;border-radius:6px;padding:8px 12px;font-weight:600;margin:0 6px 6px 0}
+  .ok{color:#98c379}.bad{color:#e06c75}.warn{color:#e5c07b}
+</style>
+</head>
+<body>
+<h1>DSH 侧栏收起按钮 · 现场诊断</h1>
+<p>这段脚本会连到你电脑上的 DSH 内核，读取当前会话的对话界面状态。它<b>只读</b>，不会改动任何东西。</p>
+<div>
+  <button id="inspect">开始检查</button>
+  <button id="copy">复制结果</button>
+</div>
+<pre id="out">等待…</pre>
+<script type="module">
+const out = document.getElementById('out');
+const lines = [];
+const log = (s, cls) => { lines.push(s); out.innerHTML = lines.map(l =>
+  l.startsWith('!') ? `<span class="bad">${l}</span>`
+  : l.startsWith('+') ? `<span class="ok">${l}</span>`
+  : l.startsWith('~') ? `<span class="warn">${l}</span>` : l).join('\n'); };
+
+log('viewport = ' + window.innerWidth + ' x ' + window.innerHeight);
+log('devicePixelRatio = ' + window.devicePixelRatio);
+log('userAgent = ' + navigator.userAgent);
+
+document.getElementById('inspect').onclick = async () => {
+  lines.length = 0;
+  log('viewport = ' + window.innerWidth + ' x ' + window.innerHeight);
+
+  // 1. how many columns does the app frame actually lay out?
+  const frame = document.querySelector('[class*="_frame"]');
+  if (!frame) { log('! 没有找到 app frame'); return; }
+  const cs = getComputedStyle(frame);
+  log('grid-template-columns = ' + cs.gridTemplateColumns);
+  log('data-sidebar-collapsed = ' + (frame.getAttribute('data-sidebar-collapsed') ?? '(none)'));
+
+  // 2. the sidebar column and the toggle button inside it
+  const sidebarCol = frame.querySelector('[class*="_sidebarCol"]');
+  if (sidebarCol) {
+    const r = sidebarCol.getBoundingClientRect();
+    log('sidebar column rect = x:' + Math.round(r.x) + ' w:' + Math.round(r.width));
+  }
+
+  const toggle = document.querySelector('button[aria-label="收起侧边栏"], button[aria-label="打开侧边栏"]');
+  if (!toggle) {
+    log('! 侧栏 toggle 按钮不存在于 DOM 中 —— 这就是没有关闭入口的原因');
+  } else {
+    const r = toggle.getBoundingClientRect();
+    log('+ toggle 按钮存在');
+    log('  aria-label = ' + toggle.getAttribute('aria-label'));
+    log('  rect = x:' + Math.round(r.x) + ' y:' + Math.round(r.y) +
+        ' w:' + Math.round(r.width) + ' h:' + Math.round(r.height));
+    const tcs = getComputedStyle(toggle);
+    log('  display=' + tcs.display + ' visibility=' + tcs.visibility + ' opacity=' + tcs.opacity +
+        ' pointer-events=' + tcs.pointerEvents + ' z-index=' + tcs.zIndex);
+    log('  inViewport = ' + (r.x >= 0 && r.right <= window.innerWidth && r.width > 0 && r.height > 0));
+
+    // What is actually painted at the button's centre? If that is not the
+    // button (or its own child), something is covering it.
+    const cx = Math.round(r.x + r.width / 2), cy = Math.round(r.y + r.height / 2);
+    const hit = document.elementFromPoint(cx, cy);
+    log('  点击中心点 (' + cx + ',' + cy + ') 命中的元素 = ' +
+        (hit ? (hit.tagName + ' ' + (hit.getAttribute('class') || '')) .slice(0, 90) : 'null'));
+    log('  该元素是否就是按钮或其子元素 = ' +
+        (hit && (hit === toggle || toggle.contains(hit))));
+  }
+
+  // 3. is anything overlaying the top-left corner?
+  const probe = document.elementFromPoint(20, 20);
+  log('左上角(20,20) 的元素 = ' + (probe ? probe.tagName + ' ' + ((probe.getAttribute('class')||'')).slice(0,70) : 'null'));
+};
+document.getElementById('copy').onclick = async () => {
+  try { await navigator.clipboard.writeText(lines.join('\n')); log('+ 已复制'); }
+  catch (e) { log('! 复制失败: ' + e.message); }
+};
+</script>
+</body>
+</html>

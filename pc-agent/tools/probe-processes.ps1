@@ -1,4 +1,4 @@
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+﻿[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 $procs = Get-Process | ForEach-Object {
   $p = $_
@@ -26,5 +26,5 @@ $out = [PSCustomObject]@{
   items    = @($procs | Select-Object -First 400)
 }
 
-$out | ConvertTo-Json -Depth 4 -Compress | Out-File -FilePath 'D:\projects\termdesk\.tmp\procs.json' -Encoding utf8
+$out | ConvertTo-Json -Depth 4 -Compress | Out-File -FilePath '$env:TEMP\termdesk-procs.json' -Encoding utf8
 Write-Output "written"

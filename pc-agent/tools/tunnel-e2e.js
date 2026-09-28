@@ -3,7 +3,7 @@
  *
  * This is deliberately separate from chat-e2e.js: that suite talks to the agent
  * on localhost, which proves the feature works but proves nothing about the
- * public path. This one goes through https://term.example.com, i.e. out to
+ * public path. This one goes through the configured public hostname, i.e. out to
  * Cloudflare's edge and back down the tunnel, so it exercises exactly the hop
  * that the campus network was breaking.
  *
@@ -21,7 +21,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
 
-const HOST = process.argv[2] || 'term.example.com';
+const HOST = process.env.TERMDESK_TUNNEL_HOST || process.argv[2] || '';
+if (!HOST) {
+  console.error('usage: set TERMDESK_TUNNEL_HOST or pass the hostname, e.g. term.example.com');
+  process.exit(2);
+}
 const WS_URL = `wss://${HOST}`;
 const HTTP_URL = `https://${HOST}`;
 
@@ -208,7 +212,8 @@ function connect() {
 
   // 5. the unknown-host guard
   try {
-    const bad = await fetch('https://example.com/', { signal: AbortSignal.timeout(20000) });
+    const apex = HOST.split('.').slice(1).join('.');
+    const bad = await fetch(`https://${apex}/`, { signal: AbortSignal.timeout(20000) });
     check('an unlisted hostname is not served by this tunnel', false, `got HTTP ${bad.status}`);
   } catch (err) {
     check('an unlisted hostname is not served by this tunnel', true, 'refused');

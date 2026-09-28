@@ -102,6 +102,16 @@ class AgentClient(
     private val _listing = MutableStateFlow<DirectoryListing?>(null)
     val listing: StateFlow<DirectoryListing?> = _listing.asStateFlow()
 
+    /**
+     * Directories the PC's agent allows browsing, as reported by `fs.roots`.
+     *
+     * The client asks for these after authenticating instead of hardcoding a
+     * path: the home directory belongs to the PC, so assuming one would be
+     * wrong on any other machine.
+     */
+    private val _fsRoots = MutableStateFlow<List<String>>(emptyList())
+    val fsRoots: StateFlow<List<String>> = _fsRoots.asStateFlow()
+
     private val _openFile = MutableStateFlow<TextFile?>(null)
     val openFile: StateFlow<TextFile?> = _openFile.asStateFlow()
 
@@ -690,6 +700,10 @@ class AgentClient(
                     webSocket.send(
                         JSONObject().put("type", "status.subscribe").put("intervalMs", 2000).toString(),
                     )
+                    // Ask the agent which directories it allows. The home
+                    // directory is a property of the PC, not of this app, so
+                    // the client must not assume one.
+                    sendFrame(JSONObject().put("type", "fs.roots"))
                 }
                 "auth.fail" -> {
                     _link.value = LinkState.Failed("鉴权失败：${frame.optString("reason", "token 无效")}")
@@ -707,6 +721,18 @@ class AgentClient(
                 "fs.listing" -> {
                     _loading.value = false
                     _listing.value = parseListing(frame)
+                }
+                "fs.roots" -> {
+                    val arr = frame.optJSONArray("roots")
+                    val roots = buildList {
+                        if (arr != null) {
+                            for (i in 0 until arr.length()) {
+                                val r = arr.optString(i)
+                                if (r.isNotBlank()) add(r)
+                            }
+                        }
+                    }
+                    _fsRoots.value = roots
                 }
                 "fs.file" -> {
                     _openFile.value = TextFile(

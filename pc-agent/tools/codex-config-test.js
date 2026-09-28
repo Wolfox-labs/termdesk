@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Codex provider-configuration checks.
  *
  * Runs against a SANDBOX copy of a realistic config.toml. The real ~/.codex is
@@ -27,7 +27,7 @@ const { applyProviderConfig, readCodexConfig, restoreBackup } = await import('..
 const results = [];
 const check = (name, passed, detail = '') => {
   results.push({ name, passed });
-  console.log(`${passed ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+  console.log(`${passed ? 'PASS' : 'FAIL'}  ${name}${detail ? ` 鈥?${detail}` : ''}`);
 };
 
 // --- Build a fixture modelled on the real file ---
@@ -41,7 +41,7 @@ model_provider = "openai"
 conversationDetailMode = "STEPS_PROSE"
 appearanceTheme = "dark"
 
-[projects.'d:\\projects']
+[projects.'c:\\users\\alice\\project']
 trust_level = "trusted"
 `;
 
@@ -50,13 +50,13 @@ fs.writeFileSync(CONFIG, FIXTURE, 'utf8');
 
 // Preserve markers we expect to survive untouched.
 const preservedChecks = [
-  ['[desktop] 段存在', /\[desktop\]/],
-  ['conversationDetailMode 保留', /conversationDetailMode/],
-  ['appearanceTheme 保留', /appearanceTheme/],
-  ['projects 信任级别保留', /trust_level/],
+  ['[desktop] 娈靛瓨鍦?, /\[desktop\]/],
+  ['conversationDetailMode 淇濈暀', /conversationDetailMode/],
+  ['appearanceTheme 淇濈暀', /appearanceTheme/],
+  ['projects 淇′换绾у埆淇濈暀', /trust_level/],
 ];
-if (/\[\[skills\.config\]\]/.test(FIXTURE)) preservedChecks.push(['skills.config 保留', /\[\[skills\.config\]\]/]);
-if (/preferred_auth_method/.test(FIXTURE)) preservedChecks.push(['preferred_auth_method 保留', /preferred_auth_method/]);
+if (/\[\[skills\.config\]\]/.test(FIXTURE)) preservedChecks.push(['skills.config 淇濈暀', /\[\[skills\.config\]\]/]);
+if (/preferred_auth_method/.test(FIXTURE)) preservedChecks.push(['preferred_auth_method 淇濈暀', /preferred_auth_method/]);
 
 try {
   // --- read before any change ---

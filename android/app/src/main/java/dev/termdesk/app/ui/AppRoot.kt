@@ -29,6 +29,8 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     val loading by vm.loading.collectAsState()
     val lastAction by vm.lastAction.collectAsState()
     val listing by vm.listing.collectAsState()
+    // Collected so startPath recomputes once the agent reports its roots.
+    vm.fsRoots.collectAsState()
     val openFile by vm.openFile.collectAsState()
     val transfer by vm.transfer.collectAsState()
     val termLines by vm.termLines.collectAsState()

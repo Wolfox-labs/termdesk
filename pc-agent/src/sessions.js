@@ -73,7 +73,7 @@ function walkFiles(root, predicate, out = [], depth = 0) {
 /**
  * Decode a DSH workspace directory name back into a path.
  * DSH encodes the cwd by replacing every path separator with '-', so
- * `--C-Users-user-Wrk--` is `C:\Users\user\Wrk`. The encoding is lossy for a
+ * `--C-Users-alice-Work--` is `C:\Users\alice\Work`. The encoding is lossy for a
  * literal '-' in a folder name, so the recorded `cwd` field from the session's
  * first line is always preferred when available.
  */

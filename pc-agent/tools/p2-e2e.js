@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Exercise the P2 file flow against the *running* agent on the real machine,
  * mirroring exactly what the Android client sends. Read-only outside the
  * scratch directory it creates and removes.
@@ -20,7 +20,7 @@ fs.mkdirSync(SCRATCH, { recursive: true });
 const results = [];
 const check = (name, passed, detail = '') => {
   results.push({ name, passed });
-  console.log(`${passed ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+  console.log(`${passed ? 'PASS' : 'FAIL'}  ${name}${detail ? ` 鈥?${detail}` : ''}`);
 };
 
 const ws = new WebSocket(`ws://${HOST}:${PORT}`);
@@ -63,7 +63,7 @@ try {
 
   // 2. Create, write, read back.
   await request('fs.mkdir', { path: SCRATCH, name: 'e2e.txt', kind: 'file' }, 'action.result');
-  const payload = 'TermDesk P2 端到端\nline two\n';
+  const payload = 'TermDesk P2 绔埌绔痋nline two\n';
   const wrote = await request('fs.write', { path: path.join(SCRATCH, 'e2e.txt'), text: payload }, 'action.result');
   check('writes a file through the live agent', wrote.ok === true, wrote.message);
 
@@ -79,7 +79,7 @@ try {
   check('HTTP download returns the same bytes', body === payload, `${body.length} chars`);
 
   // 4. Upload via HTTP, then confirm it appears in a fresh listing.
-  const upBytes = Buffer.from('uploaded from phone 上传测试', 'utf8');
+  const upBytes = Buffer.from('uploaded from phone 涓婁紶娴嬭瘯', 'utf8');
   const up = await fetch(
     `http://${HOST}:${PORT}/upload?path=${encodeURIComponent(path.join(SCRATCH, 'from-phone.txt'))}&overwrite=1`,
     {
@@ -94,7 +94,7 @@ try {
   check('uploaded file appears in the listing', after.items.some((i) => i.name === 'from-phone.txt'));
 
   // 5. A real directory the user will actually browse.
-  const realPath = 'C:\\Users\\user';
+  const realPath = os.homedir();
   const real = await request('fs.list', { path: realPath }, 'fs.listing');
   check('lists the real home directory', real.items.length > 0, `${real.items.length} entries`);
   check('home listing is sorted dirs-first', real.items[0]?.isDir === true, real.items[0]?.name);

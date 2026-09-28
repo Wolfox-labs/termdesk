@@ -1,4 +1,4 @@
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+﻿[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 $svcs = @(Get-Service | ForEach-Object {
   $s = $_
@@ -19,5 +19,5 @@ $out = [PSCustomObject]@{
   items    = $svcs
 }
 
-$out | ConvertTo-Json -Depth 4 -Compress | Out-File -FilePath 'D:\projects\termdesk\.tmp\svcs.json' -Encoding utf8
+$out | ConvertTo-Json -Depth 4 -Compress | Out-File -FilePath '$env:TEMP\termdesk-svcs.json' -Encoding utf8
 Write-Output "written"

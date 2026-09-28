@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Verify the DSH Web UI is actually usable through the tunnel, not merely
  * that its HTML loads.
  *
@@ -16,7 +16,11 @@
 
 import { WebSocket } from 'ws';
 
-const host = process.argv[2] || 'dsh.example.com';
+const host = process.env.TERMDESK_DSH_HOST || process.argv[2] || '';
+if (!host) {
+  console.error('usage: set TERMDESK_DSH_HOST or pass the hostname, e.g. dsh.example.com');
+  process.exit(2);
+}
 const base = `https://${host}`;
 
 let passes = 0;

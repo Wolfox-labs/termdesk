@@ -31,3 +31,6 @@ tools/cloudflared-windows-amd64.exe
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Diagnostic run output
+pc-agent/tools/*-out.txt

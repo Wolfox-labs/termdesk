@@ -1,18 +1,22 @@
-/**
+﻿/**
  * Prove the remote browser surface is actually usable, not just reachable.
  *
  * dsh-web-check.js confirms the mux upgrades. That is necessary but not
  * sufficient: the page could still fail to boot, or the mux could accept the
  * socket without answering any RPC. This drives the same remote surface the
  * browser drives, over the public tunnel, and asserts that the host answers a
- * real call — which is what "I can talk to my machine from my phone" means.
+ * real call 鈥?which is what "I can talk to my machine from my phone" means.
  *
  * Usage: node tools/dsh-remote-check.js [hostname]
  */
 
 import { WebSocket } from 'ws';
 
-const host = process.argv[2] || 'dsh.example.com';
+const host = process.env.TERMDESK_DSH_HOST || process.argv[2] || '';
+if (!host) {
+  console.error('usage: set TERMDESK_DSH_HOST or pass the hostname, e.g. dsh.example.com');
+  process.exit(2);
+}
 const base = `https://${host}`;
 
 let passes = 0;

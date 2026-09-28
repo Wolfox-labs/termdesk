@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Diagnostic: watch a wss:// connection through the Cloudflare tunnel frame by
  * frame, logging arrivals, silences and closures with timestamps.
  *
@@ -14,7 +14,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { WebSocket } from 'ws';
 
-const host = process.argv[2] || 'term.example.com';
+const host = process.env.TERMDESK_TUNNEL_HOST || process.argv[2] || '';
+if (!host) {
+  console.error('usage: set TERMDESK_TUNNEL_HOST or pass the hostname, e.g. term.example.com');
+  process.exit(2);
+}
 const seconds = Number(process.argv[3] || '60');
 const started = Date.now();
 

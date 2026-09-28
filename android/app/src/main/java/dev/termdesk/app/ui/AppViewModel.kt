@@ -50,6 +50,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val openFile: StateFlow<TextFile?> = client.openFile
     val transfer: StateFlow<TransferState?> = client.transfer
 
+    /**
+     * Directories the PC allows browsing, reported by the agent after auth.
+     *
+     * Collected by the file view so that [startPath] resolves once the agent
+     * answers, without the app assuming any path of its own.
+     */
+    val fsRoots: StateFlow<List<String>> = client.fsRoots
+
     // ---- P3 ----
     val termLines: StateFlow<List<TermLine>> = client.termLines
     val termSession: StateFlow<String?> = client.termSession
@@ -133,8 +141,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putString(KEY_THEME, mode.name).apply()
     }
 
-    /** Where the file browser starts. Defaults to the user's home directory. */
-    val startPath: String get() = prefs.getString(KEY_START_PATH, DEFAULT_START_PATH) ?: DEFAULT_START_PATH
+    /**
+     * Where the file browser starts, and the agent address it defaults to.
+     *
+     * Both are deployment specifics, so neither is baked in: the pairing screen
+     * takes the address, and the file browser is driven by the roots the agent
+     * reports (`fs.roots`). A literal path here would be wrong on any other
+     * machine and would publish one user's home directory.
+     */
+    val startPath: String
+        get() = prefs.getString(KEY_START_PATH, null)?.takeIf { it.isNotBlank() }
+            ?: client.fsRoots.value.firstOrNull()
+            ?: ""
 
     fun refreshProcesses(query: String = "") = client.refreshProcesses(query)
     fun refreshServices(query: String = "") = client.refreshServices(query)
@@ -185,7 +203,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_TOKEN = "token"
         const val KEY_START_PATH = "startPath"
         const val KEY_THEME = "themeMode"
-        const val DEFAULT_URL = "ws://192.168.1.10:7420"
-        const val DEFAULT_START_PATH = "C:\\Users\\user"
+
+        /**
+         * Loopback placeholder only: the real agent address is a deployment
+         * specific, entered on the pairing screen and stored in preferences.
+         */
+        const val DEFAULT_URL = "ws://127.0.0.1:7420"
     }
 }
