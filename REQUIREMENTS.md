@@ -50,8 +50,9 @@ Windows 电脑办公。要求不是"远程桌面"（手机屏幕小、流量贵�
 | `p3-e2e.js` | **9/9** | 终端真实链路 |
 | `sessions-test.js` | **25/25** | 会话解析（Codex + DSH 双引擎） |
 | `sessions-live.js` | **21/21** | 会话真实读取 |
-| `engines-test.js` | **31/31** | Codex / DSH 一次性任务 |
-| `chat-e2e.js` | **38/38** | 原生对话：流式、去重、会话延续 |
+| `chat-engine-test.js` | **78/78** | 统一对话管线静态检查（engine 字段、codex 事件映射、resume 参数；**不调真实 LLM**） |
+| `engines-test.js` | **31/31** | Codex / DSH 一次性任务（`ai.*`，deprecated 兼容面） |
+| `chat-e2e.js` | **38/38** | 原生对话：流式、去重、会话延续（dsh 内核；含 engine=codex 建会话） |
 | `tunnel-e2e.js` | **10/10** | 公网隧道全链路 |
 | `dsh-web-check.js` | **4/4** | DSH Web 过隧道可用性 |
 | `mux-probe.js` | **3/3** | DSH Remote mux 协议 |
@@ -83,20 +84,35 @@ Windows 电脑办公。要求不是"远程桌面"（手机屏幕小、流量贵�
 | P2 | 文件管理（浏览 / 上传 / 下载 / 编辑，根目录隔离） | ✅ |
 | P3 | 终端（持久 PowerShell 会话） | ✅ |
 
-### P4 原生对话 —— 核心已完成
+### P4 统一对话管线 —— 核心已完成
 
-**关键设计**：一个对话 = 电脑上一个常驻的 DSH SDK 运行时进程。
+**关键设计**：产品上只有**一条对话管线**（`chat.*`），内核在建会话时选择；
+「任务」不再是独立语义。
 
-- 走 `dsh --profile sdk` 的 stdio JSON-RPC（`initialize` / `session/prompt` / `shutdown`）
-- 同一个 `sessionId` 上再次 `session/prompt` 即**真正延续**同一会话
-- 这是相对旧方案的实质改进：`dsh --profile headless` 是一次性的，第二轮没有记忆
+| 内核 | 多轮延续 | 进度事件 | 机制 |
+|---|---|---|---|
+| `engine=dsh`（默认） | ✅ 同 sessionId 真延续 | ✅ 流式 | 每对话一个常驻 `dsh --profile sdk` 运行时（stdio JSON-RPC） |
+| `engine=codex` | ✅ `codex exec resume <thread_id>` | ✅ JSONL 事件 | 每轮一个 `codex exec` 进程，thread_id 由 Codex 自己持有 |
 
-已验证：**第二轮能复述第一轮的信息**（`chat-e2e.js` 中的 marker 断言）。
+- `chat.create` 可带 `engine` / `provider` / `model`；`engine` 缺省为 `dsh`，保持兼容
+- codex 的 `provider`/`model` 以 `-c model_provider=` / `-c model=` 传入，不改写
+  `config.toml`（持久配置仍归 `codex.get` / `codex.apply`）
+- 对话事件统一映射到同一套 chat 事件种类（`message` / `reasoning` / `tool` /
+  `tool_result` / `turn` / …），手机端一套渲染
+- `ai.*`（一次性任务）**已 deprecated**：协议保留兼容，新能力一律进 `chat.*`
+
+已验证（静态）：`tools/chat-engine-test.js` 78/78 —— 引擎字段、resume 参数、事件映射、
+`encodeFrame` 不被 payload `type` 覆盖。真实双轮续聊仍以 `chat-e2e.js`（dsh）与
+`engines-test.js`（codex thread resume）的实测为准，本轮未跑真实 LLM。
 
 | 子项 | 状态 |
 |---|---|
-| 每对话一运行时、原生会话延续 | ✅ 已验证 |
-| 流式 delta 逐块下发 | ✅ 已验证 |
+| `chat.create` 选 engine（codex / dsh） | ✅ 静态已验证 |
+| chat 列表 / 详情带 `engine` | ✅ 静态已验证 |
+| dsh：每对话一运行时、原生会话延续 | ✅ 已验证（chat-e2e） |
+| codex：thread_id resume 多轮 | ✅ 机制沿用已有实现；**未在本轮重新实测** |
+| codex 事件映射到统一 chat 事件种类 | ✅ 静态已验证 |
+| 流式 delta 逐块下发（dsh） | ✅ 已验证 |
 | 用户消息去重（乐观回显 vs 运行时回显） | ✅ 已验证 |
 | 注入上下文与用户输入区分（`sourceKind`） | ✅ 已验证 |
 | 进程级心跳与空闲回收 | ✅ 已实现 |
@@ -236,12 +252,17 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 
 ## 五、架构与关键决策
 
-### 5.1 为什么 DSH 走 SDK 而不是 headless
+### 5.1 一条对话管线，内核可选
 
-| 方案 | 会话延续 | 进度事件 | 结论 |
-|---|---|---|---|
-| `dsh --profile headless "<task>"` | ❌ 一次性，无记忆 | ❌ | 只能靠拼接历史近似 |
-| `dsh --profile sdk`（stdio JSON-RPC） | ✅ 同 sessionId 真延续 | ✅ 流式 | **采用** |
+产品共识：**不要**把「对话」和「任务」拆成两条隔离管线。入口只有一个 `chat.*`，
+建会话时用 `engine` 选内核；旧的 `ai.*` 任务面保留协议兼容，但语义上已收敛为
+"一次性对话"的遗留形态，文档与注释均标 deprecated。
+
+| 内核 | 方案 | 会话延续 | 进度事件 | 结论 |
+|---|---|---|---|---|
+| dsh | `dsh --profile headless "<task>"` | ❌ 一次性，无记忆 | ❌ | 只能靠拼接历史近似（仅剩 `ai.*` 兼容面在用） |
+| dsh | `dsh --profile sdk`（stdio JSON-RPC） | ✅ 同 sessionId 真延续 | ✅ 流式 | **chat 默认内核** |
+| codex | `codex exec` + `codex exec resume <thread_id>` | ✅ Codex 原生 thread | ✅ JSONL 事件 | **chat 可选内核**；续聊不重造多轮，直接 resume |
 
 ### 5.2 为什么服务端直接对接 DSH，而不是复刻桌面 App
 
@@ -258,21 +279,31 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 | C→S | `procs.list` · `procs.kill` · `services.list` · `services.action` |
 | C→S | `fs.list` · `fs.read` · `fs.write` · `fs.mkdir` · `fs.delete` · `fs.rename` · `fs.roots` |
 | C→S | `term.open` · `term.run` · `term.interrupt` · `term.close` · `term.list` · `ping` |
-| C→S | `ai.engines` · `ai.submit` · `ai.tasks` · `ai.task` · `ai.cancel` · `ai.reset` |
+| C→S | `ai.engines` · `ai.submit` · `ai.tasks` · `ai.task` · `ai.cancel` · `ai.reset`（**deprecated**，一次性任务兼容面） |
 | C→S | `codex.get` · `codex.apply` · `codex.restore` |
 | C→S | `sessions.list` · `sessions.read`（磁盘上的历史会话，只读） |
 | C→S | `chat.list` · `chat.create` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` |
 | S→C | `auth.ok` · `auth.fail` · `hello` · `status` · `procs` · `services` |
 | S→C | `fs.listing` · `fs.file` · `fs.written` · `fs.roots` |
 | S→C | `term.opened` · `term.output` · `term.exit` · `term.list` |
-| S→C | `ai.engines` · `ai.tasks` · `ai.task` · `ai.started` · `ai.event` · `ai.finished` |
+| S→C | `ai.engines` · `ai.tasks` · `ai.task` · `ai.started` · `ai.event` · `ai.finished`（**deprecated**） |
 | S→C | `codex.config` · `sessions` · `session` |
 | S→C | `chats` · `chat` · `chat.event` · `chat.status` · `chat.turn` · `chat.sent` · `chat.closed` |
 | S→C | `action.result` · `error` · `pong` |
 
+**统一对话协议要点**（`chat.*`）：
+
+| 字段 | 说明 |
+|---|---|
+| `chat.create.engine` | `'codex' \| 'dsh'`，缺省 `'dsh'`（兼容旧行为）；未知值回 `action.result` / `bad_engine` |
+| `chat.create.provider` / `model` | 可选。dsh 传给 SDK `initialize`；codex 以 `-c model_provider=` / `-c model=` 覆盖单次执行，不写 `config.toml` |
+| `chats[]` / `chat` 详情 | 均带 `engine`；codex 另带 `threadId`（首回合前为 `null`） |
+| `chat.event.item` | 事件记录用 `kind`（`message`/`reasoning`/`tool`/`tool_result`/`turn`/…），**禁用 `type` 字段** |
+| codex 续聊 | `thread.started` 拿到 `thread_id` 后，后续 `chat.send` 走 `codex exec resume <thread_id>`，不重喂历史 |
+
 **踩过的坑**：`encodeFrame` 会把 payload 展开在 `type` 之后，所以 payload 里
 **不能再有 `type` 字段**——曾因引擎事件用 `type` 覆盖了线帧类型，导致
-`ai.finished` 永远收不到且无任何报错。现引擎事件统一用 `event` 字段，
+`ai.finished` 永远收不到且无任何报错。现引擎/对话事件统一用 `event` / `kind` 字段，
 并有"每个帧都使用已声明的协议类型"的回归断言。
 
 ### 5.4 为什么 `chat.event` 要带上完整 item
@@ -288,7 +319,8 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 |---|---|
 | 终端无真实 PTY | Windows 无原生模块拿不到 PTY，是基于管道的 JSON-lines 会话；vim/top 等全屏程序不可用 |
 | 中断即重启 shell | `Ctrl+C` 通过重建 PowerShell 实现，会丢失会话内变量 |
-| 无单轮取消 | DSH SDK 协议没有 cancel 方法；`chat.cancel` 实为"终止该对话的运行时" |
+| 无单轮取消（dsh） | DSH SDK 协议没有 cancel 方法；`chat.cancel` 对 `engine=dsh` 实为"终止该对话的运行时"。`engine=codex` 可杀掉本轮进程，thread 仍可续 |
+| `ai.*` 任务面 | **deprecated**：协议兼容保留，语义已并入 `chat.*`；新客户端不要依赖 |
 | 大文件 | Cloudflare 免费版单请求体 100 MB 上限 |
 | 单客户端路由 | agent 同时只把流推给最后一个认证的客户端（与终端输出一致） |
 

@@ -1,6 +1,10 @@
 /**
  * P4 engine checks, driven through the real WebSocket protocol.
  *
+ * NOTE: this suite exercises the deprecated `ai.*` task pipeline, kept for
+ * wire compatibility. The product conversation path is `chat.*` with
+ * `engine: 'codex' | 'dsh'` — see tools/chat-e2e.js and tools/chat-engine-test.js.
+ *
  * These invoke live AI engines, so they are slower than the other suites and
  * cost real tokens. The Codex cases are the important ones: multi-turn resume
  * and per-command progress events are exactly what the phone UI relies on.

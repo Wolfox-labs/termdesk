@@ -209,6 +209,20 @@ function assistantTexts(events) {
   check('chat reports its working directory', created.cwd === process.cwd(), created.cwd);
   check('chat declares provider and model', Boolean(created.provider && created.model),
     `${created.provider} / ${created.model}`);
+  check('chat.create defaults to engine=dsh', created.engine === 'dsh', created.engine);
+
+  // Explicit engine selection (the unified pipeline's whole point). Creation
+  // must not spawn anything, so this is safe even before a live turn.
+  send('chat.create', { cwd: process.cwd(), title: 'e2e-codex', engine: 'codex' });
+  const createdCodex = await waitFor(
+    (f) => f.type === 'chat' && f.engine === 'codex',
+    15000,
+    'chat (created, engine=codex)',
+  );
+  check('chat.create accepts engine=codex', createdCodex?.engine === 'codex', createdCodex?.id);
+  check('codex chat reports no thread before the first turn',
+    createdCodex?.threadId === null, String(createdCodex?.threadId));
+  send('chat.close', { chatId: createdCodex.id });
 
   const listed = await waitFor((f) => f.type === 'chats' && f.chats.some((c) => c.id === chatId),
     10000, 'chats list containing the new chat');

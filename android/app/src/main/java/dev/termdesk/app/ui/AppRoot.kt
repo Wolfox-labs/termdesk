@@ -1,4 +1,4 @@
-﻿package dev.termdesk.app.ui
+package dev.termdesk.app.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -13,7 +13,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -47,8 +49,14 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     val sessions by vm.sessions.collectAsState()
     val sessionDetail by vm.sessionDetail.collectAsState()
     val themeMode by vm.themeMode.collectAsState()
+    val engines by vm.engines.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // New-chat picker: onCreateChat only requests the sheet with a suggested
+    // cwd; kernel/model/cwd stay explicit user choices inside NewChatSheet.
+    var newChatSuggestedCwd by remember { mutableStateOf<String?>(null) }
+    var newChatOpen by remember { mutableStateOf(false) }
 
     // Surface every action outcome, including refusals, so the user is never
     // left wondering whether a tap did anything.
@@ -126,7 +134,11 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 sessions = sessions,
                 recordedSession = sessionDetail,
                 onLoadChats = vm::loadChats,
-                onCreateChat = { cwd -> vm.createChat(cwd) },
+                // Opens the picker; ChatSection keeps calling onCreateChat(cwd).
+                onCreateChat = { cwd ->
+                    newChatSuggestedCwd = cwd
+                    newChatOpen = true
+                },
                 onOpenChat = vm::openChat,
                 onSendChat = vm::sendChatMessage,
                 onCancelChat = vm::cancelChat,
@@ -151,6 +163,29 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
             ) {
                 Text(data.visuals.message, style = MaterialTheme.typography.bodySmall)
             }
+        }
+
+        if (newChatOpen) {
+            LaunchedEffect(Unit) {
+                vm.loadEngines()
+                vm.loadCodexConfig()
+            }
+            NewChatSheet(
+                engines = engines,
+                workspaces = workspaces,
+                codexConfig = codexConfig,
+                suggestedCwd = newChatSuggestedCwd,
+                defaultCwd = vm.defaultCwd,
+                onCreateChat = { cwd, engine, provider, model, title ->
+                    newChatOpen = false
+                    vm.createChat(cwd, engine, provider, model, title)
+                },
+                onCreateDirectory = { parent, name ->
+                    vm.createEntry(parent, name, true)
+                    vm.loadSessions()
+                },
+                onDismiss = { newChatOpen = false },
+            )
         }
     }
 }

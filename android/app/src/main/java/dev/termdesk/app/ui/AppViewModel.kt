@@ -1,4 +1,4 @@
-﻿package dev.termdesk.app.ui
+package dev.termdesk.app.ui
 
 import android.app.Application
 import android.content.Context
@@ -86,6 +86,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun restoreCodexBackup(name: String?) = client.restoreCodexBackup(name)
 
     // ---- P4: AI tasks ----
+    //
+    // Deprecated as a product surface: there is no separate "task" world any
+    // more. Every new run is an agent chat (createChat / NewChatSheet). The
+    // one-shot `ai.*` protocol stays for compatibility but must not be offered
+    // as a main entry; `engines` remains live because the new-chat sheet reads
+    // kernel availability from it.
     val engines: StateFlow<List<EngineInfo>> = client.engines
     val tasks: StateFlow<List<TaskSummary>> = client.tasks
     val activeTask: StateFlow<TaskDetail?> = client.activeTask
@@ -111,7 +117,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val chatSending: StateFlow<Boolean> = client.chatSending
 
     fun loadChats() = client.loadChats()
-    fun createChat(cwd: String? = null, title: String? = null) = client.createChat(cwd, title = title)
+
+    /**
+     * Create an agent conversation. [engine] is the kernel (`codex` | `dsh`);
+     * [provider]/[model] are optional and follow the kernel when omitted.
+     * Callers should go through NewChatSheet so the user picks these explicitly.
+     */
+    fun createChat(
+        cwd: String? = null,
+        engine: String? = null,
+        provider: String? = null,
+        model: String? = null,
+        title: String? = null,
+    ) = client.createChat(cwd, engine, provider, model, title)
     fun openChat(chatId: String) = client.openChat(chatId)
     fun sendChatMessage(chatId: String, text: String) = client.sendChatMessage(chatId, text)
     fun cancelChat(chatId: String) = client.cancelChat(chatId)

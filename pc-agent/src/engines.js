@@ -1,5 +1,13 @@
-﻿/**
+/**
  * AI engine layer: drive Codex and DSH from the agent.
+ *
+ * @deprecated The separate "task" pipeline (`ai.submit` / `ai.tasks` / …) is
+ * kept only for wire compatibility. The product path is the unified chat
+ * pipeline in `chat.js`: `chat.create` with `engine: 'codex' | 'dsh'`, then
+ * `chat.send`. Codex multi-turn still uses the same `codex exec` /
+ * `codex exec resume <thread_id>` mechanism implemented here — the chat
+ * pipeline reuses `findCodex` / `killProcessTree` and the same JSONL event
+ * vocabulary — but new features should land on `chat.*`, not on tasks.
  *
  * Both engines were probed before this was written (see tools/engine-probe*),
  * and they behave differently in ways that shape the whole design:
@@ -13,7 +21,8 @@
  *     answer and exits, and a second invocation has NO memory of the first
  *     (verified: it denied any earlier request). There are no progress events.
  *     To make multi-turn usable at all, prior turns are prepended to the prompt
- *     as context. That is an approximation, not a real session.
+ *     as context. That is an approximation, not a real session. The chat
+ *     pipeline uses the DSH SDK profile instead, which has real sessions.
  *
  * Both are spawned as child processes. Cancellation kills the process tree,
  * because a coding agent typically has tool subprocesses of its own.
@@ -28,7 +37,7 @@ const MAX_EVENTS_PER_TASK = 400;
 const TASK_TIMEOUT_MS = 30 * 60 * 1000;
 
 /** Resolve the Codex binary: env override, then the known install location. */
-function findCodex() {
+export function findCodex() {
   if (process.env.TERMDESK_CODEX) return process.env.TERMDESK_CODEX;
   const base = path.join(os.homedir(), 'AppData', 'Local', 'OpenAI', 'Codex', 'bin');
   try {
@@ -44,7 +53,7 @@ function findCodex() {
 }
 
 /** Resolve the DSH launcher entry script. */
-function findDsh() {
+export function findDsh() {
   if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
   return path.join(
     os.homedir(),
@@ -62,6 +71,55 @@ function findDsh() {
 }
 
 export const ENGINES = ['codex', 'dsh'];
+
+/**
+ * Build the `codex exec` argv for one turn.
+ *
+ * Shared by the deprecated task pipeline and the unified chat pipeline so
+ * multi-turn is one mechanism: a fresh turn runs `exec`, a follow-up runs
+ * `exec resume <thread_id>` and Codex itself carries the history — the
+ * transcript is never re-fed into a new process.
+ *
+ * @param {object} options
+ * @param {string} options.prompt
+ * @param {string} options.cwd
+ * @param {string|null} [options.resumeThreadId] thread id from `thread.started`
+ * @param {string|null} [options.provider] optional model_provider override
+ * @param {string|null} [options.model] optional model override
+ */
+export function buildCodexExecArgs({ prompt, cwd, resumeThreadId = null, provider = null, model = null }) {
+  const useResume = Boolean(resumeThreadId);
+  const args = useResume
+    ? ['exec', 'resume', resumeThreadId, '--json', '--skip-git-repo-check']
+    : ['exec', '--json', '--skip-git-repo-check', '-C', cwd];
+  // Codex accepts -c key=value config overrides; provider/model ride along
+  // without rewriting config.toml (codexconfig.js still owns persistent setup).
+  if (provider) args.push('-c', `model_provider=${provider}`);
+  if (model) args.push('-c', `model=${model}`);
+  args.push(prompt);
+  return args;
+}
+
+/**
+ * Kill a child and its descendants. A coding agent spawns shells, so killing
+ * only the direct child would leave orphans running. Shared with chat.js so
+ * both pipelines cancel the same way.
+ */
+export function killProcessTree(child) {
+  if (!child || child.killed) return;
+  try {
+    if (process.platform === 'win32' && child.pid) {
+      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+    } else {
+      child.kill('SIGKILL');
+    }
+  } catch {
+    try { child.kill(); } catch { /* already gone */ }
+  }
+}
 
 /** One submitted task and everything observed about it. */
 class Task {
@@ -91,6 +149,10 @@ class Task {
 }
 
 export class EngineManager {
+  /**
+   * @deprecated Task pipeline; prefer ChatManager (`chat.*`) which is the
+   * unified conversation entry. Kept for `ai.*` wire compatibility.
+   */
   constructor() {
     this.tasks = new Map();
     this.nextId = 1;
@@ -158,24 +220,11 @@ export class EngineManager {
   }
 
   /**
-   * Kill the child and its descendants. A coding agent spawns shells, so
-   * killing only the direct child would leave orphans running.
+   * Kill the child and its descendants.
+   * @deprecated see killProcessTree; kept as a method for the task pipeline.
    */
   killTree(task) {
-    const child = task.child;
-    if (!child || child.killed) return;
-    try {
-      if (process.platform === 'win32' && child.pid) {
-        spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
-          windowsHide: true,
-          stdio: 'ignore',
-        });
-      } else {
-        child.kill('SIGKILL');
-      }
-    } catch {
-      try { child.kill(); } catch { /* already gone */ }
-    }
+    killProcessTree(task.child);
   }
 
   /** Forget stored conversations so the next task starts clean. */
@@ -220,11 +269,11 @@ export class EngineManager {
 
   runCodex(task, { resume }) {
     const codex = findCodex();
-    const useResume = resume && this.sessions.codex;
-
-    const args = useResume
-      ? ['exec', 'resume', this.sessions.codex, '--json', '--skip-git-repo-check', task.prompt]
-      : ['exec', '--json', '--skip-git-repo-check', '-C', task.cwd, task.prompt];
+    const args = buildCodexExecArgs({
+      prompt: task.prompt,
+      cwd: task.cwd,
+      resumeThreadId: resume ? this.sessions.codex : null,
+    });
 
     const child = spawn(codex, args, {
       windowsHide: true,

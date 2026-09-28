@@ -1,5 +1,19 @@
 /**
- * Live chat sessions over the DSH SDK runtime.
+ * Unified live conversation pipeline — one chat surface, selectable engine.
+ *
+ * Product rule: there is one conversation pipeline (`chat.*`). The engine is a
+ * per-chat choice, not a separate "task" product:
+ *
+ *   engine = 'dsh'   (default)  Live chat sessions over the DSH SDK runtime.
+ *   engine = 'codex'            `codex exec` turns continued with
+ *                               `codex exec resume <thread_id>` — the same
+ *                               multi-turn mechanism the old `ai.*` task
+ *                               path used, moved onto the chat surface.
+ *
+ * The separate `ai.*` task pipeline in engines.js is deprecated; it remains
+ * for wire compatibility only.
+ *
+ * --- DSH SDK notes (engine = 'dsh') ---
  *
  * Why this exists: `dsh --profile headless "<task>"` is one-shot. It answered a
  * prompt, exited, and had no memory of anything (verified by probe). The Desktop
@@ -31,6 +45,20 @@
  *     be aborted in place.
  *   - Idle runtimes are reaped, because each one is a full Node harness holding
  *     an open provider route.
+ *
+ * --- Codex notes (engine = 'codex') ---
+ *
+ * Codex has no resident runtime on the wire. Each turn spawns `codex exec --json`
+ * (or `codex exec resume <thread_id> --json` once the thread is known) and
+ * streams newline-delimited JSON events. Continuity is genuine: the thread id
+ * returned by `thread.started` is reused for every later turn, which is the
+ * documented Codex resume mechanism — not a re-fed transcript.
+ *
+ * Events are mapped onto the SAME chat event vocabulary as DSH
+ * (message / reasoning / tool / command / turn / …) so the phone renders both
+ * engines through one schema. Mapped records never carry a `type` field:
+ * `encodeFrame` spreads payload after `type`, so a top-level `type` in a
+ * payload would silently overwrite the frame's own wire type.
  */
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -38,6 +66,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
+import { findCodex, killProcessTree, buildCodexExecArgs } from './engines.js';
 import { dshEventToChatEvent } from './sessions.js';
 
 const MAX_CHATS = 8;
@@ -47,6 +76,9 @@ const IDLE_TTL_MS = 45 * 60 * 1000;
 const INIT_TIMEOUT_MS = 120 * 1000;
 const PROMPT_TIMEOUT_MS = 30 * 60 * 1000;
 const REAP_INTERVAL_MS = 60 * 1000;
+
+/** Engines a chat conversation can run on. */
+export const CHAT_ENGINES = ['codex', 'dsh'];
 
 /** Resolve the DSH launcher entry script. Mirrors engines.js so tests can override both. */
 function findDsh() {
@@ -83,22 +115,184 @@ function defaultRoute() {
 
 let chatCounter = 0;
 
-/** One live conversation: one DSH SDK runtime process plus its transcript. */
+/**
+ * Map one Codex `codex exec --json` line onto the shared chat event vocabulary.
+ *
+ * Returns null for lines that carry no user-visible conversation content.
+ * The returned record uses `kind` (never `type`) so it is safe to embed in a
+ * `chat.event` payload — see the encodeFrame note in the file header.
+ *
+ * @param {object} ev parsed Codex JSONL event
+ * @returns {{kind, role, text, name, meta}|null}
+ */
+export function codexEventToChatEvent(ev) {
+  if (!ev || typeof ev !== 'object') return null;
+
+  // Codex CLI item type names are not limited to `agent_message`. Accept the
+  // plausible answer-bearing aliases so a renamed field cannot silently drop
+  // the user-visible reply while `turn.completed` still fires.
+  const ANSWER_ITEM_TYPES = new Set([
+    'agent_message',
+    'message',
+    'assistant_message',
+    'assistant',
+    'text',
+    'output_text',
+    'final',
+    'final_answer',
+    'answer',
+    'reply',
+    'output',
+  ]);
+  const itemText = (item) => {
+    if (!item || typeof item !== 'object') return '';
+    const raw = item.text ?? item.content ?? item.message ?? item.output ?? item.answer;
+    if (typeof raw === 'string') return raw;
+    if (Array.isArray(raw)) {
+      return raw
+        .map((part) => {
+          if (typeof part === 'string') return part;
+          if (part && typeof part === 'object') {
+            return part.text ?? part.content ?? '';
+          }
+          return '';
+        })
+        .join('');
+    }
+    return '';
+  };
+
+  if (ev.type === 'thread.started') {
+    return {
+      kind: 'local',
+      role: 'engine',
+      text: `会话 ${String(ev.thread_id ?? '').slice(0, 8)}`,
+      name: null,
+      meta: { threadId: ev.thread_id ?? null },
+    };
+  }
+  if (ev.type === 'turn.started') {
+    return { kind: 'turn', role: 'engine', text: '', name: null, meta: { state: 'started' } };
+  }
+  if (ev.type === 'turn.completed') {
+    const usage = ev.usage ?? {};
+    return {
+      kind: 'turn',
+      role: 'engine',
+      text: '',
+      name: null,
+      meta: {
+        state: 'ended',
+        tokens: usage.output_tokens ?? null,
+        inputTokens: usage.input_tokens ?? null,
+      },
+    };
+  }
+
+  if (ev.type === 'item.started' || ev.type === 'item.completed') {
+    const item = ev.item ?? {};
+    const done = ev.type === 'item.completed';
+
+    if (item.type === 'command_execution') {
+      // One command is a `tool` call plus its result, matching the DSH
+      // tool/tool_result pair the phone already renders.
+      if (!done) {
+        return {
+          kind: 'tool',
+          role: 'assistant',
+          text: item.command ?? '',
+          name: 'command_execution',
+          meta: { state: 'running' },
+        };
+      }
+      return {
+        kind: 'tool_result',
+        role: 'tool',
+        text: (item.aggregated_output ?? '').slice(0, 4000),
+        name: 'command_execution',
+        meta: { state: 'completed', exitCode: item.exit_code ?? null },
+      };
+    }
+    if (ANSWER_ITEM_TYPES.has(item.type)) {
+      const text = itemText(item);
+      if (!text) return null;
+      return {
+        kind: 'message',
+        role: 'assistant',
+        text,
+        name: null,
+        meta: done ? null : { state: 'streaming' },
+        // `item.started` is a preview; `item.completed` is authoritative.
+        streaming: !done,
+      };
+    }
+    if (item.type === 'reasoning' && done) {
+      return {
+        kind: 'reasoning',
+        role: 'assistant',
+        text: itemText(item).slice(0, 2000),
+        name: null,
+        meta: null,
+      };
+    }
+    if (item.type === 'error' && done) {
+      // Codex reports config warnings as errors; keep them visible as engine
+      // notes rather than failing the turn.
+      return {
+        kind: 'engine_note',
+        role: 'engine',
+        text: item.message ?? '',
+        name: 'warning',
+        meta: null,
+      };
+    }
+    if (item.type === 'file_change' && done) {
+      const changes = item.changes ?? [];
+      return {
+        kind: 'tool_result',
+        role: 'tool',
+        text: changes.map((c) => `${c.kind ?? 'change'}: ${c.path ?? ''}`).join('\n'),
+        name: 'file_change',
+        meta: { state: 'completed' },
+      };
+    }
+    return null;
+  }
+
+  return null;
+}
+
+/** One live conversation: one engine runtime plus its transcript. */
 class Chat {
-  constructor({ id, title, cwd, provider, model }) {
+  constructor({ id, title, cwd, engine, provider, model, threadId = null }) {
     this.id = id;
     this.title = title;
     this.cwd = cwd;
+    /** 'codex' | 'dsh' — which engine backs this conversation. */
+    this.engine = engine;
     this.provider = provider;
     this.model = model;
     this.createdAt = Date.now();
     this.lastUsedAt = Date.now();
     /** running | idle | stopped | failed */
     this.status = 'idle';
-    /** True once initialize succeeded and the runtime can accept prompts. */
+    /**
+     * True once the engine can accept prompts.
+     * dsh: initialize handshake finished. codex: no resident runtime, so this
+     * becomes true after the first successful spawn (there is nothing to
+     * handshake with before the first turn).
+     */
     this.ready = false;
-    /** Durable wire session id; also the runtime's own identity. */
-    this.sessionId = `termdesk-${id}-${Date.now().toString(36)}`;
+    /**
+     * Durable conversation handle.
+     * dsh: the SDK wire session id (also the runtime's identity).
+     * codex: the Codex thread id used for `exec resume`; null until the first
+     * `thread.started` event. `sessionId` keeps the same wire field name so
+     * clients do not need an engine-specific key.
+     */
+    this.sessionId = threadId ?? `termdesk-${id}-${Date.now().toString(36)}`;
+    /** Codex thread id (engine=codex only), kept separately for resume. */
+    this.threadId = threadId;
     this.events = [];
     this.seq = 0;
     this.lastError = null;
@@ -123,7 +317,8 @@ class Chat {
      * The user's optimistically-shown message awaiting the runtime's echo.
      *
      * Cleared once the runtime confirms it, so a later identical message from
-     * the user is not mistaken for the echo of this one.
+     * the user is not mistaken for the echo of this one. Only used on the DSH
+     * path, which echoes user messages back over the wire.
      */
     this.pendingUserEcho = null;
   }
@@ -143,11 +338,13 @@ class Chat {
       id: this.id,
       title: this.title,
       cwd: this.cwd,
+      engine: this.engine,
       provider: this.provider,
       model: this.model,
       status: this.status,
       ready: this.ready,
       sessionId: this.sessionId,
+      threadId: this.threadId,
       createdAt: this.createdAt,
       lastUsedAt: this.lastUsedAt,
       eventCount: this.events.length,
@@ -222,35 +419,54 @@ export class ChatManager {
     if (idle.length >= MAX_CHATS) this.dispose(idle[0], 'capacity');
   }
 
-  create({ cwd, provider, model, title }) {
+  create({ cwd, provider, model, title, engine }) {
+    const eng = engine == null || engine === '' ? 'dsh' : String(engine);
+    if (!CHAT_ENGINES.includes(eng)) {
+      return {
+        ok: false,
+        code: 'bad_engine',
+        message: `不支持的引擎 "${engine}"（可选：${CHAT_ENGINES.join(' / ')}）`,
+      };
+    }
     this.dropIdleChat();
     chatCounter += 1;
     const id = `c${chatCounter}`;
-    const route = defaultRoute();
+    const route = eng === 'dsh' ? defaultRoute() : { provider: null, model: null };
     const workdir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
     const chat = new Chat({
       id,
       title: (title && String(title).trim()) || '新对话',
       cwd: workdir,
+      engine: eng,
       provider: provider || route.provider,
       model: model || route.model,
     });
     this.chats.set(id, chat);
-    chat.push({ kind: 'local', role: 'engine', text: `会话已创建 · ${chat.cwd}` });
-    chat.push({
-      kind: 'local',
-      role: 'engine',
-      text: `模型 ${chat.provider} / ${chat.model}`,
-    });
-    return chat.summary();
+    chat.push({ kind: 'local', role: 'engine', text: `会话已创建 · ${chat.engine} · ${chat.cwd}` });
+    if (chat.provider || chat.model) {
+      chat.push({
+        kind: 'local',
+        role: 'engine',
+        text: `模型 ${chat.provider ?? '-'} / ${chat.model ?? '-'}`,
+      });
+    } else if (eng === 'codex') {
+      // No explicit route: Codex uses whatever its config.toml selects, which
+      // is the same surface codex.get / codex.apply manage.
+      chat.push({ kind: 'local', role: 'engine', text: '模型 随 Codex 配置（codex.get / codex.apply）' });
+    }
+    return { ok: true, chat: chat.summary() };
   }
 
   /**
    * Send one user message and start the turn.
    *
-   * Resolves as soon as the runtime accepts the prompt (a durable enqueue
+   * Resolves as soon as the engine accepts the prompt (a durable enqueue
    * receipt), not when the answer is done: the answer arrives as streamed
    * `chat.event` frames over the same socket the request came in on.
+   *
+   * Engine dispatch:
+   *   dsh   — resident SDK runtime, one `session/prompt` per turn.
+   *   codex — one `codex exec` (or `exec resume <thread_id>`) per turn.
    */
   async send(id, text) {
     const chat = this.chats.get(id);
@@ -266,12 +482,13 @@ export class ChatManager {
 
     chat.lastUsedAt = Date.now();
 
-    // Show the user's own message immediately, before the runtime answers.
-    // It is marked optimistic because the runtime echoes the same message back
-    // as a `user/message` event a moment later; without reconciling the two the
-    // user's own words would appear twice in the transcript.
+    // Show the user's own message immediately, before the engine answers.
+    // On the DSH path this is marked optimistic because the runtime echoes the
+    // same message back as a `user/message` event a moment later; without
+    // reconciling the two the user's own words would appear twice. Codex does
+    // not echo, so there is nothing to reconcile.
     const userSeq = chat.push({ kind: 'message', role: 'user', text: message, optimistic: true });
-    chat.pendingUserEcho = userSeq;
+    if (chat.engine === 'dsh') chat.pendingUserEcho = userSeq;
     if (chat.titleSource === 'prompt') {
       const firstLine = message.split(/\r?\n/)[0].slice(0, 60);
       if (firstLine.trim()) {
@@ -280,6 +497,14 @@ export class ChatManager {
       }
     }
 
+    if (chat.engine === 'codex') {
+      return this.sendCodex(chat, message, userSeq);
+    }
+    return this.sendDsh(chat, message, userSeq);
+  }
+
+  /** One turn on the resident DSH SDK runtime. */
+  async sendDsh(chat, message, userSeq) {
     try {
       await this.ensureRuntime(chat);
     } catch (err) {
@@ -312,11 +537,185 @@ export class ChatManager {
     return { ok: true, userSeq, messageId: receipt?.messageId ?? null, sessionId: chat.sessionId };
   }
 
-  /** Stop a chat: there is no wire cancel, so this disposes the runtime. */
+  /**
+   * One `codex exec` turn (or `exec resume` once the thread is known).
+   *
+   * Continuity is Codex's own: `thread.started` yields a thread id and every
+   * later turn resumes it. No transcript is re-fed.
+   */
+  async sendCodex(chat, message, userSeq) {
+    const codex = findCodex();
+    const args = buildCodexExecArgs({
+      prompt: message,
+      cwd: chat.cwd,
+      resumeThreadId: chat.threadId,
+      provider: chat.provider,
+      model: chat.model,
+    });
+
+    let child;
+    try {
+      child = spawn(codex, args, {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: chat.cwd,
+      });
+    } catch (err) {
+      chat.status = 'failed';
+      chat.lastError = String(err?.message ?? err);
+      chat.push({ kind: 'error', role: 'engine', text: `无法启动 Codex：${chat.lastError}` });
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+      return { ok: false, code: 'spawn_failed', message: chat.lastError, userSeq };
+    }
+
+    chat.child = child;
+    chat.ready = true;
+    chat.status = 'running';
+    this.emit({ event: 'chat.status', chatId: chat.id, status: 'running' });
+    // Codex never echoes the user message back, so the optimistic copy is
+    // already the authoritative one — clear the flag rather than leave the
+    // transcript looking "pending" forever.
+    userSeq.optimistic = false;
+    this.emitEvent(chat, userSeq);
+
+    const timer = setTimeout(() => {
+      if (chat.status !== 'running') return;
+      chat.push({ kind: 'error', role: 'engine', text: '回复超时（30 分钟）' });
+      chat.status = 'failed';
+      chat.lastError = 'turn timeout';
+      killProcessTree(child);
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'failed' });
+    }, PROMPT_TIMEOUT_MS);
+    timer.unref?.();
+
+    let buffer = '';
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      let nl;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (line.length === 0) continue;
+        this.handleCodexLine(chat, line);
+      }
+    });
+
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+      if (stderr.length > 8000) stderr = stderr.slice(-8000);
+    });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      chat.status = 'failed';
+      chat.lastError = err.message;
+      chat.push({ kind: 'error', role: 'engine', text: `Codex 启动失败：${err.message}` });
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'failed' });
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      chat.child = null;
+      if (chat.status === 'stopped') return; // cancelled in flight
+      chat.status = code === 0 ? 'idle' : 'failed';
+      chat.lastError = code === 0 ? null : (stderr.trim().split('\n').slice(-3).join('\n') || `退出码 ${code}`);
+      if (code !== 0) {
+        chat.push({ kind: 'error', role: 'engine', text: `Codex 退出异常（退出码 ${code}）` });
+      }
+      this.emit({
+        event: 'chat.turn',
+        chatId: chat.id,
+        state: code === 0 ? 'ended' : 'failed',
+      });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: chat.status });
+    });
+
+    return {
+      ok: true,
+      userSeq,
+      messageId: null,
+      // `thread.started` rewrites chat.sessionId to the Codex thread id, so a
+      // later chat.read / chat.sent reports the same handle resume will use.
+      // This receipt may still carry the placeholder if the event has not
+      // arrived yet; the durable id is always on the chat summary.
+      sessionId: chat.sessionId,
+    };
+  }
+
+  /** Translate one Codex JSONL line into the shared chat event vocabulary. */
+  handleCodexLine(chat, line) {
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      return; // Codex occasionally writes non-JSON noise; ignore it.
+    }
+
+    if (ev.type === 'thread.started' && ev.thread_id) {
+      chat.threadId = ev.thread_id;
+      // Keep the wire `sessionId` in step so a follow-up `chat.sent` reports
+      // the same handle the next resume will use.
+      chat.sessionId = ev.thread_id;
+    }
+    if (ev.type === 'turn.completed' && ev.usage) {
+      chat.usage = ev.usage;
+    }
+
+    const normalized = codexEventToChatEvent(ev);
+    if (normalized) {
+      // Streamed answer previews must be replaceable when the completed item
+      // arrives — same contract as the DSH `assistant/chunk` path.
+      if (normalized.kind === 'message' && normalized.streaming) {
+        this.discardPreviews(chat, 'message');
+        const record = chat.push(normalized);
+        chat.previews.push(record);
+        this.emitEvent(chat, record, { stream: true });
+        return;
+      }
+      if (normalized.kind === 'message' && !normalized.streaming) {
+        this.discardPreviews(chat, 'message');
+        this.pushAndEmit(chat, normalized);
+        return;
+      }
+      this.pushAndEmit(chat, normalized);
+      return;
+    }
+
+    if (process.env.TERMDESK_CHAT_DEBUG === '1') {
+      const item = ev.item;
+      const detail = item && typeof item === 'object'
+        ? `item.type=${item.type ?? '?'}`
+        : `type=${ev.type ?? '?'}`;
+      console.error(`[codex ${chat.id}] unmapped ${detail}`);
+    }
+  }
+
+  /**
+   * Stop the in-flight turn.
+   *
+   * dsh: there is no wire cancel, so this disposes the runtime (the
+   *   conversation itself ends — reported honestly, not as a soft abort).
+   * codex: the turn is one `codex exec` process, so killing it stops the
+   *   reply while the Codex thread stays resumable for the next message.
+   */
   cancel(id) {
     const chat = this.chats.get(id);
     if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
     if (chat.status !== 'running') return { ok: false, code: 'not_running', message: '当前没有进行中的回复' };
+
+    if (chat.engine === 'codex') {
+      chat.status = 'stopped';
+      killProcessTree(chat.child);
+      chat.child = null;
+      chat.push({ kind: 'error', role: 'engine', text: '已停止本轮回复' });
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'cancelled' });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'stopped' });
+      return { ok: true };
+    }
+
     this.dispose(chat, 'cancelled');
     chat.status = 'stopped';
     chat.push({ kind: 'error', role: 'engine', text: '已停止（DSH 协议无单轮取消，运行时已终止）' });
@@ -648,13 +1047,21 @@ export class ChatManager {
     }
   }
 
-  /** Terminate a chat's runtime and cancel its in-flight request. */
+  /** Terminate a chat's runtime/turn and cancel its in-flight request. */
   dispose(chat, _reason) {
     this.failPending(chat, new Error('会话已结束'));
     const child = chat.child;
     chat.child = null;
     chat.ready = false;
     if (!child || child.exitCode !== null) return;
+
+    if (chat.engine === 'codex') {
+      // One-shot exec process: kill the tree and the Codex thread remains
+      // resumable on disk for the next turn.
+      killProcessTree(child);
+      return;
+    }
+
     try {
       // Ask politely first: the runtime disposes its root context on `shutdown`.
       const id = String(chat.nextRpcId++);

@@ -1,4 +1,4 @@
-﻿# Build output
+# Build output
 android/build/
 android/app/build/
 android/.gradle/
@@ -34,3 +34,8 @@ desktop.ini
 
 # Diagnostic run output
 pc-agent/tools/*-out.txt
+
+# Local deployment notes and secrets - NEVER commit
+DEPLOYMENT.local.md
+*.local.md
+.local-notes/

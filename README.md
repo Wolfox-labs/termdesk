@@ -11,7 +11,7 @@
 人在外面、只有一部手机时，继续使用家里那台 Windows 电脑办公。不是远程桌面——手机屏幕小、
 流量贵——而是「把电脑当后台」：
 
-- **对话**：和电脑上的 AI 助手连续对话（原生会话，不是拼接历史）
+- **对话**：和电脑上的 AI 助手连续对话（统一对话管线，内核可选 codex / dsh，原生会话不是拼接历史）
 - **看状态**：CPU / 内存 / 磁盘 / 进程 / 服务
 - **收发文件**：浏览、上传、下载、就地编辑
 - **终端**：持久 PowerShell 会话
@@ -26,8 +26,8 @@
 └──────────────┘        │    ├─ 主机状态 / 进程 / 服务 │
                         │    ├─ 文件系统 + HTTP 传输   │
                         │    ├─ 持久 PowerShell 会话  │
-                        │    └─ 每对话一个 DSH 运行时 │
-┌──────────────┐        │                             │
+                        │    └─ 统一对话（内核可选）   │
+┌──────────────┐        │         codex / dsh         │
 │  手机浏览器  │◄──http─►│  DSH Web :3080              │
 └──────────────┘        └─────────────────────────────┘
         ▲                            ▲
@@ -35,15 +35,22 @@
              (PC 主动出站，零入站端口)
 ```
 
-### 为什么对话走 DSH SDK 而不是 headless
+### 一条对话管线，内核可选
 
-| 方案 | 会话延续 | 进度事件 |
-|---|---|---|
-| `dsh --profile headless "<task>"` | ❌ 一次性、无记忆 | ❌ |
-| `dsh --profile sdk`（stdio JSON-RPC） | ✅ 同 sessionId 真延续 | ✅ 流式 |
+产品上只有 `chat.*` 一条对话管线；建会话时用 `engine` 选内核。旧的 `ai.*`
+「任务」面已 **deprecated**，协议保留兼容，新能力一律进 `chat.*`。
 
-`chat.js` 为每个对话维持一个常驻 SDK 运行时进程，因此跟进追问是**真的续上同一会话**，
-而不是把历史拼进新进程的提示词里。
+| 内核 | 机制 | 会话延续 | 进度事件 |
+|---|---|---|---|
+| `engine=dsh`（默认） | 每对话一个常驻 `dsh --profile sdk` 运行时（stdio JSON-RPC） | ✅ 同 sessionId 真延续 | ✅ 流式 |
+| `engine=codex` | 每轮 `codex exec --json`，追问走 `codex exec resume <thread_id>` | ✅ Codex 原生 thread | ✅ JSONL 事件 |
+
+`chat.create` 可带 `engine` / `provider` / `model`；chat 列表与详情均带 `engine`。
+对话事件映射到同一套种类（`message` / `reasoning` / `tool` / `turn` 等），手机一套渲染。
+
+`chat.js` 为每个 dsh 对话维持一个常驻 SDK 运行时进程，因此跟进追问是**真的续上
+同一会话**，而不是把历史拼进新进程的提示词里；codex 对话则把 `thread_id` 交给
+Codex 自己的 resume 机制，同样不重喂历史。
 
 ## 目录
 
@@ -60,8 +67,8 @@ termdesk/
 │  ├─ src/files.js            文件操作（根目录隔离）
 │  ├─ src/transfer.js         HTTP 流式上传下载
 │  ├─ src/terminal.js         持久 shell 会话
-│  ├─ src/engines.js          Codex / DSH 一次性任务
-│  ├─ src/chat.js             DSH SDK 原生对话
+│  ├─ src/engines.js          codex/dsh 运行助手 + 已废弃的 ai.* 任务面
+│  ├─ src/chat.js             统一对话管线（engine=codex|dsh）
 │  ├─ src/sessions.js         磁盘历史会话（只读，双引擎）
 │  ├─ src/codexconfig.js      Codex provider 配置读写与回滚
 │  └─ tools/                  自检与诊断脚本（probes/ 为历史对照实验）
@@ -109,8 +116,9 @@ node tools/p2-e2e.js            # P2 真实链路
 node tools/p3-e2e.js            # P3 真实链路
 node tools/sessions-test.js     # 会话解析（双引擎）
 node tools/sessions-live.js     # 会话真实读取
-node tools/engines-test.js      # Codex / DSH 一次性任务
-node tools/chat-e2e.js          # 原生对话：流式、去重、会话延续
+node tools/chat-engine-test.js  # 统一对话管线静态检查（不调真实 LLM）
+node tools/engines-test.js      # Codex / DSH 一次性任务（ai.*，deprecated）
+node tools/chat-e2e.js          # 对话：流式、去重、会话延续（dsh 内核）
 ```
 
 公网通道的验证（需要隧道在跑）：
@@ -187,9 +195,13 @@ DSH 的 `/api` 有一道 Host/Origin 信任围栏：只接受 loopback、绑定�
 一帧一个 JSON 对象，均带 `type` 字段。首帧必须是 `auth`，否则以 `4401` 关闭。
 完整帧表见 [REQUIREMENTS.md](REQUIREMENTS.md) 第 5.3 节。
 
+统一对话入口是 `chat.*`：`chat.create` 可带 `engine: 'codex' | 'dsh'`（缺省
+`'dsh'`）以及 `provider` / `model`；chat 列表与详情均带 `engine`。`ai.*` 任务面
+已 deprecated，仅作协议兼容。
+
 > **坑**：`encodeFrame` 会把 payload 展开在 `type` 之后，因此 payload 里**不能再有
 > `type` 字段**。曾因引擎事件用 `type` 覆盖线帧类型，导致 `ai.finished` 永远收不到
-> 且没有任何报错。现引擎事件统一用 `event` 字段，并有回归断言守着。
+> 且没有任何报错。现引擎/对话事件统一用 `event` / `kind` 字段，并有回归断言守着。
 
 文件传输走同端口的 HTTP（`/upload`、`/download`），用 `Authorization: Bearer`
 携带同一令牌：整文件走 JSON base64 会让体积膨胀三分之一并把整个文件读进内存。
@@ -201,8 +213,11 @@ DSH 的 `/api` 有一道 Host/Origin 信任围栏：只接受 loopback、绑定�
   但常规命令、目录操作、查看输出都没问题。
 - **中断即重启 shell**：`Ctrl+C` 通过重建 PowerShell 进程实现，因此中断会丢失当前
   会话内的变量。这是为可预测性做的权衡（无法从外部打断阻塞的管道）。
-- **无单轮取消**：DSH SDK 协议没有 cancel 方法；`chat.cancel` 实际是终止该对话的
-  运行时（会话随之结束）。
+- **无单轮取消（dsh）**：DSH SDK 协议没有 cancel 方法；`chat.cancel` 对
+  `engine=dsh` 实际是终止该对话的运行时（会话随之结束）。`engine=codex` 可杀掉
+  当前回合进程，Codex thread 仍可继续 resume。
+- **`ai.*` 任务面已废弃**：协议保留兼容，语义已并入 `chat.*` 统一对话管线；
+  新客户端请用 `chat.create` + `engine`，不要新增对 `ai.submit` 的依赖。
 - **公网暴露面**：agent 具备任意命令执行与全盘文件权限。除配对 token 外，可设
   `TERMDESK_ACCESS_KEY` 作第二因子（HTTP 头 `X-TermDesk-Key` / WS `?access=`）；
   生产建议再叠 Cloudflare Access。详见 [REQUIREMENTS.md](REQUIREMENTS.md) §4.1。

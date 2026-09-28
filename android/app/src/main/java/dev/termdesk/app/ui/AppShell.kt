@@ -129,6 +129,16 @@ fun AppShell(
     sessions: List<SessionInfo>,
     recordedSession: SessionDetail?,
     onLoadChats: () -> Unit,
+    /**
+     * Request a new agent conversation. The optional string is a suggested
+     * working directory from the caller (chat index / drawer).
+     *
+     * Contract with ChatSection: ChatSection keeps calling `onCreateChat(cwd)`
+     * unchanged. This callback must open the new-chat picker ([NewChatSheet]),
+     * NOT create a chat directly — kernel (engine), model and cwd are explicit
+     * user choices. Preferred future signature if renamed:
+     * `onCreateChatRequested: (suggestedCwd: String?) -> Unit`.
+     */
     onCreateChat: (String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSendChat: (String, String) -> Unit,
@@ -401,6 +411,7 @@ private fun SectionBody(
     sessions: List<SessionInfo>,
     recordedSession: SessionDetail?,
     onLoadChats: () -> Unit,
+    // Opens NewChatSheet (suggested cwd); see the AppShell parameter docs.
     onCreateChat: (String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSendChat: (String, String) -> Unit,

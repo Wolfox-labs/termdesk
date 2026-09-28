@@ -7,6 +7,8 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,7 +22,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,6 +35,8 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Send
@@ -45,9 +51,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -238,14 +246,23 @@ private fun RecordedTranscript(session: SessionDetail) {
         )
         return
     }
+    // Fresh state per session so switching records always opens at the end.
+    val listState = key(session.engine, session.id) { rememberLazyListState() }
+    LaunchedEffect(session.engine, session.id) {
+        listState.scrollToBottomNow()
+    }
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
             start = 10.dp, end = 10.dp, top = 10.dp, bottom = 14.dp,
         ),
         verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        items(session.events, key = { it.hashCode() }) { event ->
+        itemsIndexed(
+            session.events,
+            key = { index, _ -> "ev-$index" },
+        ) { _, event ->
             ChatEventRow(
                 ChatEvent(
                     seq = 0,
@@ -465,16 +482,41 @@ private fun Conversation(
     onSend: (String, String) -> Unit,
     onCancel: (String) -> Unit,
 ) {
-    val listState = rememberLazyListState()
-    var draft by remember { mutableStateOf("") }
+    // Fresh state per chat: opening or switching a conversation always lands at
+    // its end, never at a leftover scroll offset from the previous one.
+    val listState = key(chat.id) { rememberLazyListState() }
+    var draft by remember(chat.id) { mutableStateOf("") }
+    // Follow the stream only while the user is already at (or has returned to)
+    // the bottom. Scrolling up hands control back to the reader immediately.
+    var stickToBottom by remember(chat.id) { mutableStateOf(true) }
+    var programmaticScroll by remember(chat.id) { mutableStateOf(false) }
 
-    // Follow the newest line as the answer streams in. Keyed on the last event
-    // so a growing answer keeps the view pinned, which is what a conversation
-    // should do; the user can still scroll away between updates.
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }
+            .collect { scrolling ->
+                if (scrolling && !programmaticScroll) {
+                    stickToBottom = listState.isNearBottom()
+                }
+            }
+    }
+
     val lastSeq = events.lastOrNull()?.seq ?: 0
     val lastLen = events.lastOrNull()?.text?.length ?: 0
-    LaunchedEffect(lastSeq, lastLen, events.size) {
-        if (events.isNotEmpty()) listState.animateScrollToItem(events.lastIndex)
+
+    // Open / switch: snap to the last item's bottom (not merely its top).
+    LaunchedEffect(chat.id) {
+        programmaticScroll = true
+        listState.scrollToBottomNow()
+        programmaticScroll = false
+        stickToBottom = true
+    }
+
+    // Stream follow: only when the reader is still parked at the end.
+    LaunchedEffect(chat.id, lastSeq, lastLen, events.size) {
+        if (events.isEmpty() || !stickToBottom) return@LaunchedEffect
+        programmaticScroll = true
+        listState.animateScrollToBottom()
+        programmaticScroll = false
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -600,6 +642,9 @@ private fun ChatEventRow(event: ChatEvent) {
         event.isCommand -> CommandLine(event)
         event.isError -> ErrorLine(event)
         event.isLocal || event.isEngineLog -> EngineNoteLine(event)
+        event.kind == "engine_plan" -> EngineOutputLine(event, label = "计划")
+        event.kind == "engine_summary" -> EngineOutputLine(event, label = "摘要")
+        event.kind == "usage" -> EngineOutputLine(event, label = "用量")
         event.hasText -> PlainLine(event)
         else -> Spacer(Modifier.height(0.dp))
     }
@@ -650,6 +695,7 @@ private fun ReasoningLine(event: ChatEvent) {
         label = "思考",
         text = event.text,
         accent = MaterialTheme.colorScheme.onSurfaceVariant,
+        streaming = event.streaming,
     )
 }
 
@@ -666,6 +712,7 @@ private fun ContextLine(event: ChatEvent) {
         label = "上下文 · $source",
         text = event.text,
         accent = Semantic.current.info,
+        streaming = event.streaming,
     )
 }
 
@@ -675,6 +722,7 @@ private fun ToolLine(event: ChatEvent) {
         label = if (event.kind == "tool") (event.name ?: "工具") else "工具结果",
         text = event.text,
         accent = Semantic.current.syntaxKeyword,
+        streaming = event.streaming,
     )
 }
 
@@ -688,6 +736,7 @@ private fun CommandLine(event: ChatEvent) {
         label = label,
         text = event.text,
         accent = Semantic.current.syntaxString,
+        streaming = event.streaming,
     )
 }
 
@@ -697,6 +746,18 @@ private fun ErrorLine(event: ChatEvent) {
         label = "错误",
         text = event.text,
         accent = MaterialTheme.colorScheme.error,
+        streaming = event.streaming,
+    )
+}
+
+/** Engine plan / summary / usage, shown verbatim and collapsed like other engine output. */
+@Composable
+private fun EngineOutputLine(event: ChatEvent, label: String) {
+    EngineBlock(
+        label = label,
+        text = event.text,
+        accent = Semantic.current.syntaxType,
+        streaming = event.streaming,
     )
 }
 
@@ -723,29 +784,78 @@ private fun PlainLine(event: ChatEvent) {
     )
 }
 
-/** Engine output: monospaced, indented, with a coloured rail and its own label. */
+/**
+ * Engine output: monospaced, indented, with a coloured rail and its own label.
+ *
+ * Collapsed by default so a long thinking trace or tool dump never buries the
+ * answer. The header is one summary line (label + line/character count) with an
+ * expand arrow; tapping it toggles the body. A streaming block stays open while
+ * it is still growing, and collapses again once the stream ends.
+ */
 @Composable
-private fun EngineBlock(label: String, text: String, accent: Color) {
-    Row(Modifier.fillMaxWidth()) {
-        Box(
-            Modifier
-                .width(2.dp)
-                .height(if (text.isBlank()) 14.dp else 18.dp)
-                .clip(RoundedCornerShape(1.dp))
-                .background(accent),
-        )
-        Spacer(Modifier.width(8.dp))
-        Column(Modifier.weight(1f)) {
+private fun EngineBlock(
+    label: String,
+    text: String,
+    accent: Color,
+    streaming: Boolean = false,
+) {
+    var expanded by remember { mutableStateOf(streaming) }
+    // The block that was watched live folds itself up when the stream ends.
+    LaunchedEffect(streaming) {
+        if (!streaming) expanded = false
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { expanded = !expanded }
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .width(2.dp)
+                    .height(16.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(accent),
+            )
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                imageVector = if (expanded) {
+                    Icons.Outlined.KeyboardArrowDown
+                } else {
+                    Icons.Outlined.KeyboardArrowRight
+                },
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = accent,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(4.dp))
             Text(
-                label,
+                engineSummaryLabel(label, text),
                 style = MaterialTheme.typography.labelSmall,
                 color = accent,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
-            if (text.isNotBlank()) {
-                Spacer(Modifier.height(2.dp))
+            if (streaming) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "生成中",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                )
+            }
+        }
+        if (expanded && text.isNotBlank()) {
+            Spacer(Modifier.height(2.dp))
+            Row(Modifier.fillMaxWidth()) {
+                Spacer(Modifier.width(20.dp))
                 Text(
                     text,
                     style = MaterialTheme.typography.bodySmall.copy(
@@ -753,10 +863,18 @@ private fun EngineBlock(label: String, text: String, accent: Color) {
                         fontSize = 12.5.sp,
                     ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
                 )
             }
         }
     }
+}
+
+/** One-line fold summary: label plus a size hint (lines when multi-line, else characters). */
+private fun engineSummaryLabel(label: String, text: String): String {
+    if (text.isBlank()) return label
+    val lines = text.count { it == '\n' } + 1
+    return if (lines > 1) "$label · $lines 行" else "$label · ${text.length} 字"
 }
 
 /**
@@ -811,6 +929,27 @@ private fun ChatDrawer(
     onClose: () -> Unit,
 ) {
     var expandedCwd by remember { mutableStateOf<String?>(null) }
+    var showAllForCwd by remember { mutableStateOf<String?>(null) }
+    var filter by remember { mutableStateOf("") }
+
+    val query = filter.trim()
+    val visibleChats = if (query.isEmpty()) {
+        chats
+    } else {
+        chats.filter {
+            it.title.contains(query, ignoreCase = true) ||
+                it.cwd.contains(query, ignoreCase = true) ||
+                workspaceShortName(it.cwd).contains(query, ignoreCase = true)
+        }
+    }
+    val visibleWorkspaces = if (query.isEmpty()) {
+        workspaces
+    } else {
+        workspaces.filter {
+            workspaceShortName(it.cwd).contains(query, ignoreCase = true) ||
+                it.cwd.contains(query, ignoreCase = true)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -841,6 +980,20 @@ private fun ChatDrawer(
             }
         }
 
+        OutlinedTextField(
+            value = filter,
+            onValueChange = { filter = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            placeholder = {
+                Text("筛选目录或会话", style = MaterialTheme.typography.labelSmall)
+            },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.labelSmall,
+            shape = RoundedCornerShape(8.dp),
+        )
+
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(
@@ -848,9 +1001,9 @@ private fun ChatDrawer(
             ),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            if (chats.isNotEmpty()) {
+            if (visibleChats.isNotEmpty()) {
                 item { DrawerHeading("进行中") }
-                items(chats, key = { "chat-${it.id}" }) { chat ->
+                items(visibleChats, key = { "chat-${it.id}" }) { chat ->
                     DrawerRow(
                         title = chat.title,
                         subtitle = chat.model.ifBlank { chat.cwd },
@@ -867,32 +1020,65 @@ private fun ChatDrawer(
             }
 
             item { DrawerHeading("工作目录") }
-            items(workspaces, key = { "ws-${it.cwd}" }) { ws ->
+            items(visibleWorkspaces, key = { "ws-${it.cwd}" }) { ws ->
                 val expanded = expandedCwd == ws.cwd
+                val wsSessions = sessions
+                    .asSequence()
+                    .filter { it.cwd == ws.cwd }
+                    .filter {
+                        query.isEmpty() ||
+                            sessionTitle(it).contains(query, ignoreCase = true) ||
+                            it.engine.contains(query, ignoreCase = true)
+                    }
+                    .sortedByDescending { it.updatedAt }
+                    .toList()
+                val showAll = showAllForCwd == ws.cwd
+                // A filter should surface every match, not just the preview head.
+                val visibleSessions = if (showAll || query.isNotEmpty()) {
+                    wsSessions
+                } else {
+                    wsSessions.take(WORKSPACE_SESSION_PREVIEW)
+                }
+                val hiddenCount = (wsSessions.size - visibleSessions.size).coerceAtLeast(0)
+
                 Column {
-                    DrawerRow(
-                        title = ws.cwd,
-                        subtitle = "${ws.count} 个会话 · ${ws.engines.joinToString("+")}",
-                        selected = false,
-                        icon = true,
+                    WorkspaceRow(
+                        name = workspaceShortName(ws.cwd),
+                        count = ws.count,
+                        expanded = expanded,
                         onClick = {
                             expandedCwd = if (expanded) null else ws.cwd
                             if (!expanded) onLoadSessions()
                         },
                     )
                     if (expanded) {
-                        sessions
-                            .filter { it.cwd == ws.cwd }
-                            .take(60)
-                            .forEach { session ->
-                                DrawerRow(
-                                    title = sessionTitle(session),
-                                    subtitle = "${session.engine} · ${formatChatTime(session.updatedAt)}",
-                                    selected = false,
-                                    indented = true,
-                                    onClick = { onOpenSession(session) },
-                                )
-                            }
+                        if (wsSessions.isEmpty()) {
+                            Text(
+                                "暂无会话",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 28.dp, top = 2.dp, bottom = 4.dp),
+                            )
+                        }
+                        visibleSessions.forEach { session ->
+                            DrawerRow(
+                                title = sessionTitle(session),
+                                subtitle = formatRelativeTime(session.updatedAt),
+                                selected = false,
+                                indented = true,
+                                onClick = { onOpenSession(session) },
+                            )
+                        }
+                        if (hiddenCount > 0) {
+                            DrawerRow(
+                                title = "展开其余 $hiddenCount 个会话",
+                                subtitle = null,
+                                selected = false,
+                                indented = true,
+                                accent = MaterialTheme.colorScheme.primary,
+                                onClick = { showAllForCwd = ws.cwd },
+                            )
+                        }
                     }
                 }
             }
@@ -903,7 +1089,7 @@ private fun ChatDrawer(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(9.dp))
-                        .clickable { onCreateChat(workspaces.firstOrNull()?.cwd ?: "") }
+                        .clickable { onCreateChat(expandedCwd ?: workspaces.firstOrNull()?.cwd ?: "") }
                         .padding(horizontal = 10.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -921,6 +1107,59 @@ private fun ChatDrawer(
     }
 }
 
+/** How many sessions a workspace shows before offering "展开其余 N 个会话". */
+private const val WORKSPACE_SESSION_PREVIEW = 5
+
+@Composable
+private fun WorkspaceRow(
+    name: String,
+    count: Int,
+    expanded: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(9.dp))
+            .clickable(onClick = onClick)
+            .padding(start = 10.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Outlined.FolderOpen,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(15.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                name,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                "$count 个会话",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+        Icon(
+            imageVector = if (expanded) {
+                Icons.Outlined.KeyboardArrowDown
+            } else {
+                Icons.Outlined.KeyboardArrowRight
+            },
+            contentDescription = if (expanded) "收起" else "展开",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp),
+        )
+    }
+}
+
 @Composable
 private fun DrawerHeading(text: String) {
     Text(
@@ -935,12 +1174,13 @@ private fun DrawerHeading(text: String) {
 @Composable
 private fun DrawerRow(
     title: String,
-    subtitle: String,
+    subtitle: String?,
     selected: Boolean,
     onClick: () -> Unit,
     dot: Color? = null,
     icon: Boolean = false,
     indented: Boolean = false,
+    accent: Color? = null,
 ) {
     Row(
         modifier = Modifier
@@ -959,6 +1199,12 @@ private fun DrawerRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         when {
+            accent != null -> Box(
+                Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(accent),
+            )
             dot != null -> Box(
                 Modifier
                     .size(7.dp)
@@ -980,16 +1226,21 @@ private fun DrawerRow(
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                color = if (selected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurface,
+                color = when {
+                    accent != null -> accent
+                    selected -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurface
+                },
             )
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
@@ -999,13 +1250,59 @@ private fun sessionTitle(session: SessionInfo): String =
     session.title?.takeIf { it.isNotBlank() } ?: session.id.take(18)
 
 /**
+ * Scroll so the last item's bottom edge sits at the viewport bottom.
+ *
+ * `animateScrollToItem` only pins the item's top, which leaves a tall final
+ * message cut off — the opposite of what opening a conversation should do.
+ */
+private suspend fun LazyListState.animateScrollToBottom() {
+    val lastIndex = layoutInfo.totalItemsCount - 1
+    if (lastIndex < 0) return
+    animateScrollToItem(lastIndex)
+    alignLastItemBottom(animated = true)
+}
+
+/** Same as [animateScrollToBottom], but without the animation — used when a chat opens. */
+private suspend fun LazyListState.scrollToBottomNow() {
+    val lastIndex = layoutInfo.totalItemsCount - 1
+    if (lastIndex < 0) return
+    scrollToItem(lastIndex)
+    alignLastItemBottom(animated = false)
+}
+
+private suspend fun LazyListState.alignLastItemBottom(animated: Boolean) {
+    val info = layoutInfo
+    val last = info.visibleItemsInfo.lastOrNull { it.index == info.totalItemsCount - 1 }
+        ?: info.visibleItemsInfo.lastOrNull()
+        ?: return
+    val remaining = (last.offset + last.size) - info.viewportEndOffset
+    if (remaining <= 0f) return
+    if (animated) animateScrollBy(remaining.toFloat()) else scrollBy(remaining.toFloat())
+}
+
+/** True when the list end is within [thresholdPx] of the viewport bottom. */
+private fun LazyListState.isNearBottom(thresholdPx: Int = 160): Boolean {
+    val info = layoutInfo
+    val last = info.visibleItemsInfo.lastOrNull() ?: return true
+    val remaining = (last.offset + last.size) - info.viewportEndOffset
+    return remaining <= thresholdPx
+}
+
+/** Short display name for a working directory: its last meaningful path segment. */
+private fun workspaceShortName(cwd: String): String {
+    val normalized = cwd.replace('\\', '/').trimEnd('/')
+    if (normalized.isBlank()) return cwd.ifBlank { "未命名" }
+    return normalized.substringAfterLast('/').ifBlank { normalized }
+}
+
+/**
  * Format an ISO-8601 timestamp for the drawer.
  *
  * `javax.xml.bind` is not on Android, so the portable parsers are tried in
  * order of how much of the timestamp they need.
  */
-private fun formatChatTime(iso: String?): String {
-    if (iso.isNullOrBlank()) return "—"
+private fun parseIsoDate(iso: String?): Date? {
+    if (iso.isNullOrBlank()) return null
     val patterns = listOf(
         "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
         "yyyy-MM-dd'T'HH:mm:ssXXX",
@@ -1013,16 +1310,37 @@ private fun formatChatTime(iso: String?): String {
         "yyyy-MM-dd'T'HH:mm:ss'Z'",
     )
     for (pattern in patterns) {
-        var formatted: String? = null
-        runCatching {
-            val parser = SimpleDateFormat(pattern, Locale.US).apply { isLenient = true }
-            val date = parser.parse(iso)
-            if (date != null) formatted = SimpleDateFormat("MM-dd HH:mm", Locale.US).format(date)
-        }
-        if (formatted != null) return formatted!!
+        val parsed = runCatching {
+            SimpleDateFormat(pattern, Locale.US).apply { isLenient = true }.parse(iso)
+        }.getOrNull()
+        if (parsed != null) return parsed
     }
+    return null
+}
+
+private fun formatChatTime(iso: String?): String {
+    val date = parseIsoDate(iso)
+    if (date != null) return SimpleDateFormat("MM-dd HH:mm", Locale.US).format(date)
     // Last resort: show the date part rather than nothing.
+    if (iso.isNullOrBlank()) return "—"
     return iso.take(16).replace('T', ' ')
+}
+
+/** "刚刚 / 12 分钟前 / 3 小时前 / 2 天前 / MM-dd" — the drawer's session timestamps. */
+private fun formatRelativeTime(iso: String?): String {
+    val date = parseIsoDate(iso) ?: return formatChatTime(iso)
+    val diff = System.currentTimeMillis() - date.time
+    if (diff < 0) return formatChatTime(iso)
+    val minute = 60_000L
+    val hour = 60 * minute
+    val day = 24 * hour
+    return when {
+        diff < minute -> "刚刚"
+        diff < hour -> "${diff / minute} 分钟前"
+        diff < day -> "${diff / hour} 小时前"
+        diff < 7 * day -> "${diff / day} 天前"
+        else -> SimpleDateFormat("MM-dd", Locale.US).format(date)
+    }
 }
 
 private fun formatChatTime(epochMs: Long): String {

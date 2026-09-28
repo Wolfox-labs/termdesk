@@ -411,10 +411,21 @@ class AgentClient(
      * A chat holds a real long-lived runtime on the PC, so creating one is not
      * free (it will spawn a harness process on first send). [title] is only a
      * local label; the first message replaces it.
+     *
+     * [engine] is the kernel that will drive the chat (`codex` or `dsh`).
+     * The new-chat UI requires an explicit choice; when omitted the agent
+     * falls back to its own default, which is not the product behaviour.
      */
-    fun createChat(cwd: String?, provider: String? = null, model: String? = null, title: String? = null) {
+    fun createChat(
+        cwd: String?,
+        engine: String? = null,
+        provider: String? = null,
+        model: String? = null,
+        title: String? = null,
+    ) {
         val frame = JSONObject().put("type", "chat.create")
         if (!cwd.isNullOrBlank()) frame.put("cwd", cwd)
+        if (!engine.isNullOrBlank()) frame.put("engine", engine)
         if (!provider.isNullOrBlank()) frame.put("provider", provider)
         if (!model.isNullOrBlank()) frame.put("model", model)
         if (!title.isNullOrBlank()) frame.put("title", title)

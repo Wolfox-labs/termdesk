@@ -283,6 +283,11 @@ export function createFrameHandler(ctx) {
       }
 
       // ---- P4: AI engines ----
+      //
+      // @deprecated The `ai.*` task pipeline is kept for wire compatibility
+      // only. The unified conversation entry is `chat.*` below: create a chat
+      // with `engine: 'codex' | 'dsh'` and send turns on it. Do not add new
+      // features here.
 
       case C2S.AI_ENGINES:
         send(S2C.AI_ENGINES, { engines: await engines.probeEngines() });
@@ -456,25 +461,40 @@ export function createFrameHandler(ctx) {
         break;
       }
 
-      // ---- Live chat over the DSH SDK runtime ----
+      // ---- Unified chat pipeline (engine = dsh | codex) ----
       //
-      // Unlike the one-shot `ai.*` engines, a chat holds a real long-lived
-      // session: one DSH SDK runtime process per chat, so the conversation has
-      // genuine continuity instead of a re-fed transcript.
+      // This is the product path for talking to an AI on the machine. Each
+      // chat holds a real multi-turn conversation:
+      //   engine=dsh   — one resident DSH SDK runtime per chat.
+      //   engine=codex — `codex exec` turns continued via `exec resume`
+      //                  <thread_id> (the Codex-native thread, not a re-fed
+      //                  transcript).
+      // The one-shot `ai.*` tasks above are the deprecated legacy surface.
 
       case C2S.CHAT_LIST:
         send(S2C.CHATS, { chats: chats.list() });
         break;
 
       case C2S.CHAT_CREATE: {
-        const created = chats.create({
+        const result = chats.create({
           cwd: frame.cwd,
           provider: frame.provider,
           model: frame.model,
           title: frame.title,
+          engine: frame.engine,
         });
-        send(S2C.CHAT, created);
-        send(S2C.CHATS, { chats: chats.list() });
+        if (result.ok) {
+          send(S2C.CHAT, result.chat);
+          send(S2C.CHATS, { chats: chats.list() });
+        } else {
+          send(S2C.ACTION_RESULT, {
+            action: 'chat.create',
+            target: frame.engine ?? '',
+            ok: false,
+            code: result.code,
+            message: result.message,
+          });
+        }
         break;
       }
 
