@@ -17,7 +17,9 @@ const PORT = Number(process.env.TERMDESK_TEST_PORT || 7442);
 const token = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
 
 // Confine the test to a scratch directory so nothing real is touched.
-const SANDBOX = path.join(os.tmpdir(), `termdesk-test-${Date.now()}`);
+// Keep it inside the repo work tree (`.tmp/`, gitignored) rather than the OS
+// temp dir, so a test run never writes outside the project folder.
+const SANDBOX = path.join(__dirname, '..', '..', '.tmp', `termdesk-test-${Date.now()}`);
 fs.mkdirSync(SANDBOX, { recursive: true });
 
 const results = [];

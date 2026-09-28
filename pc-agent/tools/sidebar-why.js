@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Why is the left sidebar's collapse button zero-sized once the sidebar is open?
  *
  * sidebar-open-check.js proved the button exists with a 0x0 rect at phone width,

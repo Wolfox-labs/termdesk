@@ -3,7 +3,7 @@
  *
  * Windows has no usable PTY from Node without native modules, so this drives a
  * long-lived PowerShell process over pipes with a JSON-lines protocol. That
- * design was chosen after measuring alternatives (see tools/pty-probe*.js);
+ * design was chosen after measuring alternatives (see tools/probes/pty-probe*.js);
  * the constraints it satisfies are:
  *
  *   - state persists between commands (variables, functions, cwd, env);

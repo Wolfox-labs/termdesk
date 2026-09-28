@@ -1,0 +1,11 @@
+# dsh-sidebar-unhide — restore the left-sidebar collapse button in a plain browser.
+#
+# Why: dsh-tauri injects `display:none !important` on
+#   button[aria-label="收起侧边栏"], button[aria-label="Collapse sidebar"]
+# because the Tauri desktop shell owns that toggle via postMessage
+# `dsh://sidebar:toggle`. In a phone browser there is no shell, so the button
+# must stay visible. This client plugin re-shows it only when no Tauri shell
+# is present.
+- insert:
+    - id: sidebar-unhide
+      name: dsh-sidebar-unhide

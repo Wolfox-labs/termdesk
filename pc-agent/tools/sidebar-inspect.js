@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Inspect the DSH sidebar at phone width, in a real browser, without a
  * headless-automation dependency.
  *

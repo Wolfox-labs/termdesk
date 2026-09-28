@@ -26,39 +26,17 @@ import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
-/** What the UI needs to know about the link to the PC. */
-sealed interface LinkState {
-    data object Idle : LinkState
-    data object Connecting : LinkState
-    data class Connected(val hostname: String) : LinkState
-    data class Failed(val reason: String) : LinkState
-}
-
-/** Progress of an upload or download. [fraction] is 0..1, or 0 when unknown. */
-data class TransferState(
-    val fileName: String,
-    val fraction: Float,
-    val label: String,
-)
-
-/** One rendered terminal line. */
-data class TermLine(val text: String, val stream: Stream) {
-    enum class Stream {
-        INPUT, STDOUT, STDERR, SYSTEM;
-
-        companion object {
-            fun fromWire(value: String): Stream = when (value) {
-                "stdout" -> STDOUT
-                "stderr" -> STDERR
-                "system" -> SYSTEM
-                else -> STDOUT
-            }
-        }
-    }
-}
-
 /** Keeps the retained terminal scrollback bounded on the phone. */
 private const val MAX_TERM_LINES = 1500
+
+/** Above this size the upload switches to a chunked session (P5-4). */
+private const val SINGLE_SHOT_LIMIT = 32L * 1024 * 1024
+
+/**
+ * Per-request body size for chunked uploads. Must stay under the Cloudflare
+ * free-tier 100 MB single-request cap; 4 MB also keeps memory use flat on a phone.
+ */
+private const val CHUNK_BYTES = 4L * 1024 * 1024
 
 /**
  * Owns the WebSocket connection to the TermDesk PC agent.
@@ -599,7 +577,14 @@ class AgentClient(
         }
     }
 
-    /** Upload a phone file to the given remote directory. */
+    /**
+     * Upload a phone file to the given remote directory.
+     *
+     * Small files go as one POST. Anything above [SINGLE_SHOT_LIMIT] opens a
+     * chunked session so each request body stays under the Cloudflare free-tier
+     * cap (100 MB) and the phone can stream from a content URI instead of
+     * holding the whole file in RAM.
+     */
     fun uploadFile(uri: Uri, remoteDir: String) {
         val base = httpBaseUrl()
         val tok = lastToken
@@ -617,18 +602,12 @@ class AgentClient(
             val displayName = queryDisplayName(resolver, uri) ?: "upload.bin"
             _transfer.value = TransferState(displayName, 0f, "准备上传…")
             runCatching {
-                val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: error("cannot open selected file")
                 val remotePath = remoteDir.trimEnd('\\', '/') + "\\" + displayName
-                val encoded = URLEncoder.encode(remotePath, "UTF-8")
-                val body = bytes.toRequestBody("application/octet-stream".toMediaType())
-                val request = Request.Builder()
-                    .url("$base/upload?path=$encoded&overwrite=1")
-                    .header("Authorization", "Bearer $tok")
-                    .post(body)
-                    .build()
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) error("HTTP ${response.code}")
+                val size = querySize(resolver, uri)
+                if (size != null && size > SINGLE_SHOT_LIMIT) {
+                    uploadChunked(base, tok, resolver, uri, remotePath, displayName, size)
+                } else {
+                    uploadSingleShot(base, tok, resolver, uri, remotePath, displayName)
                 }
                 remotePath
             }.onSuccess { remotePath ->
@@ -649,6 +628,103 @@ class AgentClient(
         }
     }
 
+    /** One-shot POST. Fine up to a few tens of MB; larger files use [uploadChunked]. */
+    private fun uploadSingleShot(
+        base: String,
+        tok: String,
+        resolver: ContentResolver,
+        uri: Uri,
+        remotePath: String,
+        displayName: String,
+    ) {
+        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: error("cannot open selected file")
+        val encoded = URLEncoder.encode(remotePath, "UTF-8")
+        val body = bytes.toRequestBody("application/octet-stream".toMediaType())
+        val request = Request.Builder()
+            .url("$base/upload?path=$encoded&overwrite=1")
+            .header("Authorization", "Bearer $tok")
+            .post(body)
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) error("HTTP ${response.code}")
+        }
+        _transfer.value = TransferState(displayName, 1f, "上传完成")
+    }
+
+    /**
+     * Chunked upload (P5-4): open a session, PUT each chunk at its offset, commit.
+     * Every request body is at most [CHUNK_BYTES], which stays under the
+     * Cloudflare free-tier 100 MB single-request limit.
+     */
+    private fun uploadChunked(
+        base: String,
+        tok: String,
+        resolver: ContentResolver,
+        uri: Uri,
+        remotePath: String,
+        displayName: String,
+        size: Long,
+    ) {
+        val encodedPath = URLEncoder.encode(remotePath, "UTF-8")
+        val openReq = Request.Builder()
+            .url("$base/upload/session?path=$encodedPath&size=$size&chunkSize=$CHUNK_BYTES&overwrite=1")
+            .header("Authorization", "Bearer $tok")
+            .post(ByteArray(0).toRequestBody(null))
+            .build()
+        val opened = client.newCall(openReq).execute().use { response ->
+            if (!response.isSuccessful) error("HTTP ${response.code} 开启分片会话失败")
+            JSONObject(response.body?.string() ?: "{}")
+        }
+        val uploadId = opened.optString("uploadId")
+        if (uploadId.isEmpty()) error("会话响应缺少 uploadId")
+        val chunkSize = opened.optLong("chunkSize", CHUNK_BYTES)
+        val totalChunks = opened.optInt("totalChunks", 0)
+
+        var index = 0
+        var sent = 0L
+        resolver.openInputStream(uri)?.use { input ->
+            val buf = ByteArray(chunkSize.toInt().coerceAtMost(CHUNK_BYTES.toInt()))
+            while (sent < size) {
+                val want = minOf(buf.size.toLong(), size - sent).toInt()
+                var filled = 0
+                while (filled < want) {
+                    val n = input.read(buf, filled, want - filled)
+                    if (n < 0) break
+                    filled += n
+                }
+                if (filled <= 0) error("输入流提前结束")
+                val slice = buf.copyOf(filled)
+                val putReq = Request.Builder()
+                    .url("$base/upload/session?uploadId=$uploadId&index=$index")
+                    .header("Authorization", "Bearer $tok")
+                    .put(slice.toRequestBody("application/octet-stream".toMediaType()))
+                    .build()
+                client.newCall(putReq).execute().use { response ->
+                    if (!response.isSuccessful) error("HTTP ${response.code} 分片 $index 失败")
+                }
+                sent += filled
+                index += 1
+                if (totalChunks > 0) {
+                    _transfer.value = TransferState(
+                        displayName,
+                        (sent.toFloat() / size).coerceIn(0f, 1f),
+                        "上传中 $index/$totalChunks",
+                    )
+                }
+            }
+        } ?: error("cannot open selected file")
+
+        val commitReq = Request.Builder()
+            .url("$base/upload/session/commit?uploadId=$uploadId")
+            .header("Authorization", "Bearer $tok")
+            .post(ByteArray(0).toRequestBody(null))
+            .build()
+        client.newCall(commitReq).execute().use { response ->
+            if (!response.isSuccessful) error("HTTP ${response.code} 提交失败")
+        }
+    }
+
     private fun queryDisplayName(resolver: ContentResolver, uri: Uri): String? {
         return runCatching {
             resolver.query(uri, null, null, null, null)?.use { cursor ->
@@ -656,6 +732,16 @@ class AgentClient(
                 if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
             }
         }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/')
+    }
+
+    /** File size when the content resolver exposes one; null means "unknown". */
+    private fun querySize(resolver: ContentResolver, uri: Uri): Long? {
+        return runCatching {
+            resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                val idx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (idx >= 0 && cursor.moveToFirst() && !cursor.isNull(idx)) cursor.getLong(idx) else null
+            }
+        }.getOrNull()
     }
 
     /** App-private external directory: no storage permission required. */

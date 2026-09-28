@@ -27,7 +27,6 @@ export const C2S = {
   FS_ROOTS: 'fs.roots',
   TERM_OPEN: 'term.open',
   TERM_RUN: 'term.run',
-  TERM_INPUT: 'term.input',
   TERM_INTERRUPT: 'term.interrupt',
   TERM_CLOSE: 'term.close',
   TERM_LIST: 'term.list',

@@ -1,4 +1,4 @@
-package dev.termdesk.app.ui
+﻿package dev.termdesk.app.ui
 
 import android.app.Application
 import android.content.Context

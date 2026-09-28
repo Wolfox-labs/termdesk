@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Dump the raw stylesheet text that owns the sidebar collapse button's classes.
  *
  * Earlier attempts failed in two ways: the class prefix `dshp-` appears in no

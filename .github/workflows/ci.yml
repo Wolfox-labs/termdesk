@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pc-agent:
+    name: pc-agent static checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pc-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Syntax + protocol consistency
+        run: npm test
+
+  android-lint:
+    name: android sources present
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure Kotlin sources parse as UTF-8
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+          root = pathlib.Path('android/app/src')
+          bad = []
+          for p in root.rglob('*.kt'):
+              try:
+                  p.read_text(encoding='utf-8')
+              except Exception as e:
+                  bad.append(f'{p}: {e}')
+          if bad:
+              print('\n'.join(bad))
+              sys.exit(1)
+          print('ok')
+          PY

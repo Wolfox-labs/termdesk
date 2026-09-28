@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Reproduce the phone sidebar problem: open the left sidebar at phone width,
  * then find out whether a control that closes it is actually reachable.
  *

@@ -50,7 +50,8 @@
 ```
 termdesk/
 ├─ pc-agent/                电脑端代理（Node，无原生依赖）
-│  ├─ src/server.js           WebSocket 服务 + 健康检查 + 传输端点
+│  ├─ src/server.js           WebSocket 服务 + 连接生命周期
+│  ├─ src/handlers.js         鉴权后帧分发
 │  ├─ src/protocol.js         线协议 v1
 │  ├─ src/auth.js             配对令牌
 │  ├─ src/system.js           主机指标
@@ -63,8 +64,9 @@ termdesk/
 │  ├─ src/chat.js             DSH SDK 原生对话
 │  ├─ src/sessions.js         磁盘历史会话（只读，双引擎）
 │  ├─ src/codexconfig.js      Codex provider 配置读写与回滚
-│  └─ tools/                  自检与诊断脚本
+│  └─ tools/                  自检与诊断脚本（probes/ 为历史对照实验）
 ├─ android/                 手机端 App（Kotlin + Jetpack Compose）
+├─ REQUIREMENTS.md          需求与功能单 / 交接说明
 └─ tools/                   cloudflared 二进制（不纳入版本控制）
 ```
 
@@ -201,10 +203,17 @@ DSH 的 `/api` 有一道 Host/Origin 信任围栏：只接受 loopback、绑定�
   会话内的变量。这是为可预测性做的权衡（无法从外部打断阻塞的管道）。
 - **无单轮取消**：DSH SDK 协议没有 cancel 方法；`chat.cancel` 实际是终止该对话的
   运行时（会话随之结束）。
-- **公网暴露面**：agent 具备任意命令执行与全盘文件权限，目前只靠 43 字符 token
-  保护。生产使用建议叠加 Cloudflare Access。
-- **大文件**：Cloudflare 免费版单请求体上限 100 MB，超限需分片。
+- **公网暴露面**：agent 具备任意命令执行与全盘文件权限。除配对 token 外，可设
+  `TERMDESK_ACCESS_KEY` 作第二因子（HTTP 头 `X-TermDesk-Key` / WS `?access=`）；
+  生产建议再叠 Cloudflare Access。详见 [REQUIREMENTS.md](REQUIREMENTS.md) §4.1。
+- **大文件**：Cloudflare 免费版单请求体上限 100 MB。文件传输已支持分片会话
+  （`POST /upload/session` → `PUT …&index=N` → `POST …/commit`），单请求体
+  4–8 MB，手机端 >32 MB 自动走分片，可断点续传（`GET /upload/session`）。
 - **左右分栏在手机上不成立**：400dp 宽 + 145% 字体缩放下，固定三栏会把主区域挤到
   60dp。因此改成「图标导航轨 + 全宽主区 + 滑出式面板」。
 - **UI 不做二次概括**：引擎自己的输出（推理、工具调用、注入上下文、压缩摘要）
   原样呈现并加标签，不生成"结果卡片"。
+
+## License
+
+MIT，见 [LICENSE](./LICENSE)。

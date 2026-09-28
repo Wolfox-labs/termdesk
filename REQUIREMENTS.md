@@ -106,16 +106,45 @@ Windows 电脑办公。要求不是"远程桌面"（手机屏幕小、流量贵�
 
 | 编号 | 事项 | 说明 | 状态 |
 |---|---|---|---|
-| **P5-1** | **修复：手机浏览器里左栏收不回去** | 见第四节，**已定位到根因，未修** | 🔴 |
+| **P5-1** | **修复：手机浏览器里左栏收不回去** | 见第四节；插件源码已落在 `plugins/sidebar-unhide/`，**待安装到 `~/.dsh/local-plugins` 并真机验证** | 🟡 |
 | P5-2 | 开机自启 | agent 与隧道目前都不自启；使用者明确表示**暂不需要** | ⏸ |
-| P5-3 | 公网访问加固 | 当前只有 43 字符 token 一道防线；建议上 Cloudflare Access | ⏸ |
-| P5-4 | 大文件上传 | Cloudflare 免费版单请求体 100 MB 上限，超限需分片 | ⏸ |
+| P5-3 | 公网访问加固 | 当前只有 43 字符 token 一道防线；建议上 Cloudflare Access | 🟡 代码侧第二因子 `TERMDESK_ACCESS_KEY` 已实现（`tools/access-key-test.js` 7/7）；Cloudflare Access 部署见 4.1 |
+| P5-4 | 大文件上传 | Cloudflare 免费版单请求体 100 MB 上限，超限需分片 | ✅ 分片会话已实现（`/upload/session`），Android 端 >32MB 自动走分片；`tools/upload-chunk-test.js` 11/11 |
 | P5-5 | 娱乐功能 | 独立闲聊 + 宠物（使用者提过，未细化） | ⏸ |
 | P5-6 | 真机验证 | Android 对话页尚未在真机上跑过完整流程 | 🔴 |
 
 ---
 
-## 四、P5-1 缺陷详述（已定位，未修复）
+## 四、待办详述
+
+### 4.1 P5-3 公网访问加固
+
+**代码侧（已实现）**：设置 `TERMDESK_ACCESS_KEY` 后，`/healthz`、`/upload*`、
+`/download` 与 WebSocket 升级都必须同时出示：
+
+| 通道 | 携带方式 |
+|---|---|
+| HTTP | 头 `X-TermDesk-Key: <key>` 或查询 `?access=<key>` |
+| WebSocket | 升级 URL `?access=<key>` |
+
+配对 token 仍是主凭证；access key 是公网暴露时的第二道闸。不设则行为不变
+（局域网 / Tailscale 免配置）。
+
+**部署侧（建议，未实施）**：在 Cloudflare Zero Trust 给
+`term.<domain>` / `dsh.<domain>` 挂 [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access/)，
+用邮箱 OTP 或 GitHub 登录做身份闸，再叠加 agent 自身的 token。这样 43 字符
+token 不再是唯一防线。
+
+```powershell
+# 启用第二因子
+$env:TERMDESK_ACCESS_KEY = "<long random>"
+node src/server.js
+# 手机 App 连接时：ws://host:7420?access=<long random>
+```
+
+自检：`node tools/access-key-test.js`（7/7）。
+
+### 4.2 P5-1 缺陷详述
 
 ### 现象
 手机浏览器打开 `https://dsh.example.com/`，左侧栏展开后**没有任何方式收起**，
@@ -176,19 +205,29 @@ button[aria-label="收起侧边栏"], button[aria-label="Collapse sidebar"]   [r
    `@deepseek-ai/dsh-client-ui-sidebar`，但已被 `dsh-tauri-panel` **替换**成一个
    结构相同、类名前缀为 `dshp-` 的版本。
 
-### 建议修法（未实施）
+### 修法（源码已实现，待安装验证）
 
 在 `~/.dsh/cordis.patch.yml`（home 层，桌面 App 永不覆盖）里 `insert` 一个小
 client 插件，注入一条覆盖规则，**仅在检测不到 Tauri 外壳时**还原该按钮：
 
 ```css
-/* 伪代码：仅当 window.parent === window 且无 dsh-desktop 消息源时生效 */
+button.dshp-panel__toggle[aria-label="收起侧边栏"],
+button.dshp-panel__toggle[aria-label="Collapse sidebar"],
 button[aria-label="收起侧边栏"],
-button[aria-label="Collapse sidebar"] { display: inline-flex !important; }
+button[aria-label="Collapse sidebar"] {
+  display: inline-flex !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
 ```
 
-**注意**：本仓库已开始搭建该插件（`~/.dsh/sidebar-unhide/`），但**尚未完成、
-尚未验证**。`package.json` 已写，`index.mjs` / `client.mjs` 尚未实现。
+Tauri 检测：`window.__TAURI__` / `__TAURI_INTERNALS__` / `__TAURI_IPC__` 任一存在，
+或 `window.parent !== window`（被外壳 iframe 包着）时**不注入**，避免和桌面壳抢按钮。
+
+**插件源码在本仓库 [`plugins/sidebar-unhide/`](plugins/sidebar-unhide/)**，含
+`package.json` / `cordis.patch.yml` / `lib/client.js` / 静态自检 `test-unhide.mjs`
+（26 项，已通过）。安装步骤见该目录 README；装到 `~/.dsh/local-plugins` 并重启
+DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 
 `~/.dsh/cordis.patch.yml` 当前已含一处针对本部署的修改（`trustedHosts` 追加
 `dsh.example.com`），那是为了让隧道域名通过 Host 围栏，与本缺陷无关。
@@ -215,16 +254,19 @@ button[aria-label="Collapse sidebar"] { display: inline-flex !important; }
 
 | 方向 | 帧 |
 |---|---|
-| C→S | `auth` · `status.*` · `procs.*` · `services.*` |
-| C→S | `fs.list/read/write/mkdir/delete/rename/roots` |
-| C→S | `term.open/run/interrupt/close/list` · `ping` |
-| C→S | `ai.engines/submit/tasks/task/cancel/reset` |
-| C→S | `sessions.list/read`（磁盘上的历史会话，只读） |
-| C→S | `chat.list/create/send/read/cancel/close` |
-| S→C | `auth.ok/fail` · `hello` · `status` · `procs` · `services` |
-| S→C | `fs.listing/file/written/roots` · `term.opened/output/exit/list` |
-| S→C | `ai.engines/tasks/task/started/event/finished` |
-| S→C | `sessions` · `session` |
+| C→S | `auth` · `status.get` · `status.subscribe` · `status.unsubscribe` |
+| C→S | `procs.list` · `procs.kill` · `services.list` · `services.action` |
+| C→S | `fs.list` · `fs.read` · `fs.write` · `fs.mkdir` · `fs.delete` · `fs.rename` · `fs.roots` |
+| C→S | `term.open` · `term.run` · `term.interrupt` · `term.close` · `term.list` · `ping` |
+| C→S | `ai.engines` · `ai.submit` · `ai.tasks` · `ai.task` · `ai.cancel` · `ai.reset` |
+| C→S | `codex.get` · `codex.apply` · `codex.restore` |
+| C→S | `sessions.list` · `sessions.read`（磁盘上的历史会话，只读） |
+| C→S | `chat.list` · `chat.create` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` |
+| S→C | `auth.ok` · `auth.fail` · `hello` · `status` · `procs` · `services` |
+| S→C | `fs.listing` · `fs.file` · `fs.written` · `fs.roots` |
+| S→C | `term.opened` · `term.output` · `term.exit` · `term.list` |
+| S→C | `ai.engines` · `ai.tasks` · `ai.task` · `ai.started` · `ai.event` · `ai.finished` |
+| S→C | `codex.config` · `sessions` · `session` |
 | S→C | `chats` · `chat` · `chat.event` · `chat.status` · `chat.turn` · `chat.sent` · `chat.closed` |
 | S→C | `action.result` · `error` · `pong` |
 
@@ -260,7 +302,7 @@ button[aria-label="Collapse sidebar"] { display: inline-flex !important; }
 | Gradle 8.13 | `E:\Android\tools\gradle-8.13` |
 | JDK 21 | `C:\Program Files\Java\jdk-21` |
 | DSH 安装 | `%APPDATA%\io.github.hairyf.deepseek-harness-desktop\dependencies\dsh` |
-| 配对令牌 | `C:\Users\user\.termdesk\token` |
+| 配对令牌 | `~/.termdesk/token` |
 
 **本网络注意**：`services.gradle.org`、GitHub releases 均不可直连，需走本地代理
 `http://127.0.0.1:10808`（v2rayN）；Gradle wrapper 与 `settings.gradle.kts` 已指向

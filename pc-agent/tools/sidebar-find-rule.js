@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Find the exact declaration that computes the collapse button to display:none.
  *
  * Earlier passes established: the button exists with aria-label "收起侧边栏",

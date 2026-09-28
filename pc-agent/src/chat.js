@@ -19,7 +19,7 @@
  *   server -> client : session.event | session.status
  *                      | subagent.started | subagent.finished
  *
- * Verified by tools/sdk-probe.js: handshake, prompt receipt, live assistant
+ * Verified by tools/probes/sdk-probe.js: handshake, prompt receipt, live assistant
  * text, and turn-2 continuity on one session id.
  *
  * Lifecycle notes that shaped the design below:

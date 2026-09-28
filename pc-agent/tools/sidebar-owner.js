@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Identify which plugin hides the left sidebar's collapse button.
  *
  * sidebar-why.js proved the button carries `dshp-panel__toggle` and computes to

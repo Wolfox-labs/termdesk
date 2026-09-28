@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Exercise the P2 file flow against the *running* agent on the real machine,
  * mirroring exactly what the Android client sends. Read-only outside the
  * scratch directory it creates and removes.
@@ -8,13 +8,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.TERMDESK_PORT || 7420);
 const HOST = process.env.TERMDESK_HOST || '127.0.0.1';
 const token = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
 
-const SCRATCH = path.join(os.homedir(), 'termdesk-e2e');
+const SCRATCH = path.join(__dirname, '..', '..', '.tmp', 'termdesk-e2e');
 fs.mkdirSync(SCRATCH, { recursive: true });
 
 const results = [];
