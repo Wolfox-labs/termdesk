@@ -14,6 +14,12 @@ data class ChatInfo(
     val cwd: String,
     val provider: String,
     val model: String,
+    /**
+     * Reasoning effort the conversation currently uses (low / high / ...), or
+     * blank for "kernel default". The kernel treats model and effort as sticky
+     * per-thread settings, so this is real state, not a display hint.
+     */
+    val effort: String,
     /** running | idle | stopped | failed */
     val status: String,
     /** True once the runtime handshake finished and prompts can be accepted. */

@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -72,6 +73,7 @@ import dev.termdesk.app.ui.theme.MeterChars
 import dev.termdesk.app.ui.theme.ThemeMode
 
 /** Sections of the app. */
+/** Sections of the app. */
 enum class Section(val label: String, val icon: ImageVector) {
     Sessions("会话", Icons.Outlined.ChatBubbleOutline),
     Files("文件", Icons.Outlined.FolderOpen),
@@ -83,10 +85,11 @@ enum class Section(val label: String, val icon: ImageVector) {
 /**
  * Phone-sized workstation shell.
  *
- * A permanent three-pane layout does not fit a 400dp-wide phone: the earlier
- * fixed 72dp rail plus 268dp panel left under 60dp for content. So the shape is:
- * an icon-only rail, a full-width work area, and context that slides over on
- * demand instead of occupying width permanently.
+ * There is no permanent navigation rail: a 400dp phone cannot spare 56dp of
+ * every screen for it, so sections live in a drawer opened from the leading
+ * button. The bar is never stacked either — the sessions area supplies its own
+ * single row, so a conversation title and the section name never fight for the
+ * same strip.
  */
 @Composable
 fun AppShell(
@@ -123,9 +126,7 @@ fun AppShell(
     onCodexLoad: () -> Unit,
     onCodexApply: (String, String, String?, String?, Long?) -> Unit,
     onCodexRestore: (String?) -> Unit,
-    // P4
     defaultCwd: String,
-    // live chats
     chats: List<ChatInfo>,
     activeChat: ChatInfo?,
     chatEvents: List<ChatEvent>,
@@ -134,22 +135,13 @@ fun AppShell(
     sessions: List<SessionInfo>,
     recordedSession: SessionDetail?,
     onLoadChats: () -> Unit,
-    /**
-     * Request a new agent conversation. The optional string is a suggested
-     * working directory from the caller (chat index / drawer).
-     *
-     * Contract with ChatSection: ChatSection keeps calling `onCreateChat(cwd)`
-     * unchanged. This callback must open the new-chat picker ([NewChatSheet]),
-     * NOT create a chat directly — kernel (engine), model and cwd are explicit
-     * user choices. Preferred future signature if renamed:
-     * `onCreateChatRequested: (suggestedCwd: String?) -> Unit`.
-     */
     onCreateChat: (String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSendChat: (String, String) -> Unit,
     onCancelChat: (String) -> Unit,
     onCloseChat: (String) -> Unit,
     onLeaveChat: () -> Unit,
+    onConfigureChat: (String, String?, String?) -> Unit,
     onCloseRecorded: () -> Unit,
     onLoadSessions: () -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
@@ -166,114 +158,117 @@ fun AppShell(
 ) {
     var section by remember { mutableStateOf(Section.Sessions) }
     var panelOpen by remember { mutableStateOf(false) }
-    // The hostname row is folded by default on a phone: it costs vertical space
-    // on every screen while the section rail already shows where you are.
-    var topBarCollapsed by rememberSaveable { mutableStateOf(false) }
+    // Sections live in a drawer rather than a permanent rail: a phone is about
+    // 400dp wide and the rail charged every screen 56dp for it.
+    var sectionDrawerOpen by remember { mutableStateOf(false) }
 
-    // System back walks *up* the app before it leaves it: close the slide-over
-    // panel first, then return to the conversation list from another section.
-    // The conversation and its drawer register their own handlers, which are
-    // composed later and therefore take precedence over this one.
-    BackHandler(enabled = panelOpen || section != Section.Sessions) {
-        if (panelOpen) panelOpen = false else section = Section.Sessions
+    // System back walks up the app before it leaves it: the drawer first, then
+    // the slide-over panel, then back to the conversation list. The conversation
+    // itself registers its own handler, which is composed later and wins.
+    BackHandler(enabled = sectionDrawerOpen || panelOpen || section != Section.Sessions) {
+        when {
+            sectionDrawerOpen -> sectionDrawerOpen = false
+            panelOpen -> panelOpen = false
+            else -> section = Section.Sessions
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxSize()) {
-            NavigationRail(current = section, onSelect = { section = it })
-
-            VerticalDivider(color = MaterialTheme.colorScheme.outline)
-
-            Column(
-                Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .imePadding(),
-            ) {
+        Column(Modifier.fillMaxSize().imePadding()) {
+            // The sessions area draws its own single-row bar (list title or
+            // conversation title), so the shell only adds one for tool sections.
+            if (section != Section.Sessions) {
                 TopBar(
-                    hostname = hostname,
                     section = section,
-                    collapsed = topBarCollapsed,
-                    onToggleCollapsed = { topBarCollapsed = !topBarCollapsed },
                     panelOpen = panelOpen,
+                    onOpenSections = { sectionDrawerOpen = true },
                     onTogglePanel = { panelOpen = !panelOpen },
                     onDisconnect = onDisconnect,
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                if (!connected) Text(connectionLabel, modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).clickable { onDisconnect() }.padding(10.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (!connected) {
+                Text(
+                    connectionLabel,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable { onDisconnect() }
+                        .padding(10.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
-                Box(Modifier.weight(1f)) {
-                    SectionBody(
-                        section = section,
-                        status = status,
-                        processes = processes,
-                        services = services,
-                        listing = listing,
-                        loading = loading,
-                        transfer = transfer,
-                        startPath = startPath,
-                        onRefreshProcesses = onRefreshProcesses,
-                        onRefreshServices = onRefreshServices,
-                        onKillProcess = onKillProcess,
-                        onServiceAction = onServiceAction,
-                        onNavigate = onNavigate,
-                        onOpenFile = onOpenFile,
-                        onDownload = onDownload,
-                        onUpload = onUpload,
-                        onCreateEntry = onCreateEntry,
-                        onDeleteEntry = onDeleteEntry,
-                        onRenameEntry = onRenameEntry,
-                        termLines = termLines,
-                        termBusy = termBusy,
-                        termSession = termSession,
-                        termUnavailable = termUnavailable,
-                        onTermOpen = onTermOpen,
-                        onTermRun = onTermRun,
-                        onTermInterrupt = onTermInterrupt,
-                        onTermClear = onTermClear,
-                        onTermClose = onTermClose,
-                        codexConfig = codexConfig,
-                        codexTemplates = codexTemplates,
-                        onCodexLoad = onCodexLoad,
-                        onCodexApply = onCodexApply,
-                        onCodexRestore = onCodexRestore,
-                        defaultCwd = defaultCwd,
-                        chats = chats,
-                        activeChat = activeChat,
-                        chatEvents = chatEvents,
-                        chatSending = chatSending,
-                        workspaces = workspaces,
-                        sessions = sessions,
-                        recordedSession = recordedSession,
-                        onLoadChats = onLoadChats,
-                        onCreateChat = onCreateChat,
-                        onOpenChat = onOpenChat,
-                        onSendChat = onSendChat,
-                        onCancelChat = onCancelChat,
-                        onCloseChat = onCloseChat,
-                        onLeaveChat = onLeaveChat,
-                        onCloseRecorded = onCloseRecorded,
-                        onLoadSessions = onLoadSessions,
-                        onOpenSession = onOpenSession,
-                        onResumeSession = onResumeSession,
-                        connected = connected,
-                        themeMode = themeMode,
-                        onThemeModeChange = onThemeModeChange,
-                        engines = engines,
-                        defaultEngine = defaultEngine,
-                        onSetDefaultEngine = onSetDefaultEngine,
-                        onRefreshEngines = onRefreshEngines,
-                    )
-                }
+            Box(Modifier.weight(1f)) {
+                SectionBody(
+                    section = section,
+                    status = status,
+                    processes = processes,
+                    services = services,
+                    listing = listing,
+                    loading = loading,
+                    transfer = transfer,
+                    startPath = startPath,
+                    onRefreshProcesses = onRefreshProcesses,
+                    onRefreshServices = onRefreshServices,
+                    onKillProcess = onKillProcess,
+                    onServiceAction = onServiceAction,
+                    onNavigate = onNavigate,
+                    onOpenFile = onOpenFile,
+                    onDownload = onDownload,
+                    onUpload = onUpload,
+                    onCreateEntry = onCreateEntry,
+                    onDeleteEntry = onDeleteEntry,
+                    onRenameEntry = onRenameEntry,
+                    termLines = termLines,
+                    termBusy = termBusy,
+                    termSession = termSession,
+                    termUnavailable = termUnavailable,
+                    onTermOpen = onTermOpen,
+                    onTermRun = onTermRun,
+                    onTermInterrupt = onTermInterrupt,
+                    onTermClear = onTermClear,
+                    onTermClose = onTermClose,
+                    codexConfig = codexConfig,
+                    codexTemplates = codexTemplates,
+                    onCodexLoad = onCodexLoad,
+                    onCodexApply = onCodexApply,
+                    onCodexRestore = onCodexRestore,
+                    defaultCwd = defaultCwd,
+                    chats = chats,
+                    activeChat = activeChat,
+                    chatEvents = chatEvents,
+                    chatSending = chatSending,
+                    workspaces = workspaces,
+                    sessions = sessions,
+                    recordedSession = recordedSession,
+                    engines = engines,
+                    onOpenSections = { sectionDrawerOpen = true },
+                    onLoadChats = onLoadChats,
+                    onCreateChat = onCreateChat,
+                    onOpenChat = onOpenChat,
+                    onSendChat = onSendChat,
+                    onCancelChat = onCancelChat,
+                    onCloseChat = onCloseChat,
+                    onLeaveChat = onLeaveChat,
+                    onConfigureChat = onConfigureChat,
+                    onCloseRecorded = onCloseRecorded,
+                    onLoadSessions = onLoadSessions,
+                    onOpenSession = onOpenSession,
+                    onResumeSession = onResumeSession,
+                    connected = connected,
+                    themeMode = themeMode,
+                    onThemeModeChange = onThemeModeChange,
+                    defaultEngine = defaultEngine,
+                    onSetDefaultEngine = onSetDefaultEngine,
+                    onRefreshEngines = onRefreshEngines,
+                )
             }
         }
 
         // Scrim: tap anywhere outside the panel to dismiss it.
-        AnimatedVisibility(
-            visible = panelOpen,
-            enter = fadeIn(),
-            exit = fadeOut(),
-        ) {
+        AnimatedVisibility(visible = panelOpen, enter = fadeIn(), exit = fadeOut()) {
             Box(
                 Modifier
                     .fillMaxSize()
@@ -291,124 +286,70 @@ fun AppShell(
             ContextPanel(
                 status = status,
                 onClose = { panelOpen = false },
-                modifier = Modifier
-                    .width(290.dp)
-                    .fillMaxHeight(),
+                modifier = Modifier.width(290.dp).fillMaxHeight(),
+            )
+        }
+
+        // Section drawer — the phone's navigation surface.
+        AnimatedVisibility(visible = sectionDrawerOpen, enter = fadeIn(), exit = fadeOut()) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .clickable { sectionDrawerOpen = false },
+            )
+        }
+
+        AnimatedVisibility(
+            visible = sectionDrawerOpen,
+            enter = slideInHorizontally { -it },
+            exit = slideOutHorizontally { -it },
+            modifier = Modifier.align(Alignment.CenterStart),
+        ) {
+            SectionDrawer(
+                hostname = hostname,
+                section = section,
+                connected = connected,
+                onSelect = {
+                    section = it
+                    sectionDrawerOpen = false
+                },
             )
         }
     }
 }
 
-/**
- * Icon-only rail. Labels are omitted deliberately: at 145% system font scale a
- * labelled rail needs ~90dp, which is a quarter of the screen. The current
- * section name is shown in the top bar instead.
- */
-@Composable
-private fun NavigationRail(current: Section, onSelect: (Section) -> Unit) {
-    Column(
-        modifier = Modifier
-            .width(56.dp)
-            .fillMaxHeight()
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(vertical = 10.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Section.entries.forEach { entry ->
-            val selected = entry == current
-            Box(
-                modifier = Modifier
-                    .size(42.dp)
-                    .clip(RoundedCornerShape(11.dp))
-                    .background(
-                        if (selected) MaterialTheme.colorScheme.primaryContainer
-                        else Color.Transparent,
-                    )
-                    .clickable { onSelect(entry) },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = entry.icon,
-                    contentDescription = entry.label,
-                    tint = if (selected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-        }
-    }
-}
-
+/** Bar for the tool sections (files / terminal / system / settings). */
 @Composable
 private fun TopBar(
-    hostname: String,
     section: Section,
-    collapsed: Boolean,
-    onToggleCollapsed: () -> Unit,
     panelOpen: Boolean,
+    onOpenSections: () -> Unit,
     onTogglePanel: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
-    // One row, foldable. Expanded it names the machine and the section; folded it
-    // keeps only the section and a chevron, so the work area gets the space back.
-    // Tapping anywhere on the left half toggles it: a phone has no room for a
-    // dedicated control that is used once per session.
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(if (collapsed) 34.dp else 48.dp)
+            .height(48.dp)
             .background(MaterialTheme.colorScheme.surface)
-            .padding(start = 8.dp, end = 2.dp),
+            .padding(start = 4.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .clip(RoundedCornerShape(9.dp))
-                .clickable(onClick = onToggleCollapsed)
-                .padding(horizontal = 4.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        IconButton(onClick = onOpenSections) {
             Icon(
-                imageVector = if (collapsed) Icons.Outlined.KeyboardArrowDown
-                else Icons.Outlined.KeyboardArrowUp,
-                contentDescription = if (collapsed) "展开顶栏" else "收起顶栏",
+                imageVector = Icons.Outlined.Menu,
+                contentDescription = "分区",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp),
             )
-            Spacer(Modifier.width(6.dp))
-            Box(
-                Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(MeterChars.ok),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = section.label,
-                style = if (collapsed) MaterialTheme.typography.bodySmall
-                else MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                color = if (collapsed) MaterialTheme.colorScheme.onSurfaceVariant
-                else MaterialTheme.colorScheme.onSurface,
-            )
-            if (!collapsed) {
-                // The section name has its own room already, so the hostname is
-                // the part that may shrink — and it shrinks to the right of it
-                // rather than pushing the label off screen.
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    text = hostname,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-            }
         }
+        Text(
+            text = section.label,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+        )
         IconButton(onClick = onTogglePanel) {
             Icon(
                 imageVector = Icons.Outlined.Memory,
@@ -426,6 +367,83 @@ private fun TopBar(
         }
     }
 }
+
+/** Which machine is connected, and where you can go. */
+@Composable
+private fun SectionDrawer(
+    hostname: String,
+    section: Section,
+    connected: Boolean,
+    onSelect: (Section) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .width(236.dp)
+            .fillMaxHeight()
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(vertical = 14.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(if (connected) MeterChars.ok else MaterialTheme.colorScheme.outline),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column {
+                Text(
+                    hostname,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    if (connected) "已连接" else "未连接",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Section.entries.forEach { entry ->
+            val selected = entry == section
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                    )
+                    .clickable { onSelect(entry) }
+                    .padding(horizontal = 12.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = entry.icon,
+                    contentDescription = null,
+                    tint = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text = entry.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+                    color = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun SectionBody(
     section: Section,
@@ -490,6 +508,8 @@ private fun SectionBody(
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
     onRefreshEngines: () -> Unit,
+    onOpenSections: () -> Unit,
+    onConfigureChat: (String, String?, String?) -> Unit,
 ) {
     when (section) {
         Section.System -> SystemSection(
@@ -535,6 +555,10 @@ private fun SectionBody(
             sessions = sessions,
             defaultCwd = defaultCwd,
             recordedSession = recordedSession,
+            engines = engines,
+            codexConfig = codexConfig,
+            onOpenSections = onOpenSections,
+            onConfigureChat = onConfigureChat,
             onLoadChats = onLoadChats,
             onCreateChat = onCreateChat,
             onOpenChat = onOpenChat,
@@ -564,28 +588,3 @@ private fun SectionBody(
     }
 }
 
-@Composable
-private fun Placeholder(title: String, icon: ImageVector, note: String) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.outline,
-            modifier = Modifier.size(40.dp),
-        )
-        Spacer(Modifier.height(14.dp))
-        Text(title, style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            note,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}

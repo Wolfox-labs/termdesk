@@ -61,15 +61,30 @@ function dshRoot() {
  * literal '-' in a folder name, so the recorded `cwd` field from the session's
  * first line is always preferred when available.
  */
+/**
+ * DSH escapes characters it cannot put in a folder name as ~XXXX hex, e.g.
+ * `Hearts~0020of~0020Iron~0020IV` is "Hearts of Iron IV". Decoding it matters
+ * because that string is what the phone shows as the workspace name.
+ */
+function decodeTildeEscapes(value) {
+  return value.replace(/~([0-9A-Fa-f]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
 function decodeWorkspaceDir(name) {
-  const inner = name.replace(/^--/, '').replace(/--$/, '');
+  const inner = decodeTildeEscapes(name.replace(/^--/, '').replace(/--$/, ''));
   const parts = inner.split('-').filter(Boolean);
-  if (parts.length === 0) return name;
+  if (parts.length === 0) return '';
   // A leading drive letter, e.g. C-Users-... -> C:\Users\...
   const drive = parts[0];
   if (/^[A-Za-z]$/.test(drive)) {
     return `${drive.toUpperCase()}:\\` + parts.slice(1).join('\\');
   }
+  // DSH also names workspace folders after a session title ("dsh", a game name
+  // with ~0020 for spaces). Those are not paths, and reporting them as a working
+  // directory offered the phone directories that do not exist. Unknown is the
+  // honest answer; the client shows no directory instead of a wrong one. Empty
+  // string (not null) so org.json's optString cannot turn it into "null".
+  return '';
   return parts.join('\\');
 }
 

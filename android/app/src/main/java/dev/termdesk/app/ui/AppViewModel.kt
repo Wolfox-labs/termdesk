@@ -148,9 +148,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         provider: String? = null,
         model: String? = null,
         title: String? = null,
-    ) = client.createChat(cwd, engine, provider, model, title)
+        effort: String? = null,
+    ) = client.createChat(cwd, engine, provider, model, title, effort)
     fun openChat(chatId: String) = client.openChat(chatId)
-    fun sendChatMessage(chatId: String, text: String) = client.sendChatMessage(chatId, text)
+    fun sendChatMessage(chatId: String, text: String, model: String? = null, effort: String? = null) =
+        client.sendChatMessage(chatId, text, model, effort)
+
+    /** Change what the open conversation runs on from now on (model / effort). */
+    fun configureChat(chatId: String, model: String?, effort: String?) =
+        client.setChatConfig(chatId, model, effort)
     fun cancelChat(chatId: String) = client.cancelChat(chatId)
     fun closeChat(chatId: String) = client.closeChat(chatId)
     fun leaveChat() = client.leaveChat()

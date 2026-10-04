@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.scrollBy
@@ -27,6 +28,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -38,6 +40,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Send
@@ -69,6 +72,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.termdesk.app.data.ChatEvent
+import dev.termdesk.app.data.CodexConfig
+import dev.termdesk.app.data.EngineInfo
 import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
@@ -102,6 +107,9 @@ fun ChatSection(
     sessions: List<SessionInfo>,
     defaultCwd: String,
     recordedSession: SessionDetail?,
+    engines: List<EngineInfo>,
+    codexConfig: CodexConfig?,
+    onOpenSections: () -> Unit,
     onLoadChats: () -> Unit,
     onCreateChat: (String?) -> Unit,
     onOpenChat: (String) -> Unit,
@@ -109,25 +117,20 @@ fun ChatSection(
     onCancel: (String) -> Unit,
     onCloseChat: (String) -> Unit,
     onLeaveChat: () -> Unit,
+    onConfigureChat: (String, String?, String?) -> Unit,
     onCloseRecorded: () -> Unit,
     onLoadSessions: () -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
     onResumeSession: (SessionDetail) -> Unit,
     connected: Boolean,
 ) {
-    var drawerOpen by remember { mutableStateOf(false) }
-
-    // System back walks *out* of what is on screen instead of out of the app:
-    // the drawer first, then a recorded (read-only) session, then the open
-    // conversation. When none of those is showing, the press falls through to
-    // the shell, which returns to the session list before the OS leaves the app.
-    BackHandler(enabled = drawerOpen || recordedSession != null || activeChat != null) {
-        when {
-            drawerOpen -> drawerOpen = false
-            recordedSession != null -> onCloseRecorded()
-            else -> onLeaveChat()
-        }
-    }
+    // 0 = live conversations, 1 = recorded history. One list, two states: there
+    // is no separate drawer for history any more, because a phone-width screen
+    // must not spend a third of its width on a second navigation surface.
+    var tab by remember { mutableStateOf(0) }
+    // Details are folded away by default: the bar stays one row, and the model /
+    // directory / effort line only appears when the user asks for it.
+    var detailOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         onLoadChats()
@@ -136,130 +139,455 @@ fun ChatSection(
 
     // Opening a recorded session attaches the kernel to it (metadata-only on the
     // PC), so history and a live conversation become the same view rather than
-    // two separate objects. The button below stays as a manual retry for when the
-    // engine refuses — for example when the session is in use by the desktop app.
-    // DSH has no resume, so its history stays read-only and says so.
+    // two separate objects. DSH has no resume, so its history stays read-only.
     LaunchedEffect(recordedSession?.engine, recordedSession?.id, connected) {
         val session = recordedSession
         if (session != null && connected && session.engine == "codex") onResumeSession(session)
     }
 
-    Box(Modifier.fillMaxSize()) {
-        // One column: the conversation, or the index when nothing is open.
-        Column(Modifier.fillMaxSize()) {
-            // A recorded session takes over the view when one is picked from the
-            // index: it is history, so it is shown read-only.
-            if (recordedSession != null) {
-                RecordedSessionHeader(session = recordedSession, onClose = onCloseRecorded, onResume = { onResumeSession(recordedSession) }, canResume = connected && recordedSession.engine == "codex" && !sending)
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                if (recordedSession.engine == "dsh") Text("DSH 内核暂未开放可靠的原生恢复；此处保留只读，不伪造上下文。", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.labelSmall)
-                RecordedTranscript(recordedSession)
-            } else {
-                ChatHeader(
-                    activeChat = activeChat,
-                    onMenu = { drawerOpen = true },
-                    onNew = { onCreateChat(defaultCwd) },
-                    onLeave = onLeaveChat,
-                )
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+    // A new subject always starts folded.
+    LaunchedEffect(activeChat?.id, recordedSession?.id) { detailOpen = false }
 
-                if (activeChat == null) {
-                    ChatIndex(
-                        chats = chats,
-                        defaultCwd = defaultCwd,
-                        onOpenChat = onOpenChat,
-                        onCloseChat = onCloseChat,
-                        onCreateChat = onCreateChat,
+    val open = activeChat != null || recordedSession != null
+
+    // Back walks out of the conversation, not out of the app: fold the detail
+    // panel first, then return to the list (or close the recorded session).
+    BackHandler(enabled = open) {
+        when {
+            detailOpen -> detailOpen = false
+            recordedSession != null -> onCloseRecorded()
+            else -> onLeaveChat()
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        SessionBar(
+            title = when {
+                recordedSession != null ->
+                    recordedSession.title?.takeIf { it.isNotBlank() } ?: "会话记录"
+                activeChat != null -> activeChat.title
+                else -> "会话"
+            },
+            open = open,
+            expanded = detailOpen,
+            onLeading = {
+                when {
+                    recordedSession != null -> onCloseRecorded()
+                    activeChat != null -> onLeaveChat()
+                    else -> onOpenSections()
+                }
+            },
+            onToggleDetail = { detailOpen = !detailOpen },
+            onNew = { onCreateChat(defaultCwd) },
+            canResume = connected && recordedSession?.engine == "codex" && !sending,
+            onResume = { recordedSession?.let(onResumeSession) },
+        )
+
+        AnimatedVisibility(
+            visible = detailOpen && open,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            val chat = activeChat
+            val recorded = recordedSession
+            if (chat != null) {
+                ChatDetailPanel(
+                    chat = chat,
+                    codexConfig = codexConfig,
+                    onConfigure = onConfigureChat,
+                )
+            } else if (recorded != null) {
+                RecordedDetailPanel(recorded)
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
+        Box(Modifier.weight(1f)) {
+            when {
+                recordedSession != null -> {
+                    if (recordedSession.engine == "dsh") {
+                        Text(
+                            "DSH 内核暂未开放可靠的原生恢复；此处保留只读，不伪造上下文。",
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    RecordedTranscript(recordedSession)
+                }
+                activeChat != null -> Conversation(
+                    chat = activeChat,
+                    events = events,
+                    sending = sending,
+                    onSend = onSend,
+                    onCancel = onCancel,
+                    connected = connected,
+                )
+                else -> Column(Modifier.fillMaxSize()) {
+                    SessionTabs(
+                        tab = tab,
+                        chatCount = chats.size,
+                        sessionCount = sessions.size,
+                        onSelect = { tab = it },
                     )
-                } else {
-                    Conversation(
-                        chat = activeChat,
-                        events = events,
-                        sending = sending,
-                        onSend = onSend,
-                        onCancel = onCancel,
-                        connected = connected,
-                    )
+                    Box(Modifier.weight(1f)) {
+                        if (tab == 0) {
+                            ChatIndex(
+                                chats = chats,
+                                defaultCwd = defaultCwd,
+                                onOpenChat = onOpenChat,
+                                onCloseChat = onCloseChat,
+                                onCreateChat = onCreateChat,
+                            )
+                        } else {
+                            SessionIndex(
+                                sessions = sessions,
+                                onOpenSession = onOpenSession,
+                                onLoadSessions = onLoadSessions,
+                            )
+                        }
+                    }
                 }
             }
         }
+    }
+}
 
-        // Scrim over the conversation; tapping it dismisses the drawer.
-        AnimatedVisibility(visible = drawerOpen, enter = fadeIn(), exit = fadeOut()) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.55f))
-                    .clickable { drawerOpen = false },
+/**
+ * The one bar. At the list level it shows the section and a new-chat action; in
+ * a conversation the same row becomes back + title + details, so there is never
+ * a second stacked header.
+ */
+@Composable
+private fun SessionBar(
+    title: String,
+    open: Boolean,
+    expanded: Boolean,
+    onLeading: () -> Unit,
+    onToggleDetail: () -> Unit,
+    onNew: () -> Unit,
+    canResume: Boolean,
+    onResume: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(start = 4.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onLeading) {
+            Icon(
+                imageVector = if (open) Icons.Outlined.ArrowBack else Icons.Outlined.Menu,
+                contentDescription = if (open) "返回" else "分区",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+        )
+        if (canResume) {
+            TextButton(onClick = onResume) { Text("继续对话") }
+        }
+        if (open) {
+            IconButton(onClick = onToggleDetail) {
+                Icon(
+                    imageVector = if (expanded) Icons.Outlined.KeyboardArrowUp
+                    else Icons.Outlined.KeyboardArrowDown,
+                    contentDescription = if (expanded) "收起详情" else "展开详情",
+                    tint = if (expanded) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            IconButton(onClick = onNew) {
+                Icon(
+                    Icons.Outlined.Add,
+                    contentDescription = "新建对话",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+    }
+}
 
-        AnimatedVisibility(
-            visible = drawerOpen,
-            enter = slideInHorizontally { -it },
-            exit = slideOutHorizontally { -it },
-            modifier = Modifier.align(Alignment.CenterStart),
-        ) {
-            ChatDrawer(
-                workspaces = workspaces,
-                sessions = sessions,
-                chats = chats,
-                activeChatId = activeChat?.id,
-                onOpenChat = { onOpenChat(it); drawerOpen = false },
-                onOpenSession = { onOpenSession(it); drawerOpen = false },
-                onCreateChat = { onCreateChat(it); drawerOpen = false },
-                onLoadSessions = onLoadSessions,
-                onClose = { drawerOpen = false },
+/** Folded-away facts about the open conversation, plus what the next turn runs on. */
+@Composable
+private fun ChatDetailPanel(
+    chat: ChatInfo,
+    codexConfig: CodexConfig?,
+    onConfigure: (String, String?, String?) -> Unit,
+) {
+    val catalog = if (chat.engine == "codex") codexConfig?.models.orEmpty() else emptyList()
+    // The thread's own model may not be in the catalog (it can be set outside
+    // TermDesk), so it is always offered first — otherwise nothing looks chosen.
+    val models = remember(catalog, chat.model) {
+        val slugs = catalog.map { it.slug }
+        if (chat.model.isNotBlank() && chat.model !in slugs) listOf(chat.model) + slugs else slugs
+    }
+    val levels = remember(catalog, chat.model) {
+        catalog.firstOrNull { it.slug == chat.model }?.reasoningLevels
+            ?: catalog.flatMap { it.reasoningLevels }.distinct()
+    }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            KernelBadge(chat.engine)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = buildString {
+                    append(chat.model.ifBlank { "内核默认模型" })
+                    append(" · 思考 ")
+                    append(chat.effort.ifBlank { "默认" })
+                    when {
+                        chat.isRunning -> append(" · 回复中")
+                        chat.ready -> append(" · 就绪")
+                        chat.isFailed -> append(" · 失败")
+                        else -> append(" · 未启动")
+                    }
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            chat.cwd,
+            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+
+        if (models.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            InlineChips(
+                label = "模型",
+                items = models,
+                selected = chat.model,
+                onSelect = { onConfigure(chat.id, it, chat.effort.ifBlank { null }) },
+            )
+        }
+        if (levels.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            InlineChips(
+                label = "思考",
+                items = levels,
+                selected = chat.effort,
+                onSelect = { onConfigure(chat.id, chat.model.ifBlank { null }, it) },
+            )
+        }
+        if (models.isEmpty() && levels.isEmpty() && chat.engine != "codex") {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "该内核由自己决定模型与强度。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
 }
 
 @Composable
-private fun RecordedSessionHeader(session: SessionDetail, onClose: () -> Unit, onResume: () -> Unit, canResume: Boolean) {
-    // Two rows. The title row carries only icon + title + action, so the title is
-    // not squeezed against the badge; the detail line below has the badge as a
-    // prefix and wraps up to two lines, so a long path stays readable instead of
-    // collapsing into an ellipsis.
-    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onClose) {
-                Icon(Icons.Outlined.ArrowBack, contentDescription = "返回", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Text(
-                session.title?.takeIf { it.isNotBlank() } ?: "会话记录",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
-            )
-            TextButton(onClick = onResume, enabled = canResume) { Text("继续对话") }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
+private fun RecordedDetailPanel(session: SessionDetail) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             KernelBadge(session.engine)
+            Spacer(Modifier.width(8.dp))
             Text(
                 text = buildString {
-                    session.cwd?.takeIf { it.isNotBlank() }?.let { append(it) }
-                    if (isNotEmpty()) append(" · ")
                     append("${session.totalEvents} 条")
                     if (session.truncated) append("（已截断）")
+                    if (session.engine == "dsh") append(" · 只读")
+                    else append(" · 可继续对话")
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
+            )
+        }
+        session.cwd?.takeIf { it.isNotBlank() }?.let {
+            Spacer(Modifier.height(2.dp))
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(start = 6.dp),
             )
         }
     }
 }
+
+/** Label + horizontally scrollable choices, one line each. */
+@Composable
+private fun InlineChips(
+    label: String,
+    items: List<String>,
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.width(44.dp),
+        )
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            items.forEach { item ->
+                val isSelected = item == selected
+                Text(
+                    text = item,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(7.dp))
+                        .background(
+                            if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surface,
+                        )
+                        .clickable { onSelect(item) }
+                        .padding(horizontal = 9.dp, vertical = 5.dp),
+                )
+            }
+        }
+    }
+}
+
+/** Two states of one list: live conversations and recorded history. */
+@Composable
+private fun SessionTabs(tab: Int, chatCount: Int, sessionCount: Int, onSelect: (Int) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        listOf("进行中" to chatCount, "历史" to sessionCount).forEachIndexed { index, (label, count) ->
+            val selected = index == tab
+            Text(
+                text = if (count > 0) "$label $count" else label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                    )
+                    .clickable { onSelect(index) }
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+            )
+        }
+        Spacer(Modifier.weight(1f))
+    }
+}
+
+/** Recorded history, listed like conversations because that is what it is. */
+@Composable
+private fun SessionIndex(
+    sessions: List<SessionInfo>,
+    onOpenSession: (SessionInfo) -> Unit,
+    onLoadSessions: () -> Unit,
+) {
+    if (sessions.isEmpty()) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text("没有找到历史会话", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "电脑上记录过的对话会出现在这里，点开即可阅读或继续。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(14.dp))
+            TextButton(onClick = onLoadSessions) { Text("重新扫描") }
+        }
+        return
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(sessions, key = { "${it.engine}-${it.id}" }) { session ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { onOpenSession(session) }
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        sessionTitle(session),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        KernelBadge(session.engine)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = buildString {
+                                session.cwd?.takeIf { it.isNotBlank() }?.let { append(workspaceShortName(it)) }
+                                if (isNotEmpty()) append(" · ")
+                                append(formatRelativeTime(session.updatedAt))
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Icon(
+                    Icons.Outlined.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun RecordedTranscript(session: SessionDetail) {
     if (session.events.isEmpty()) {
@@ -306,77 +634,6 @@ private fun RecordedTranscript(session: SessionDetail) {
     }
 }
 
-@Composable
-private fun ChatHeader(
-    activeChat: ChatInfo?,
-    onMenu: () -> Unit,
-    onNew: () -> Unit,
-    onLeave: () -> Unit,
-) {
-    // Same two-row shape as the recorded header: the title keeps its own room,
-    // and the engine/model/cwd line gets the full width and wraps to two lines.
-    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onMenu) {
-                Icon(Icons.Outlined.Menu, contentDescription = "会话列表", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (activeChat != null) {
-                IconButton(onClick = onLeave) {
-                    Icon(Icons.Outlined.ArrowBack, contentDescription = "返回列表", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-            Text(
-                text = activeChat?.title ?: "会话",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
-            )
-            IconButton(onClick = onNew) {
-                Icon(Icons.Outlined.Add, contentDescription = "新建会话", tint = MaterialTheme.colorScheme.primary)
-            }
-        }
-        if (activeChat != null) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                KernelBadge(activeChat.engine)
-                Text(
-                    text = buildString {
-                        append(activeChat.model.ifBlank { activeChat.provider })
-                        when {
-                            activeChat.isRunning -> append(" · 回复中")
-                            activeChat.ready -> append(" · 就绪")
-                            activeChat.isFailed -> append(" · 失败")
-                            else -> append(" · 未启动")
-                        }
-                        if (activeChat.cwd.isNotBlank()) append(" · ${activeChat.cwd}")
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(start = 6.dp),
-                )
-            }
-        } else {
-            Text(
-                "选择或新建一个对话",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
-            )
-        }
-    }
-}
-
-/** Small badge so a glance tells you which kernel a conversation runs on. */
 @Composable
 private fun KernelBadge(engine: String?) {
     val text = when (engine?.lowercase()) {
@@ -708,8 +965,8 @@ private fun UserLine(event: ChatEvent) {
                 .background(MaterialTheme.colorScheme.primaryContainer)
                 .padding(horizontal = 11.dp, vertical = 8.dp),
         ) {
-            Text(
-                event.text,
+            MarkdownText(
+                text = event.text,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
@@ -721,8 +978,8 @@ private fun UserLine(event: ChatEvent) {
 private fun AssistantLine(event: ChatEvent) {
     Row(Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth(0.98f)) {
-            Text(
-                event.text,
+            MarkdownText(
+                text = event.text,
                 style = MaterialTheme.typography.bodyMedium,
             )
             if (event.streaming) {
@@ -825,8 +1082,8 @@ private fun EngineNoteLine(event: ChatEvent) {
 
 @Composable
 private fun PlainLine(event: ChatEvent) {
-    Text(
-        event.text,
+    MarkdownText(
+        text = event.text,
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -954,342 +1211,6 @@ private fun TurnMarker(event: ChatEvent) {
             modifier = Modifier.weight(1f),
             color = MaterialTheme.colorScheme.outline,
         )
-    }
-}
-
-/**
- * Collapsible sidebar: a directory index of workspaces plus the recorded
- * sessions inside them, and the live chats.
- *
- * It starts closed and slides over the conversation, because a permanently
- * visible sidebar would cut a 400dp phone screen to roughly half.
- */
-@Composable
-private fun ChatDrawer(
-    workspaces: List<WorkspaceInfo>,
-    sessions: List<SessionInfo>,
-    chats: List<ChatInfo>,
-    activeChatId: String?,
-    onOpenChat: (String) -> Unit,
-    onOpenSession: (SessionInfo) -> Unit,
-    onCreateChat: (String) -> Unit,
-    onLoadSessions: () -> Unit,
-    onClose: () -> Unit,
-) {
-    var expandedCwd by remember { mutableStateOf<String?>(null) }
-    var showAllForCwd by remember { mutableStateOf<String?>(null) }
-    var filter by remember { mutableStateOf("") }
-
-    val query = filter.trim()
-    val visibleChats = if (query.isEmpty()) {
-        chats
-    } else {
-        chats.filter {
-            it.title.contains(query, ignoreCase = true) ||
-                it.cwd.contains(query, ignoreCase = true) ||
-                workspaceShortName(it.cwd).contains(query, ignoreCase = true)
-        }
-    }
-    val visibleWorkspaces = if (query.isEmpty()) {
-        workspaces
-    } else {
-        workspaces.filter {
-            workspaceShortName(it.cwd).contains(query, ignoreCase = true) ||
-                it.cwd.contains(query, ignoreCase = true)
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .width(300.dp)
-            .fillMaxHeight()
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(vertical = 10.dp),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "会话",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onLoadSessions, modifier = Modifier.size(34.dp)) {
-                Icon(
-                    Icons.Outlined.Refresh,
-                    contentDescription = "刷新",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-        }
-
-        OutlinedTextField(
-            value = filter,
-            onValueChange = { filter = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-            placeholder = {
-                Text("筛选目录或会话", style = MaterialTheme.typography.labelSmall)
-            },
-            singleLine = true,
-            textStyle = MaterialTheme.typography.labelSmall,
-            shape = RoundedCornerShape(8.dp),
-        )
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                start = 8.dp, end = 8.dp, bottom = 12.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            if (visibleChats.isNotEmpty()) {
-                item { DrawerHeading("进行中") }
-                items(visibleChats, key = { "chat-${it.id}" }) { chat ->
-                    DrawerRow(
-                        title = chat.title,
-                        subtitle = chat.model.ifBlank { chat.cwd },
-                        selected = chat.id == activeChatId,
-                        dot = when {
-                            chat.isRunning -> MaterialTheme.colorScheme.primary
-                            chat.isFailed -> MaterialTheme.colorScheme.error
-                            chat.ready -> Semantic.current.success
-                            else -> MaterialTheme.colorScheme.outline
-                        },
-                        onClick = { onOpenChat(chat.id) },
-                    )
-                }
-            }
-
-            item { DrawerHeading("工作目录") }
-            items(visibleWorkspaces, key = { "ws-${it.cwd}" }) { ws ->
-                val expanded = expandedCwd == ws.cwd
-                val wsSessions = sessions
-                    .asSequence()
-                    .filter { it.cwd == ws.cwd }
-                    .filter {
-                        query.isEmpty() ||
-                            sessionTitle(it).contains(query, ignoreCase = true) ||
-                            it.engine.contains(query, ignoreCase = true)
-                    }
-                    .sortedByDescending { it.updatedAt }
-                    .toList()
-                val showAll = showAllForCwd == ws.cwd
-                // A filter should surface every match, not just the preview head.
-                val visibleSessions = if (showAll || query.isNotEmpty()) {
-                    wsSessions
-                } else {
-                    wsSessions.take(WORKSPACE_SESSION_PREVIEW)
-                }
-                val hiddenCount = (wsSessions.size - visibleSessions.size).coerceAtLeast(0)
-
-                Column {
-                    WorkspaceRow(
-                        name = workspaceShortName(ws.cwd),
-                        count = ws.count,
-                        expanded = expanded,
-                        onClick = {
-                            expandedCwd = if (expanded) null else ws.cwd
-                            if (!expanded) onLoadSessions()
-                        },
-                    )
-                    if (expanded) {
-                        if (wsSessions.isEmpty()) {
-                            Text(
-                                "暂无会话",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 28.dp, top = 2.dp, bottom = 4.dp),
-                            )
-                        }
-                        visibleSessions.forEach { session ->
-                            DrawerRow(
-                                title = sessionTitle(session),
-                                subtitle = formatRelativeTime(session.updatedAt),
-                                selected = false,
-                                indented = true,
-                                onClick = { onOpenSession(session) },
-                            )
-                        }
-                        if (hiddenCount > 0) {
-                            DrawerRow(
-                                title = "展开其余 $hiddenCount 个会话",
-                                subtitle = null,
-                                selected = false,
-                                indented = true,
-                                accent = MaterialTheme.colorScheme.primary,
-                                onClick = { showAllForCwd = ws.cwd },
-                            )
-                        }
-                    }
-                }
-            }
-
-            item {
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(9.dp))
-                        .clickable { onCreateChat(expandedCwd ?: workspaces.firstOrNull()?.cwd ?: "") }
-                        .padding(horizontal = 10.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Outlined.Add,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("在此电脑新建对话", style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
-    }
-}
-
-/** How many sessions a workspace shows before offering "展开其余 N 个会话". */
-private const val WORKSPACE_SESSION_PREVIEW = 5
-
-@Composable
-private fun WorkspaceRow(
-    name: String,
-    count: Int,
-    expanded: Boolean,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(9.dp))
-            .clickable(onClick = onClick)
-            .padding(start = 10.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            Icons.Outlined.FolderOpen,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(15.dp),
-        )
-        Spacer(Modifier.width(8.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                name,
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                "$count 个会话",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-        }
-        Icon(
-            imageVector = if (expanded) {
-                Icons.Outlined.KeyboardArrowDown
-            } else {
-                Icons.Outlined.KeyboardArrowRight
-            },
-            contentDescription = if (expanded) "收起" else "展开",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(16.dp),
-        )
-    }
-}
-
-@Composable
-private fun DrawerHeading(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(start = 8.dp, top = 10.dp, bottom = 4.dp),
-    )
-}
-
-@Composable
-private fun DrawerRow(
-    title: String,
-    subtitle: String?,
-    selected: Boolean,
-    onClick: () -> Unit,
-    dot: Color? = null,
-    icon: Boolean = false,
-    indented: Boolean = false,
-    accent: Color? = null,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(9.dp))
-            .background(
-                if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-            )
-            .clickable(onClick = onClick)
-            .padding(
-                start = if (indented) 20.dp else 10.dp,
-                end = 8.dp,
-                top = 7.dp,
-                bottom = 7.dp,
-            ),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        when {
-            accent != null -> Box(
-                Modifier
-                    .size(7.dp)
-                    .clip(CircleShape)
-                    .background(accent),
-            )
-            dot != null -> Box(
-                Modifier
-                    .size(7.dp)
-                    .clip(CircleShape)
-                    .background(dot),
-            )
-            icon -> Icon(
-                Icons.Outlined.FolderOpen,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(15.dp),
-            )
-            else -> Spacer(Modifier.width(7.dp))
-        }
-        Spacer(Modifier.width(8.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = when {
-                    accent != null -> accent
-                    selected -> MaterialTheme.colorScheme.primary
-                    else -> MaterialTheme.colorScheme.onSurface
-                },
-            )
-            if (!subtitle.isNullOrBlank()) {
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
     }
 }
 

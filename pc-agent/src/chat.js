@@ -128,7 +128,7 @@ let chatCounter = 0;
  */
 /** One live conversation: one engine runtime plus its transcript. */
 class Chat {
-  constructor({ id, title, cwd, engine, provider, model, threadId = null, nativeSessionId = null }) {
+  constructor({ id, title, cwd, engine, provider, model, effort = null, threadId = null, nativeSessionId = null }) {
     this.id = id;
     this.title = title;
     this.cwd = cwd;
@@ -136,6 +136,12 @@ class Chat {
     this.engine = engine;
     this.provider = provider;
     this.model = model;
+    /**
+     * Reasoning effort (low / high / ...), engine specific. Null means the
+     * kernel default. The app-server documents effort as applying to the turn
+     * and subsequent turns, so this mirrors what the thread is actually using.
+     */
+    this.effort = effort;
     this.createdAt = Date.now();
     this.lastUsedAt = Date.now();
     /** running | idle | stopped | failed */
@@ -207,6 +213,7 @@ class Chat {
       engine: this.engine,
       provider: this.provider,
       model: this.model,
+      effort: this.effort,
       status: this.status,
       ready: this.ready,
       sessionId: this.sessionId,
@@ -294,7 +301,7 @@ export class ChatManager {
     if (idle.length >= MAX_CHATS) this.dispose(idle[0], 'capacity');
   }
 
-  create({ cwd, provider, model, title, engine }) {
+  create({ cwd, provider, model, title, engine, effort }) {
     const eng = engine == null || engine === '' ? 'dsh' : String(engine);
     if (!CHAT_ENGINES.includes(eng)) {
       return {
@@ -315,6 +322,7 @@ export class ChatManager {
       engine: eng,
       provider: provider || route.provider,
       model: model || route.model,
+      effort: effort || null,
     });
     this.chats.set(id, chat);
     chat.push({ kind: 'local', role: 'engine', text: `会话已创建 · ${chat.engine} · ${chat.cwd}` });
@@ -347,6 +355,31 @@ export class ChatManager {
     return { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
   }
   /**
+   * Change what the next turns of a live conversation will use.
+   *
+   * Model and reasoning effort are per-thread sticky settings in the kernel, so
+   * they are real state, not a UI hint: the change is recorded on the chat, the
+   * user sees a line in the transcript, and the next turn carries it.
+   */
+  setConfig(id, { model, effort, title } = {}) {
+    const chat = this.chats.get(id);
+    if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
+    if (model !== undefined) chat.model = model == null || model === '' ? null : String(model);
+    if (effort !== undefined) chat.effort = effort == null || effort === '' ? null : String(effort);
+    if (title !== undefined && title != null && String(title).trim()) {
+      chat.title = String(title).trim();
+      chat.titleSource = 'user';
+    }
+    chat.lastUsedAt = Date.now();
+    chat.push({
+      kind: 'local',
+      role: 'engine',
+      text: `已切换 · 模型 ${chat.model ?? '内核默认'} · 思考 ${chat.effort ?? '默认'}`,
+    });
+    return { ok: true, chat: chat.summary() };
+  }
+
+  /**
    * Send one user message and start the turn.
    *
    * Resolves as soon as the engine accepts the prompt (a durable enqueue
@@ -357,7 +390,7 @@ export class ChatManager {
    *   dsh   — resident SDK runtime, one `session/prompt` per turn.
    *   codex — one `codex exec` (or `exec resume <thread_id>`) per turn.
    */
-  async send(id, text) {
+  async send(id, text, opts = {}) {
     const chat = this.chats.get(id);
     if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
     const message = String(text ?? '').trim();
@@ -368,6 +401,12 @@ export class ChatManager {
     if (chat.status === 'running') {
       return { ok: false, code: 'busy', message: '上一轮还在进行中' };
     }
+
+    // Per-turn overrides: the kernel documents model and effort as applying to
+    // this turn and subsequent turns, so the chat adopts them and stays truthful
+    // about what it is actually using.
+    if (typeof opts.model === 'string' && opts.model.trim()) chat.model = opts.model.trim();
+    if (typeof opts.effort === 'string' && opts.effort.trim()) chat.effort = opts.effort.trim();
 
     chat.lastUsedAt = Date.now();
     chat.status = 'running';
@@ -461,7 +500,10 @@ export class ChatManager {
       this.emit({ event: 'chat.status', chatId: chat.id, status: 'running' });
 
       this.armCodexWatchdog(chat);
-      const turn = await server.startTurn(chat.threadId, message);
+      const turn = await server.startTurn(chat.threadId, message, {
+        ...(chat.model ? { model: chat.model } : {}),
+        ...(chat.effort ? { effort: chat.effort } : {}),
+      });
       chat.currentTurnId = turn?.turn?.id ?? null;
       return { ok: true, userSeq, messageId: null, sessionId: chat.sessionId };
     } catch (err) {
@@ -546,6 +588,7 @@ export class ChatManager {
       engine: 'codex',
       provider: thread.modelProvider ?? null,
       model: thread.model ?? null,
+      effort: thread.reasoningEffort ?? null,
       threadId: id,
       nativeSessionId: id,
     });

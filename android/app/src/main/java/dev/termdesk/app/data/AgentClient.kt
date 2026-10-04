@@ -458,12 +458,14 @@ class AgentClient(
         provider: String? = null,
         model: String? = null,
         title: String? = null,
+        effort: String? = null,
     ) {
         val frame = JSONObject().put("type", "chat.create")
         if (!cwd.isNullOrBlank()) frame.put("cwd", cwd)
         if (!engine.isNullOrBlank()) frame.put("engine", engine)
         if (!provider.isNullOrBlank()) frame.put("provider", provider)
         if (!model.isNullOrBlank()) frame.put("model", model)
+        if (!effort.isNullOrBlank()) frame.put("effort", effort)
         if (!title.isNullOrBlank()) frame.put("title", title)
         // Keep the previously open chat's transcript out of the new one.
         clearChatTranscript()
@@ -486,9 +488,26 @@ class AgentClient(
     }
 
     /** Send one user message. The answer streams back as `chat.event` frames. */
-    fun sendChatMessage(chatId: String, text: String) {
+    fun sendChatMessage(chatId: String, text: String, model: String? = null, effort: String? = null) {
         _chatSending.value = true
-        sendFrame(JSONObject().put("type", "chat.send").put("chatId", chatId).put("text", text))
+        val frame = JSONObject().put("type", "chat.send").put("chatId", chatId).put("text", text)
+        if (!model.isNullOrBlank()) frame.put("model", model)
+        if (!effort.isNullOrBlank()) frame.put("effort", effort)
+        sendFrame(frame)
+    }
+
+    /**
+     * Change the model / reasoning effort of a live conversation.
+     *
+     * The kernel documents both as per-thread sticky settings, applied to the
+     * turn and every following one, so this is a real change of what the next
+     * reply will run on. Null clears the override back to the kernel default.
+     */
+    fun setChatConfig(chatId: String, model: String?, effort: String?) {
+        val frame = JSONObject().put("type", "chat.config").put("chatId", chatId)
+        frame.put("model", model ?: "")
+        frame.put("effort", effort ?: "")
+        sendFrame(frame)
     }
 
     /** Stop the current reply. The PC disposes the runtime; there is no per-turn cancel. */
@@ -1161,6 +1180,7 @@ class AgentClient(
             cwd = o.optString("cwd"),
             provider = o.optString("provider"),
             model = o.optString("model"),
+            effort = o.optString("effort"),
             status = o.optString("status", "idle"),
             ready = o.optBoolean("ready", false),
             engine = o.optString("engine", "dsh"),

@@ -1,5 +1,6 @@
 package dev.termdesk.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -8,18 +9,23 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -35,10 +41,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.EngineInfo
@@ -47,14 +53,11 @@ import dev.termdesk.app.data.WorkspaceInfo
 /**
  * New agent conversation picker.
  *
- * Creating a chat is an explicit choice of three things: kernel (engine),
- * model (follows the kernel), and working directory. Nothing here is guessed
- * on the user's behalf except pre-filling the cwd the caller suggested — the
- * kernel must be tapped, or the confirm button stays disabled.
- *
- * This sheet is the only path to [AppViewModel.createChat]. UI entry points
- * (ChatSection's "新建对话" etc.) must open this sheet via `onCreateChat(suggestedCwd)`
- * rather than creating a chat directly.
+ * Three decisions matter — kernel, model, directory — and everything else is
+ * optional, so the sheet is one short column with a pinned action at the bottom:
+ * nothing the user needs is ever below the fold. The kernel list starts folded
+ * into a single row (it is long here: every kernel the PC found is listed) and
+ * only opens when the user taps it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -71,46 +74,52 @@ fun NewChatSheet(
         provider: String?,
         model: String?,
         title: String?,
+        effort: String?,
     ) -> Unit,
     onCreateDirectory: (parentPath: String, name: String) -> Unit = { _, _ -> },
     onDismiss: () -> Unit,
 ) {
     val kernels = remember(engines) { kernelChoices(engines) }
 
-    // The kernel is the target the phone drives, and Settings holds the user's
-    // default. So the sheet pre-selects it (falling back to the first wired
-    // adapter) — the user only touches it when they mean to switch targets.
+    // Pre-selected from Settings; the user only opens this list to switch.
     val preferredEngine = defaultEngine?.takeIf { id -> kernels.any { it.selectable && it.id == id } }
         ?: kernels.firstOrNull { it.selectable }?.id
     var engineId by remember(kernels, preferredEngine) { mutableStateOf<String?>(preferredEngine) }
+    var kernelExpanded by remember { mutableStateOf(false) }
 
-    // Model/provider follow the kernel. Codex can pick from its catalog;
-    // dsh routes by itself and only shows a default-route caption.
     var providerId by remember { mutableStateOf(codexConfig?.modelProvider) }
     var modelSlug by remember { mutableStateOf(codexConfig?.model) }
+    var effortSlug by remember { mutableStateOf<String?>(null) }
 
+    // Only real absolute paths are offered. The PC derives workspaces from
+    // recorded sessions, and some kernels record their own session name in that
+    // field ("dsh", a decoded "Hearts of Iron" title); offering those as working
+    // directories would create a chat in a directory that does not exist.
     val cwdOptions = remember(suggestedCwd, defaultCwd, workspaces) {
         buildList {
             if (!suggestedCwd.isNullOrBlank()) add(suggestedCwd)
             if (defaultCwd.isNotBlank()) add(defaultCwd)
             workspaces.forEach { if (it.cwd.isNotBlank()) add(it.cwd) }
-        }.distinct()
+        }.filter { looksLikePath(it) }.distinct()
     }
     var cwdText by remember {
         mutableStateOf(suggestedCwd?.takeIf { it.isNotBlank() } ?: defaultCwd)
     }
     var titleText by remember { mutableStateOf("") }
+    var newDirOpen by remember { mutableStateOf(false) }
+
+    val selectedEngine = kernels.find { it.id == engineId }
+    val models = if (engineId == "codex") codexConfig?.models.orEmpty() else emptyList()
+    val levels = models.firstOrNull { it.slug == modelSlug }?.reasoningLevels.orEmpty()
 
     // Codex config may arrive after the sheet opens; fill model defaults then.
     LaunchedEffect(codexConfig, engineId) {
         if (engineId == "codex") {
             if (providerId == null) {
-                providerId = codexConfig?.modelProvider
-                    ?: codexConfig?.providers?.firstOrNull()?.id
+                providerId = codexConfig?.modelProvider ?: codexConfig?.providers?.firstOrNull()?.id
             }
             if (modelSlug == null) {
-                modelSlug = codexConfig?.model
-                    ?: codexConfig?.models?.firstOrNull()?.slug
+                modelSlug = codexConfig?.model ?: codexConfig?.models?.firstOrNull()?.slug
             }
         }
     }
@@ -122,211 +131,171 @@ fun NewChatSheet(
         ),
         containerColor = MaterialTheme.colorScheme.surfaceVariant,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 640.dp)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 20.dp),
-        ) {
+        Column(Modifier.fillMaxWidth().heightIn(max = 620.dp)) {
             Text(
                 "新建对话",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                "选择内核、模型与工作目录后开始。这是统一的 agent 对话，不再区分「会话 / 任务」。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 10.dp),
             )
 
-            Spacer(Modifier.size(14.dp))
-            FieldLabel("内核")
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                kernels.forEach { engine ->
-                    KernelRow(
-                        engine = engine,
-                        selected = engine.id == engineId,
-                        onClick = {
-                            engineId = engine.id
-                            // Model follows the kernel: codex reuses its catalog
-                            // defaults, dsh keeps provider/model unset (default route).
-                            if (engine.id == "codex") {
-                                if (providerId == null) providerId = codexConfig?.modelProvider
+            Column(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+            ) {
+                KernelSelector(
+                    kernels = kernels,
+                    selectedId = engineId,
+                    expanded = kernelExpanded,
+                    onToggle = { kernelExpanded = !kernelExpanded },
+                    onSelect = { engine ->
+                        engineId = engine.id
+                        kernelExpanded = false
+                        effortSlug = null
+                        if (engine.id == "codex") {
+                            if (providerId == null) {
+                                providerId = codexConfig?.modelProvider
                                     ?: codexConfig?.providers?.firstOrNull()?.id
-                                if (modelSlug == null) modelSlug = codexConfig?.model
-                                    ?: codexConfig?.models?.firstOrNull()?.slug
-                            } else {
-                                providerId = null
-                                modelSlug = null
                             }
-                        },
-                    )
-                }
-            }
+                            if (modelSlug == null) {
+                                modelSlug = codexConfig?.model
+                                    ?: codexConfig?.models?.firstOrNull()?.slug
+                            }
+                        } else {
+                            providerId = null
+                            modelSlug = null
+                        }
+                    },
+                )
 
-            Spacer(Modifier.size(14.dp))
-            FieldLabel("模型")
-            when (engineId) {
-                "codex" -> {
-                    val providers = codexConfig?.providers.orEmpty()
-                    val models = codexConfig?.models.orEmpty()
-                    if (providers.isNotEmpty()) {
-                        ChipRow(
-                            items = providers.map { it.id to (it.name ?: it.id) },
-                            selectedId = providerId,
-                            onSelect = { providerId = it },
-                        )
-                        Spacer(Modifier.size(8.dp))
-                    }
-                    if (models.isNotEmpty()) {
-                        ChipRow(
-                            items = models.map { it.slug to it.displayName },
-                            selectedId = modelSlug,
-                            onSelect = { modelSlug = it },
-                        )
-                    } else {
-                        OutlinedTextField(
-                            value = modelSlug.orEmpty(),
-                            onValueChange = { modelSlug = it.ifBlank { null } },
-                            label = { Text("模型 slug（可留空走 Codex 默认）") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                            textStyle = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
+                selectedEngine?.let { engine ->
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        text = buildString {
-                            append("来自 Codex 配置")
-                            codexConfig?.model?.let { append(" · 当前默认 $it") }
-                            if (codexConfig == null) append("未加载，可留空走内核默认")
+                        text = engine.detail.ifBlank {
+                            if (engine.multiTurn) "多轮连续" else "单轮"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
-                "dsh" -> {
-                    Text(
-                        "默认路由 · dsh 运行时按自身配置选择 provider / model",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                null -> {
-                    Text(
-                        "先选择内核，再确认模型。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                else -> {
-                    Text(
-                        "跟随内核默认 provider / model。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
 
-            Spacer(Modifier.size(14.dp))
-            FieldLabel("工作目录")
-            if (cwdOptions.isNotEmpty()) {
-                ChipRow(
-                    items = cwdOptions.map { it to it },
-                    selectedId = cwdOptions.firstOrNull { it == cwdText },
-                    onSelect = { cwdText = it },
-                )
-                Spacer(Modifier.size(8.dp))
-            }
-            OutlinedTextField(
-                value = cwdText,
-                onValueChange = { cwdText = it },
-                label = { Text("路径（可手填）") },
-                singleLine = true,
-                leadingIcon = {
-                    Icon(
-                        Icons.Outlined.FolderOpen,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
+                if (models.isNotEmpty()) {
+                    Spacer(Modifier.height(14.dp))
+                    LabeledChips(
+                        label = "模型",
+                        items = models.map { it.slug },
+                        selected = modelSlug,
+                        onSelect = {
+                            modelSlug = it
+                            effortSlug = null
+                        },
                     )
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                textStyle = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.fillMaxWidth(),
-            )
+                }
+                if (levels.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    LabeledChips(
+                        label = "思考强度",
+                        items = levels,
+                        selected = effortSlug ?: levels.firstOrNull { it.equals("high", true) },
+                        onSelect = { effortSlug = it },
+                    )
+                }
 
-            // Working directories are derived from sessions on the PC, so a
-            // brand-new folder has to be created explicitly (same fs.mkdir as
-            // the file browser) before it can host a conversation.
-            Spacer(Modifier.size(10.dp))
-            var newDirParent by remember(cwdOptions, cwdText) {
-                mutableStateOf(
-                    cwdOptions.firstOrNull { cwdText.startsWith(it) } ?: cwdOptions.firstOrNull() ?: defaultCwd,
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "工作目录",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            }
-            var newDirName by remember { mutableStateOf("") }
-            Text(
-                "新建工作目录",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.size(6.dp))
-            ChipRow(
-                items = cwdOptions.map { it to workspaceShortLabel(it) },
-                selectedId = newDirParent,
-                onSelect = { newDirParent = it },
-            )
-            Spacer(Modifier.size(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.height(6.dp))
+                if (cwdOptions.isNotEmpty()) {
+                    ChipStrip(
+                        items = cwdOptions.map { it to workspaceShortLabel(it) },
+                        selectedId = cwdText,
+                        onSelect = { cwdText = it },
+                    )
+                    Spacer(Modifier.height(6.dp))
+                }
                 OutlinedTextField(
-                    value = newDirName,
-                    onValueChange = { newDirName = it },
-                    label = { Text("目录名") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    textStyle = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(8.dp))
-                TextButton(
-                    enabled = newDirName.isNotBlank() && newDirParent.isNotBlank(),
-                    onClick = {
-                        val name = newDirName.trim().trimEnd('\\', '/')
-                        if (name.isEmpty() || name.contains('\\') || name.contains('/')) return@TextButton
-                        onCreateDirectory(newDirParent, name)
-                        val joined = joinWorkPath(newDirParent, name)
-                        cwdText = joined
-                        newDirName = ""
+                    value = cwdText,
+                    onValueChange = { cwdText = it },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Outlined.FolderOpen,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
                     },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { newDirOpen = !newDirOpen }
+                        .padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
                         Icons.Outlined.CreateNewFolder,
                         contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "新建工作目录",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(
+                        imageVector = if (newDirOpen) Icons.Outlined.KeyboardArrowUp
+                        else Icons.Outlined.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(16.dp),
                     )
-                    Spacer(Modifier.width(4.dp))
-                    Text("创建")
                 }
+                AnimatedVisibility(visible = newDirOpen) {
+                    NewDirectoryRow(
+                        options = cwdOptions,
+                        defaultParent = defaultCwd,
+                        current = cwdText,
+                        onCreate = { parent, name ->
+                            onCreateDirectory(parent, name)
+                            cwdText = joinWorkPath(parent, name)
+                        },
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = titleText,
+                    onValueChange = { titleText = it },
+                    label = { Text("标题（可留空）", style = MaterialTheme.typography.labelSmall) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(14.dp))
             }
 
-            Spacer(Modifier.size(12.dp))
-            FieldLabel("标题（可选）")
-            OutlinedTextField(
-                value = titleText,
-                onValueChange = { titleText = it },
-                label = { Text("留空则由首条消息生成") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                textStyle = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            Spacer(Modifier.size(18.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -343,6 +312,7 @@ fun NewChatSheet(
                             providerId?.takeIf { it.isNotBlank() },
                             modelSlug?.takeIf { it.isNotBlank() },
                             titleText.trim().takeIf { it.isNotBlank() },
+                            effortSlug?.takeIf { it.isNotBlank() },
                         )
                     },
                     enabled = engine != null && cwdReady,
@@ -354,139 +324,166 @@ fun NewChatSheet(
     }
 }
 
-/**
- * Kernels offered in the sheet.
- *
- * The product surface is at least `codex` and `dsh`. When `ai.engines` has not
- * answered yet those two are still shown (unverified) so the user can never
- * land in a picker with nothing to choose.
- */
-private fun workspaceShortLabel(path: String): String {
-    val trimmed = path.trim().trimEnd('\\', '/')
-    val idx = trimmed.lastIndexOfAny(charArrayOf('\\', '/'))
-    return if (idx >= 0 && idx < trimmed.length - 1) trimmed.substring(idx + 1) else trimmed.ifBlank { path }
-}
-
-private fun joinWorkPath(parent: String, name: String): String {
-    val p = parent.trim().trimEnd('\\', '/')
-    return when {
-        p.isEmpty() -> name
-        p.endsWith(':') -> p + "\\" + name
-        else -> p + "\\" + name
-    }
-}
-
-/**
- * Order the PC's discovery for the picker: wired adapters first, then kernels
- * that speak ACP, then CLI-shaped ones — and available before missing.
- *
- * The list comes from the PC, so a kernel that is installed but not integrated
- * yet shows up as such instead of being hidden or silently offered.
- */
-private fun kernelChoices(engines: List<EngineInfo>): List<EngineInfo> {
-    if (engines.isEmpty()) {
-        return listOf("codex" to "Codex", "dsh" to "DeepSeek Harness").map { (id, label) ->
-            EngineInfo(id = id, available = true, path = "", multiTurn = true, progress = true, label = label)
-        }
-    }
-    val rank = mapOf("native" to 0, "acp" to 1, "shim" to 2)
-    return engines.sortedWith(
-        compareBy({ rank[it.tier] ?: 3 }, { if (it.available) 0 else 1 }, { it.displayName }),
-    )
-}
-
+/** Kernel as one row; the long list only appears when asked for. */
 @Composable
-private fun FieldLabel(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(bottom = 6.dp),
-    )
-}
-
-@Composable
-private fun KernelRow(
-    engine: EngineInfo,
-    selected: Boolean,
-    onClick: () -> Unit,
+private fun KernelSelector(
+    kernels: List<EngineInfo>,
+    selectedId: String?,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onSelect: (EngineInfo) -> Unit,
 ) {
-    val enabled = engine.selectable
+    val selected = kernels.find { it.id == selectedId }
     Column(
-        modifier = Modifier
+        Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .background(
-                when {
-                    selected -> MaterialTheme.colorScheme.primaryContainer
-                    enabled -> MaterialTheme.colorScheme.surface
-                    else -> MaterialTheme.colorScheme.surfaceVariant
-                },
-            )
-            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .background(MaterialTheme.colorScheme.surface),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("内核", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(76.dp))
             Text(
-                engine.displayName,
+                text = selected?.displayName ?: "未选择",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
-                color = when {
-                    selected -> MaterialTheme.colorScheme.primary
-                    enabled -> MaterialTheme.colorScheme.onSurface
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                },
+                color = if (selected != null) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
+                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.size(6.dp))
-            Text(
-                text = when (engine.tier) {
-                    "acp" -> "ACP"
-                    "shim" -> "CLI"
-                    else -> "已接入"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .padding(horizontal = 5.dp, vertical = 1.dp),
+            Icon(
+                imageVector = if (expanded) Icons.Outlined.KeyboardArrowUp
+                else Icons.Outlined.KeyboardArrowDown,
+                contentDescription = if (expanded) "收起内核列表" else "展开内核列表",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
             )
-            if (!engine.available) {
-                Spacer(Modifier.size(6.dp))
-                Text("未安装", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, maxLines = 1)
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column(Modifier.padding(start = 10.dp, end = 10.dp, bottom = 10.dp)) {
+                kernels.forEach { engine ->
+                    val isSelected = engine.id == selectedId
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surfaceVariant,
+                            )
+                            .then(
+                                if (engine.selectable) Modifier.clickable { onSelect(engine) }
+                                else Modifier,
+                            )
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            engine.displayName,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (engine.selectable) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = if (engine.selectable) "可用" else "暂不可用",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (engine.selectable) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
             }
         }
-        Spacer(Modifier.size(2.dp))
+    }
+}
+
+@Composable
+private fun NewDirectoryRow(
+    options: List<String>,
+    defaultParent: String,
+    current: String,
+    onCreate: (String, String) -> Unit,
+) {
+    var parent by remember(options, current) {
+        mutableStateOf(options.firstOrNull { current.startsWith(it) } ?: options.firstOrNull() ?: defaultParent)
+    }
+    var name by remember { mutableStateOf("") }
+    Column(Modifier.padding(top = 4.dp)) {
+        if (options.isNotEmpty()) {
+            ChipStrip(
+                items = options.map { it to workspaceShortLabel(it) },
+                selectedId = parent,
+                onSelect = { parent = it },
+            )
+            Spacer(Modifier.height(6.dp))
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("目录名", style = MaterialTheme.typography.labelSmall) },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            TextButton(
+                enabled = name.isNotBlank() && parent.isNotBlank(),
+                onClick = {
+                    val clean = name.trim().trimEnd('\\', '/')
+                    if (clean.isEmpty() || clean.contains('\\') || clean.contains('/')) return@TextButton
+                    onCreate(parent, clean)
+                    name = ""
+                },
+            ) { Text("创建") }
+        }
+    }
+}
+
+@Composable
+private fun LabeledChips(
+    label: String,
+    items: List<String>,
+    selected: String?,
+    onSelect: (String) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
-            text = engine.detail.ifBlank {
-                buildString {
-                    if (engine.multiTurn) append("多轮连续") else append("单轮")
-                    if (engine.progress) append(" · 有进度")
-                }
-            },
+            label,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.width(76.dp),
+        )
+        ChipStrip(
+            items = items.map { it to it },
+            selectedId = selected,
+            onSelect = onSelect,
         )
     }
 }
 
 @Composable
-private fun ChipRow(
+private fun ChipStrip(
     items: List<Pair<String, String>>,
     selectedId: String?,
     onSelect: (String) -> Unit,
 ) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         items.forEach { (id, label) ->
@@ -509,4 +506,42 @@ private fun ChipRow(
             )
         }
     }
+}
+
+/** A Windows drive path or a POSIX absolute path — not a session name. */
+private fun looksLikePath(value: String): Boolean {
+    val v = value.trim()
+    if (v.length < 2) return false
+    return Regex("^[A-Za-z]:[\\\\/]").containsMatchIn(v) || v.startsWith("/") || v.startsWith("\\\\")
+}
+
+private fun workspaceShortLabel(path: String): String {
+    val trimmed = path.trim().trimEnd('\\', '/')
+    val idx = trimmed.lastIndexOfAny(charArrayOf('\\', '/'))
+    return if (idx >= 0 && idx < trimmed.length - 1) trimmed.substring(idx + 1) else trimmed.ifBlank { path }
+}
+
+private fun joinWorkPath(parent: String, name: String): String {
+    val p = parent.trim().trimEnd('\\', '/')
+    return when {
+        p.isEmpty() -> name
+        p.endsWith(':') -> p + "\\" + name
+        else -> p + "\\" + name
+    }
+}
+
+/**
+ * Order the PC's discovery for the picker: wired adapters first, then kernels
+ * that speak ACP, then CLI-shaped ones — and available before missing.
+ */
+private fun kernelChoices(engines: List<EngineInfo>): List<EngineInfo> {
+    if (engines.isEmpty()) {
+        return listOf("codex" to "Codex", "dsh" to "DeepSeek Harness").map { (id, label) ->
+            EngineInfo(id = id, available = true, path = "", multiTurn = true, progress = true, label = label)
+        }
+    }
+    val rank = mapOf("native" to 0, "acp" to 1, "shim" to 2)
+    return engines.sortedWith(
+        compareBy({ rank[it.tier] ?: 3 }, { if (it.available) 0 else 1 }, { it.displayName }),
+    )
 }

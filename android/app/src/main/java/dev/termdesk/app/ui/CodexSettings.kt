@@ -1,7 +1,9 @@
 package dev.termdesk.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,7 +21,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Visibility
@@ -49,20 +52,17 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.termdesk.app.data.CodexConfig
-import dev.termdesk.app.data.EngineInfo
 import dev.termdesk.app.data.CodexProviderTemplate
+import dev.termdesk.app.data.EngineInfo
 import dev.termdesk.app.ui.theme.Semantic
 import dev.termdesk.app.ui.theme.ThemeMode
 
 /**
- * Settings: kernel (target) + appearance + the machine's real ~/.codex config.
+ * Settings: kernel (target), appearance, and the machine's real Codex config.
  *
- * The kernel card comes first because it answers which machine the phone is
- * commanding: a PC kernel runs on the computer and therefore owns its
- * conversations, files, terminal and processes. The Codex form below edits the
- * machine's real ~/.codex file, so it stays explicit about consequences: the
- * exact target path is shown, applying requires confirmation, and a restore
- * path is always visible.
+ * Settings is a list of controls, not an essay: every row states one thing and
+ * does one thing, long content is folded behind the row that owns it, and the
+ * only prose is a single line saying what the kernel choice means.
  */
 @Composable
 fun SettingsSection(
@@ -78,9 +78,10 @@ fun SettingsSection(
     onApply: (String, String, String?, String?, Long?) -> Unit,
     onRestore: (String?) -> Unit,
 ) {
-    // Load once when the screen is first shown.
     LaunchedEffect(Unit) { onLoad() }
 
+    var kernelOpen by remember { mutableStateOf(false) }
+    var modelsOpen by remember { mutableStateOf(false) }
     var providerId by remember { mutableStateOf("") }
     var model by remember { mutableStateOf("") }
     var apiKey by remember { mutableStateOf("") }
@@ -90,7 +91,6 @@ fun SettingsSection(
     var confirmApply by remember { mutableStateOf(false) }
     var confirmRestore by remember { mutableStateOf<String?>(null) }
 
-    // Adopt the template defaults once they arrive.
     LaunchedEffect(templates, config) {
         if (providerId.isEmpty() && templates.isNotEmpty()) {
             val t = templates.first()
@@ -108,27 +108,114 @@ fun SettingsSection(
             .fillMaxSize()
             .imePadding()
             .verticalScroll(rememberScrollState())
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // --- kernel / target (always available) ---
-        KernelCard(
-            engines = engines,
-            defaultEngine = defaultEngine,
-            onSetDefaultEngine = onSetDefaultEngine,
-            onRefresh = onRefreshEngines,
-        )
-
-        // --- appearance (always available, independent of Codex state) ---
+        // --- kernel / target -------------------------------------------------
         Card {
-            Text("外观", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "One Monokai，深浅两套。深色为经典编辑器底色，浅色是暖纸感。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            SettingRow(
+                label = "内核",
+                value = when {
+                    !kernelOpen && defaultEngine != null ->
+                        "远程 · ${engines.find { it.id == defaultEngine }?.displayName ?: defaultEngine}"
+                    kernelOpen -> "远程 · 这台电脑"
+                    else -> "远程 · 这台电脑"
+                },
+                expanded = kernelOpen,
+                onClick = { kernelOpen = !kernelOpen },
             )
-            Spacer(Modifier.height(12.dp))
+            AnimatedVisibility(visible = kernelOpen) {
+                Column(Modifier.padding(top = 6.dp)) {
+                    engines.sortedWith(
+                        compareBy(
+                            { mapOf("native" to 0, "acp" to 1, "shim" to 2)[it.tier] ?: 3 },
+                            { if (it.available) 0 else 1 },
+                            { it.displayName },
+                        ),
+                    ).forEach { engine ->
+                        EngineRow(
+                            engine = engine,
+                            isDefault = engine.id == defaultEngine,
+                            onSelect = { onSetDefaultEngine(engine.id) },
+                        )
+                        Spacer(Modifier.height(5.dp))
+                    }
+                    if (engines.isEmpty()) {
+                        Text(
+                            "正在检测…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "本机 · 手机沙盒",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "未接入",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "远程内核的引擎跑在电脑上；新对话默认用选中的那个。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(Modifier.padding(top = 6.dp)) {
+                        Text(
+                            "重新检测",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable(onClick = onRefreshEngines)
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        // --- appearance ------------------------------------------------------
+        Card {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("外观", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.weight(1f))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(
+                        Modifier
+                            .size(12.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
+                    Box(
+                        Modifier
+                            .size(12.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(Semantic.current.success),
+                    )
+                    Box(
+                        Modifier
+                            .size(12.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(Semantic.current.warning),
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 ThemeMode.entries.forEach { mode ->
                     ChoiceChip(
@@ -139,25 +226,6 @@ fun SettingsSection(
                         },
                         selected = mode == themeMode,
                         onClick = { onThemeModeChange(mode) },
-                    )
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-            // A live swatch row so the choice is visible before leaving the screen.
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf(
-                    MaterialTheme.colorScheme.background,
-                    MaterialTheme.colorScheme.surfaceVariant,
-                    MaterialTheme.colorScheme.primary,
-                    Semantic.current.success,
-                    Semantic.current.warning,
-                    MaterialTheme.colorScheme.error,
-                ).forEach { c ->
-                    Box(
-                        Modifier
-                            .size(26.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(c),
                     )
                 }
             }
@@ -173,23 +241,22 @@ fun SettingsSection(
         }
 
         if (!config.exists) {
-            Text(
-                "未找到 ${config.configPath}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
-            )
-            Text(
-                "请先在电脑上运行一次 Codex 桌面版或 CLI，再回到这里。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Card {
+                Text("Codex 配置", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "电脑上还没有 ${config.configPath}，先运行一次 Codex 再回来。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             return@Column
         }
 
-        // --- current state ---
+        // --- current Codex state --------------------------------------------
         Card {
-            Text("当前配置", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(8.dp))
+            Text("Codex", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
             InfoRow("模型", config.model ?: "—")
             InfoRow("服务商", config.modelProvider ?: "—")
             InfoRow("推理强度", config.reasoningEffort ?: "—")
@@ -197,6 +264,43 @@ fun SettingsSection(
                 InfoRow("上下文", m.contextWindow?.let { formatTokens(it) } ?: "—")
             }
             Spacer(Modifier.height(6.dp))
+            SettingRow(
+                label = "已声明的模型",
+                value = "${config.models.size}",
+                expanded = modelsOpen,
+                onClick = { modelsOpen = !modelsOpen },
+            )
+            AnimatedVisibility(visible = modelsOpen) {
+                Column(Modifier.padding(top = 4.dp)) {
+                    config.models.forEach { m ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                m.slug,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                buildString {
+                                    append(m.contextWindow?.let { formatTokens(it) } ?: "—")
+                                    if (m.reasoningLevels.isNotEmpty()) {
+                                        append(" · ${m.reasoningLevels.joinToString("/")}")
+                                    }
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
             Text(
                 config.configPath,
                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
@@ -206,88 +310,49 @@ fun SettingsSection(
             )
         }
 
-        // --- model catalog ---
-        if (config.models.isNotEmpty()) {
-            Card {
-                Text("已声明的模型", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(8.dp))
-                config.models.forEach { m ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(m.slug, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                            Text(
-                                buildString {
-                                    append(m.contextWindow?.let { formatTokens(it) } ?: "—")
-                                    if (m.vision) append(" · 支持图片")
-                                    if (m.reasoningLevels.isNotEmpty()) {
-                                        append(" · ${m.reasoningLevels.joinToString("/")}")
-                                    }
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
         config.modelsError?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
 
-        // --- edit form ---
+        // --- edit ------------------------------------------------------------
         Card {
-            Text("修改配置", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "会先备份现有配置，只改动下列字段，其余内容原样保留。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(12.dp))
+            Text("修改", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
 
-            // provider
             FieldLabel("服务商")
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                templates.forEach { t ->
-                    ChoiceChip(
-                        label = t.name,
-                        selected = t.id == providerId,
-                        onClick = {
-                            providerId = t.id
-                            model = t.models.firstOrNull().orEmpty()
-                            effort = t.defaultReasoning
-                            contextWindow = t.contextWindow.toString()
-                        },
-                    )
-                }
-            }
+            ChipStrip(
+                items = templates.map { it.id to it.name },
+                selectedId = providerId,
+                onSelect = {
+                    providerId = it
+                    val t = templates.find { t2 -> t2.id == it }
+                    model = t?.models?.firstOrNull().orEmpty()
+                    effort = t?.defaultReasoning.orEmpty()
+                    contextWindow = t?.contextWindow?.toString().orEmpty()
+                },
+            )
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             FieldLabel("模型")
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                (template?.models ?: emptyList()).forEach { m ->
-                    ChoiceChip(label = m, selected = m == model, onClick = { model = m })
-                }
-            }
+            ChipStrip(
+                items = (template?.models ?: emptyList()).map { it to it },
+                selectedId = model,
+                onSelect = { model = it },
+            )
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             FieldLabel("推理强度")
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                (template?.reasoningLevels ?: emptyList()).forEach { e ->
-                    ChoiceChip(label = e, selected = e == effort, onClick = { effort = e })
-                }
-            }
+            ChipStrip(
+                items = (template?.reasoningLevels ?: emptyList()).map { it to it },
+                selectedId = effort,
+                onSelect = { effort = it },
+            )
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             OutlinedTextField(
                 value = contextWindow,
                 onValueChange = { contextWindow = it.filter { c -> c.isDigit() } },
-                label = { Text("上下文窗口 (tokens)") },
+                label = { Text("上下文窗口", style = MaterialTheme.typography.labelSmall) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Number,
@@ -296,7 +361,7 @@ fun SettingsSection(
                 supportingText = {
                     val n = contextWindow.toLongOrNull()
                     Text(
-                        if (n != null) formatTokens(n) else "留空则沿用服务商默认值",
+                        if (n != null) formatTokens(n) else "留空沿用默认",
                         style = MaterialTheme.typography.labelSmall,
                     )
                 },
@@ -304,11 +369,11 @@ fun SettingsSection(
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = apiKey,
                 onValueChange = { apiKey = it },
-                label = { Text("API Key") },
+                label = { Text("API Key", style = MaterialTheme.typography.labelSmall) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Password,
@@ -329,8 +394,7 @@ fun SettingsSection(
                 supportingText = {
                     val existing = config.providers.find { it.id == providerId }?.hasToken == true
                     Text(
-                        if (existing && apiKey.isBlank()) "已保存密钥，留空则保持不变"
-                        else "以 ${template?.keyPrefix ?: "sk-"} 开头，仅写入这台电脑",
+                        if (existing && apiKey.isBlank()) "已保存，留空保持不变" else "仅写入这台电脑",
                         style = MaterialTheme.typography.labelSmall,
                     )
                 },
@@ -338,7 +402,7 @@ fun SettingsSection(
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
             Button(
                 onClick = { confirmApply = true },
                 enabled = providerId.isNotBlank() && model.isNotBlank(),
@@ -347,27 +411,14 @@ fun SettingsSection(
             ) {
                 Icon(Icons.Outlined.Save, contentDescription = null, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(7.dp))
-                Text("应用到 Codex")
+                Text("应用")
             }
         }
 
-        // --- backups ---
         if (config.backups.isNotEmpty()) {
             Card {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "配置备份",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        "${config.backups.size} 份",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
+                Text("备份", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
                 config.backups.take(5).forEach { name ->
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
@@ -397,11 +448,7 @@ fun SettingsSection(
     if (confirmApply) {
         ConfirmDialog(
             title = "应用到 Codex",
-            body = buildString {
-                append("将把 $model 写入 Codex 配置。\n\n")
-                append("目标文件：${config?.configPath}\n\n")
-                append("写入前会自动备份现有配置；其余设置（MCP、项目信任级别等）保持不变。")
-            },
+            body = "将把 $model 写入 ${config?.configPath}。\n\n写入前自动备份，其余设置保持不变。",
             confirmLabel = "确认写入",
             onConfirm = {
                 onApply(providerId, model, apiKey.ifBlank { null }, effort, contextWindow.toLongOrNull())
@@ -415,7 +462,7 @@ fun SettingsSection(
     confirmRestore?.let { name ->
         ConfirmDialog(
             title = "恢复备份",
-            body = "将用 ${name.removePrefix("config-").removeSuffix(".toml")} 覆盖当前配置。\n\n当前配置也会先被备份，可以再恢复回来。",
+            body = "将用 ${name.removePrefix("config-").removeSuffix(".toml")} 覆盖当前配置。\n\n当前配置也会先被备份。",
             confirmLabel = "恢复",
             onConfirm = {
                 onRestore(name)
@@ -426,12 +473,95 @@ fun SettingsSection(
     }
 }
 
+/** One tappable row: name on the left, current value and a chevron on the right. */
+@Composable
+private fun SettingRow(
+    label: String,
+    value: String,
+    expanded: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.width(6.dp))
+        Icon(
+            imageVector = if (expanded) Icons.Outlined.KeyboardArrowUp
+            else Icons.Outlined.KeyboardArrowDown,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+    }
+}
+
+/** One engine the PC reported, with the reason it is or is not pickable. */
+@Composable
+private fun EngineRow(
+    engine: EngineInfo,
+    isDefault: Boolean,
+    onSelect: () -> Unit,
+) {
+    val status = when {
+        !engine.available -> "未安装"
+        engine.tier == "acp" -> "ACP·未接入"
+        engine.tier == "shim" -> "CLI·需 shim"
+        else -> "可用"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (isDefault) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surface,
+            )
+            .then(if (engine.selectable) Modifier.clickable(onClick = onSelect) else Modifier)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            engine.displayName,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (isDefault) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (engine.selectable) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = if (isDefault) "默认" else status,
+            style = MaterialTheme.typography.labelSmall,
+            color = when {
+                isDefault -> MaterialTheme.colorScheme.primary
+                engine.selectable -> MaterialTheme.colorScheme.onSurfaceVariant
+                else -> MaterialTheme.colorScheme.error
+            },
+            maxLines = 1,
+        )
+    }
+}
+
 @Composable
 private fun Card(content: @Composable () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(10.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(14.dp),
     ) { content() }
@@ -441,10 +571,10 @@ private fun Card(content: @Composable () -> Unit) {
 private fun FieldLabel(text: String) {
     Text(
         text,
-        style = MaterialTheme.typography.labelMedium,
+        style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    Spacer(Modifier.height(6.dp))
+    Spacer(Modifier.height(5.dp))
 }
 
 @Composable
@@ -466,6 +596,39 @@ private fun ChoiceChip(label: String, selected: Boolean, onClick: () -> Unit) {
             else MaterialTheme.colorScheme.onSurfaceVariant,
             fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
         )
+    }
+}
+
+@Composable
+private fun ChipStrip(
+    items: List<Pair<String, String>>,
+    selectedId: String?,
+    onSelect: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        items.forEach { (id, label) ->
+            val selected = id == selectedId
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surface,
+                    )
+                    .clickable { onSelect(id) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
     }
 }
 
@@ -494,185 +657,4 @@ private fun formatTokens(n: Long): String = when {
     n >= 1_048_576 -> "${n / 1_048_576}M tokens"
     n >= 1024 -> "${n / 1024}K tokens"
     else -> "$n tokens"
-}
-
-
-/**
- * Kernel picker, in Settings rather than buried in the new-chat sheet.
- *
- * A kernel is not a per-message option: it is the target the whole app drives.
- * Wired PC kernels (codex/dsh) are selectable and can be made the default.
- * Kernels the PC found but whose adapter is not written yet are listed with the
- * reason, so "why can I not pick this" is answered on the spot instead of by
- * silence. Nothing here is invented: status text comes from the PC's own probe.
- */
-@Composable
-private fun KernelCard(
-    engines: List<EngineInfo>,
-    defaultEngine: String?,
-    onSetDefaultEngine: (String?) -> Unit,
-    onRefresh: () -> Unit,
-) {
-    Card {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "内核与目标",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onRefresh) {
-                Icon(
-                    Icons.Outlined.Refresh,
-                    contentDescription = "重新检测",
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-        }
-        Spacer(Modifier.height(2.dp))
-        Text(
-            "内核就是目标：选了它，会话、文件、终端、进程就都指向它。" +
-                "产品上只有两个内核——远程（这台电脑）与本机（手机沙盒）；" +
-                "codex / dsh 这类引擎是远程内核里的选择，不是另一个内核。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(12.dp))
-        Text(
-            "远程 · 这台电脑",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            "引擎跑在电脑上，因此指向电脑的任务、文件夹、终端与进程；离开电脑就用不了。"
-            ,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(10.dp))
-        if (engines.isEmpty()) {
-            Text(
-                "正在检测这台电脑上可用的内核…",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            return@Card
-        }
-        engines.sortedWith(
-            compareBy(
-                { mapOf("native" to 0, "acp" to 1, "shim" to 2)[it.tier] ?: 3 },
-                { if (it.available) 0 else 1 },
-                { it.displayName },
-            ),
-        ).forEach { engine ->
-            KernelRow(
-                engine = engine,
-                isDefault = engine.id == defaultEngine,
-                onSetDefault = { onSetDefaultEngine(engine.id) },
-            )
-            Spacer(Modifier.height(6.dp))
-        }
-        if (defaultEngine == null) {
-            Text(
-                "尚未指定默认引擎，新对话将使用第一个可用引擎。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        Spacer(Modifier.height(14.dp))
-        Text(
-            "本机 · Termux 沙盒",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            "尚未接入：手机侧运行时还没打包，所以本机的文件、沙盒、Linux 终端与进程暂不可选。" +
-                "实现后，这里会出现第二个可选项。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-private fun KernelRow(
-    engine: EngineInfo,
-    isDefault: Boolean,
-    onSetDefault: () -> Unit,
-) {
-    val status = when {
-        !engine.available -> "未安装"
-        engine.tier == "acp" -> "ACP · 适配器未接入"
-        engine.tier == "shim" -> "CLI · 需要 shim"
-        else -> "已接入"
-    }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(
-                if (isDefault) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surface,
-            )
-            .padding(horizontal = 11.dp, vertical = 9.dp),
-    ) {
-        // The name owns the row and the action sits at the end: on a 145%-font
-        // phone an inline status label squeezed every name down to one letter.
-        // The status therefore moved to the second line, where it wraps freely.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                engine.displayName,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                color = if (isDefault) MaterialTheme.colorScheme.onPrimaryContainer
-                else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(8.dp))
-            when {
-                isDefault -> Text(
-                    "默认",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                )
-                engine.selectable -> Text(
-                    "设为默认",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable(onClick = onSetDefault)
-                        .padding(horizontal = 8.dp, vertical = 3.dp),
-                )
-            }
-        }
-        Spacer(Modifier.height(2.dp))
-        Text(
-            buildString {
-                append(status)
-                append(" · ")
-                append(
-                    engine.detail.ifBlank {
-                        if (engine.resume) "历史可续聊" else "历史只读"
-                    },
-                )
-                if (engine.path.isNotBlank()) append(" · ${engine.path}")
-            },
-            style = MaterialTheme.typography.labelSmall,
-            color = if (!engine.available) MaterialTheme.colorScheme.error
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
 }

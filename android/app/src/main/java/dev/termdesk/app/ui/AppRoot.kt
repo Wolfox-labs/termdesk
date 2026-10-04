@@ -68,6 +68,12 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     // this machine can actually talk to instead of a guessed list.
     LaunchedEffect(connected) { if (connected) vm.loadEngines() }
 
+    // The conversation's own panel offers the model / effort pickers, so the
+    // Codex catalog has to exist as soon as a Codex conversation is open.
+    LaunchedEffect(activeChat?.engine) {
+        if (activeChat?.engine == "codex") vm.loadCodexConfig()
+    }
+
     val hostname = when (val state = link) {
         is LinkState.Connected -> state.hostname
         is LinkState.NodeOffline -> state.hostname
@@ -180,6 +186,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 onCancelChat = vm::cancelChat,
                 onCloseChat = vm::closeChat,
                 onLeaveChat = vm::leaveChat,
+                onConfigureChat = vm::configureChat,
                 onCloseRecorded = vm::closeSession,
                 onLoadSessions = { vm.loadSessions() },
                 onOpenSession = { session -> vm.openSession(session) },
@@ -220,9 +227,9 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 defaultEngine = defaultEngine,
                 suggestedCwd = newChatSuggestedCwd,
                 defaultCwd = vm.defaultCwd,
-                onCreateChat = { cwd, engine, provider, model, title ->
+                onCreateChat = { cwd, engine, provider, model, title, effort ->
                     newChatOpen = false
-                    vm.createChat(cwd, engine, provider, model, title)
+                    vm.createChat(cwd, engine, provider, model, title, effort)
                 },
                 onCreateDirectory = { parent, name ->
                     vm.createEntry(parent, name, true)

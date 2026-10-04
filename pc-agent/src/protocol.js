@@ -45,6 +45,7 @@ export const C2S = {
   CHAT_CREATE: 'chat.create',
   CHAT_RESUME: 'chat.resume',
   CHAT_SEND: 'chat.send',
+  CHAT_CONFIG: 'chat.config',
   CHAT_READ: 'chat.read',
   CHAT_CANCEL: 'chat.cancel',
   CHAT_CLOSE: 'chat.close',

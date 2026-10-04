@@ -604,8 +604,32 @@ export function createFrameHandler(ctx) {
         break;
       }
 
+      case C2S.CHAT_CONFIG: {
+        const result = chats.setConfig(frame.chatId, {
+          model: frame.model,
+          effort: frame.effort,
+          title: frame.title,
+        });
+        if (result.ok) {
+          send(S2C.CHAT, result.chat);
+          send(S2C.CHATS, { chats: chats.list() });
+        } else {
+          send(S2C.ACTION_RESULT, {
+            action: 'chat.config',
+            target: frame.chatId ?? '',
+            ok: false,
+            code: result.code,
+            message: result.message,
+          });
+        }
+        break;
+      }
+
       case C2S.CHAT_SEND: {
-        const result = await chats.send(frame.chatId, frame.text);
+        const result = await chats.send(frame.chatId, frame.text, {
+          model: frame.model,
+          effort: frame.effort,
+        });
         if (result.ok) {
           send(S2C.CHAT_SENT, {
             chatId: frame.chatId,
