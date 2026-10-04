@@ -22,9 +22,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Settings
@@ -39,6 +42,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +58,7 @@ import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
+import dev.termdesk.app.data.EngineInfo
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.HostStatus
 import dev.termdesk.app.data.ProcessInfo
@@ -152,11 +157,26 @@ fun AppShell(
     connected: Boolean,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    engines: List<EngineInfo>,
+    defaultEngine: String?,
+    onSetDefaultEngine: (String?) -> Unit,
+    onRefreshEngines: () -> Unit,
     onDisconnect: () -> Unit,
     connectionLabel: String,
 ) {
     var section by remember { mutableStateOf(Section.Sessions) }
     var panelOpen by remember { mutableStateOf(false) }
+    // The hostname row is folded by default on a phone: it costs vertical space
+    // on every screen while the section rail already shows where you are.
+    var topBarCollapsed by rememberSaveable { mutableStateOf(false) }
+
+    // System back walks *up* the app before it leaves it: close the slide-over
+    // panel first, then return to the conversation list from another section.
+    // The conversation and its drawer register their own handlers, which are
+    // composed later and therefore take precedence over this one.
+    BackHandler(enabled = panelOpen || section != Section.Sessions) {
+        if (panelOpen) panelOpen = false else section = Section.Sessions
+    }
 
     Box(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxSize()) {
@@ -173,6 +193,8 @@ fun AppShell(
                 TopBar(
                     hostname = hostname,
                     section = section,
+                    collapsed = topBarCollapsed,
+                    onToggleCollapsed = { topBarCollapsed = !topBarCollapsed },
                     panelOpen = panelOpen,
                     onTogglePanel = { panelOpen = !panelOpen },
                     onDisconnect = onDisconnect,
@@ -237,6 +259,10 @@ fun AppShell(
                         connected = connected,
                         themeMode = themeMode,
                         onThemeModeChange = onThemeModeChange,
+                        engines = engines,
+                        defaultEngine = defaultEngine,
+                        onSetDefaultEngine = onSetDefaultEngine,
+                        onRefreshEngines = onRefreshEngines,
                     )
                 }
             }
@@ -318,41 +344,71 @@ private fun NavigationRail(current: Section, onSelect: (Section) -> Unit) {
 private fun TopBar(
     hostname: String,
     section: Section,
+    collapsed: Boolean,
+    onToggleCollapsed: () -> Unit,
     panelOpen: Boolean,
     onTogglePanel: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
+    // One row, foldable. Expanded it names the machine and the section; folded it
+    // keeps only the section and a chevron, so the work area gets the space back.
+    // Tapping anywhere on the left half toggles it: a phone has no room for a
+    // dedicated control that is used once per session.
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(50.dp)
+            .height(if (collapsed) 34.dp else 48.dp)
             .background(MaterialTheme.colorScheme.surface)
-            .padding(start = 12.dp, end = 2.dp),
+            .padding(start = 8.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(MeterChars.ok),
-        )
-        Spacer(Modifier.width(9.dp))
-        Text(
-            text = hostname,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = section.label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-        )
-        Spacer(Modifier.weight(1f))
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(9.dp))
+                .clickable(onClick = onToggleCollapsed)
+                .padding(horizontal = 4.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = if (collapsed) Icons.Outlined.KeyboardArrowDown
+                else Icons.Outlined.KeyboardArrowUp,
+                contentDescription = if (collapsed) "展开顶栏" else "收起顶栏",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Box(
+                Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(MeterChars.ok),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = section.label,
+                style = if (collapsed) MaterialTheme.typography.bodySmall
+                else MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                color = if (collapsed) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.onSurface,
+            )
+            if (!collapsed) {
+                // The section name has its own room already, so the hostname is
+                // the part that may shrink — and it shrinks to the right of it
+                // rather than pushing the label off screen.
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = hostname,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+            }
+        }
         IconButton(onClick = onTogglePanel) {
             Icon(
                 imageVector = Icons.Outlined.Memory,
@@ -370,7 +426,6 @@ private fun TopBar(
         }
     }
 }
-
 @Composable
 private fun SectionBody(
     section: Section,
@@ -431,6 +486,10 @@ private fun SectionBody(
     connected: Boolean,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    engines: List<EngineInfo>,
+    defaultEngine: String?,
+    onSetDefaultEngine: (String?) -> Unit,
+    onRefreshEngines: () -> Unit,
 ) {
     when (section) {
         Section.System -> SystemSection(
@@ -489,11 +548,15 @@ private fun SectionBody(
                         onResumeSession = onResumeSession,
                         connected = connected,
         )
-        Section.Settings -> CodexSettingsSection(
+        Section.Settings -> SettingsSection(
             config = codexConfig,
             templates = codexTemplates,
             themeMode = themeMode,
             onThemeModeChange = onThemeModeChange,
+            engines = engines,
+            defaultEngine = defaultEngine,
+            onSetDefaultEngine = onSetDefaultEngine,
+            onRefreshEngines = onRefreshEngines,
             onLoad = onCodexLoad,
             onApply = onCodexApply,
             onRestore = onCodexRestore,

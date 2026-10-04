@@ -62,6 +62,7 @@ fun NewChatSheet(
     engines: List<EngineInfo>,
     workspaces: List<WorkspaceInfo>,
     codexConfig: CodexConfig?,
+    defaultEngine: String? = null,
     suggestedCwd: String?,
     defaultCwd: String,
     onCreateChat: (
@@ -76,8 +77,12 @@ fun NewChatSheet(
 ) {
     val kernels = remember(engines) { kernelChoices(engines) }
 
-    // Kernel starts unselected: the product requires an explicit pick.
-    var engineId by remember { mutableStateOf<String?>(null) }
+    // The kernel is the target the phone drives, and Settings holds the user's
+    // default. So the sheet pre-selects it (falling back to the first wired
+    // adapter) — the user only touches it when they mean to switch targets.
+    val preferredEngine = defaultEngine?.takeIf { id -> kernels.any { it.selectable && it.id == id } }
+        ?: kernels.firstOrNull { it.selectable }?.id
+    var engineId by remember(kernels, preferredEngine) { mutableStateOf<String?>(preferredEngine) }
 
     // Model/provider follow the kernel. Codex can pick from its catalog;
     // dsh routes by itself and only shows a default-route caption.

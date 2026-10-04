@@ -1,5 +1,7 @@
 package dev.termdesk.app.ui
 
+import androidx.activity.compose.BackHandler
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -50,6 +52,8 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     val sessionDetail by vm.sessionDetail.collectAsState()
     val themeMode by vm.themeMode.collectAsState()
     val engines by vm.engines.collectAsState()
+    val defaultEngine by vm.defaultEngine.collectAsState()
+
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -59,6 +63,11 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     var newChatOpen by remember { mutableStateOf(false) }
     var connectionOpen by remember { mutableStateOf(vm.savedToken.isBlank()) }
     val connected = link is LinkState.Connected
+    // Kernel discovery is metadata only (it never runs a model), so it can be
+    // refreshed on every connect: Settings and the new-chat sheet then show what
+    // this machine can actually talk to instead of a guessed list.
+    LaunchedEffect(connected) { if (connected) vm.loadEngines() }
+
     val hostname = when (val state = link) {
         is LinkState.Connected -> state.hostname
         is LinkState.NodeOffline -> state.hostname
@@ -82,6 +91,17 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
             )
         }
         vm.clearLastAction()
+    }
+
+    // Back dismisses what is on top, in order: the new-chat sheet, then an open
+    // file. Deeper layers (drawer, conversation, section) register their own
+    // handlers and win by being composed later. Only when nothing is open does
+    // the press reach the OS and leave the app.
+    BackHandler(enabled = newChatOpen || openFile != null) {
+        when {
+            newChatOpen -> newChatOpen = false
+            else -> vm.closeOpenFile()
+        }
     }
 
     Box(
@@ -167,6 +187,10 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 connected = connected,
                 themeMode = themeMode,
                 onThemeModeChange = vm::setThemeMode,
+                engines = engines,
+                defaultEngine = defaultEngine,
+                onSetDefaultEngine = vm::setDefaultEngine,
+                onRefreshEngines = vm::loadEngines,
                 onDisconnect = { connectionOpen = true },
                 connectionLabel = connectionLabel,
             )
@@ -193,6 +217,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 engines = engines,
                 workspaces = workspaces,
                 codexConfig = codexConfig,
+                defaultEngine = defaultEngine,
                 suggestedCwd = newChatSuggestedCwd,
                 defaultCwd = vm.defaultCwd,
                 onCreateChat = { cwd, engine, provider, model, title ->

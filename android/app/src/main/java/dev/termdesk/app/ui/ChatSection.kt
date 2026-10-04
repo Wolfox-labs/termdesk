@@ -1,5 +1,6 @@
 package dev.termdesk.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -115,6 +116,18 @@ fun ChatSection(
     connected: Boolean,
 ) {
     var drawerOpen by remember { mutableStateOf(false) }
+
+    // System back walks *out* of what is on screen instead of out of the app:
+    // the drawer first, then a recorded (read-only) session, then the open
+    // conversation. When none of those is showing, the press falls through to
+    // the shell, which returns to the session list before the OS leaves the app.
+    BackHandler(enabled = drawerOpen || recordedSession != null || activeChat != null) {
+        when {
+            drawerOpen -> drawerOpen = false
+            recordedSession != null -> onCloseRecorded()
+            else -> onLeaveChat()
+        }
+    }
 
     LaunchedEffect(Unit) {
         onLoadChats()

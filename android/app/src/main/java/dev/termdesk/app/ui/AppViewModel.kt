@@ -100,6 +100,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val liveEvents: StateFlow<List<TaskEvent>> = client.liveEvents
 
     fun loadEngines() = client.loadEngines()
+
+    /**
+     * Default kernel for new conversations, chosen in Settings.
+     *
+     * The kernel is the *target* the phone drives: a PC kernel (codex/dsh) runs
+     * on the computer and therefore owns its files, terminal and processes. The
+     * choice is a user preference, not a per-chat guess, so it lives in prefs and
+     * the new-chat sheet only pre-selects it (the user can still override).
+     */
+    private val _defaultEngine = MutableStateFlow(prefs.getString(KEY_ENGINE, null))
+    val defaultEngine: StateFlow<String?> = _defaultEngine.asStateFlow()
+
+    fun setDefaultEngine(engine: String?) {
+        val clean = engine?.takeIf { it.isNotBlank() }
+        _defaultEngine.value = clean
+        prefs.edit().putString(KEY_ENGINE, clean).apply()
+    }
     fun loadTasks() = client.loadTasks()
     fun submitTask(engine: String, prompt: String, cwd: String?, resume: Boolean) =
         client.submitTask(engine, prompt, cwd, resume)
@@ -241,6 +258,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_TOKEN = "token"
         const val KEY_START_PATH = "startPath"
         const val KEY_THEME = "themeMode"
+        const val KEY_ENGINE = "defaultEngine"
 
         /**
          * Loopback placeholder only: the real agent address is a deployment

@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Visibility
@@ -48,23 +49,31 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.termdesk.app.data.CodexConfig
+import dev.termdesk.app.data.EngineInfo
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.ui.theme.Semantic
 import dev.termdesk.app.ui.theme.ThemeMode
 
 /**
- * Codex provider settings.
+ * Settings: kernel (target) + appearance + the machine's real ~/.codex config.
  *
- * This screen edits the machine's real ~/.codex configuration, so it is built
- * to be explicit about consequences: the exact target path is shown, applying
- * requires confirmation, and a restore path is always visible.
+ * The kernel card comes first because it answers which machine the phone is
+ * commanding: a PC kernel runs on the computer and therefore owns its
+ * conversations, files, terminal and processes. The Codex form below edits the
+ * machine's real ~/.codex file, so it stays explicit about consequences: the
+ * exact target path is shown, applying requires confirmation, and a restore
+ * path is always visible.
  */
 @Composable
-fun CodexSettingsSection(
+fun SettingsSection(
     config: CodexConfig?,
     templates: List<CodexProviderTemplate>,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    engines: List<EngineInfo>,
+    defaultEngine: String?,
+    onSetDefaultEngine: (String?) -> Unit,
+    onRefreshEngines: () -> Unit,
     onLoad: () -> Unit,
     onApply: (String, String, String?, String?, Long?) -> Unit,
     onRestore: (String?) -> Unit,
@@ -102,6 +111,14 @@ fun CodexSettingsSection(
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // --- kernel / target (always available) ---
+        KernelCard(
+            engines = engines,
+            defaultEngine = defaultEngine,
+            onSetDefaultEngine = onSetDefaultEngine,
+            onRefresh = onRefreshEngines,
+        )
+
         // --- appearance (always available, independent of Codex state) ---
         Card {
             Text("外观", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -477,4 +494,155 @@ private fun formatTokens(n: Long): String = when {
     n >= 1_048_576 -> "${n / 1_048_576}M tokens"
     n >= 1024 -> "${n / 1024}K tokens"
     else -> "$n tokens"
+}
+
+
+/**
+ * Kernel picker, in Settings rather than buried in the new-chat sheet.
+ *
+ * A kernel is not a per-message option: it is the target the whole app drives.
+ * Wired PC kernels (codex/dsh) are selectable and can be made the default.
+ * Kernels the PC found but whose adapter is not written yet are listed with the
+ * reason, so "why can I not pick this" is answered on the spot instead of by
+ * silence. Nothing here is invented: status text comes from the PC's own probe.
+ */
+@Composable
+private fun KernelCard(
+    engines: List<EngineInfo>,
+    defaultEngine: String?,
+    onSetDefaultEngine: (String?) -> Unit,
+    onRefresh: () -> Unit,
+) {
+    Card {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "内核与目标",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onRefresh) {
+                Icon(
+                    Icons.Outlined.Refresh,
+                    contentDescription = "重新检测",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "内核决定这台手机在指挥谁。Codex / DSH 这类 PC 内核跑在电脑上，对话、文件、终端、进程都指向那台电脑；" +
+                "手机本机内核尚未接入。新对话默认使用这里选定的内核。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(10.dp))
+        if (engines.isEmpty()) {
+            Text(
+                "正在检测这台电脑上可用的内核…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Card
+        }
+        engines.sortedWith(
+            compareBy(
+                { mapOf("native" to 0, "acp" to 1, "shim" to 2)[it.tier] ?: 3 },
+                { if (it.available) 0 else 1 },
+                { it.displayName },
+            ),
+        ).forEach { engine ->
+            KernelRow(
+                engine = engine,
+                isDefault = engine.id == defaultEngine,
+                onSetDefault = { onSetDefaultEngine(engine.id) },
+            )
+            Spacer(Modifier.height(6.dp))
+        }
+        if (defaultEngine == null) {
+            Text(
+                "尚未指定默认内核，新对话将使用第一个可用内核。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun KernelRow(
+    engine: EngineInfo,
+    isDefault: Boolean,
+    onSetDefault: () -> Unit,
+) {
+    val status = when {
+        !engine.available -> "未安装"
+        engine.tier == "acp" -> "ACP · 适配器未接入"
+        engine.tier == "shim" -> "CLI · 需要 shim"
+        else -> "已接入"
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (isDefault) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surface,
+            )
+            .padding(horizontal = 11.dp, vertical = 9.dp),
+    ) {
+        // The name owns the row and the action sits at the end: on a 145%-font
+        // phone an inline status label squeezed every name down to one letter.
+        // The status therefore moved to the second line, where it wraps freely.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                engine.displayName,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = if (isDefault) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            when {
+                isDefault -> Text(
+                    "默认",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                )
+                engine.selectable -> Text(
+                    "设为默认",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(onClick = onSetDefault)
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            buildString {
+                append(status)
+                append(" · ")
+                append(
+                    engine.detail.ifBlank {
+                        if (engine.resume) "历史可续聊" else "历史只读"
+                    },
+                )
+                if (engine.path.isNotBlank()) append(" · ${engine.path}")
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (!engine.available) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
