@@ -371,19 +371,23 @@ private fun joinWorkPath(parent: String, name: String): String {
     }
 }
 
+/**
+ * Order the PC's discovery for the picker: wired adapters first, then kernels
+ * that speak ACP, then CLI-shaped ones — and available before missing.
+ *
+ * The list comes from the PC, so a kernel that is installed but not integrated
+ * yet shows up as such instead of being hidden or silently offered.
+ */
 private fun kernelChoices(engines: List<EngineInfo>): List<EngineInfo> {
-    val byId = engines.associateBy { it.id }
-    val base = listOf("codex", "dsh").map { id ->
-        byId[id] ?: EngineInfo(
-            id = id,
-            available = true,
-            path = "",
-            multiTurn = true,
-            progress = true,
-        )
+    if (engines.isEmpty()) {
+        return listOf("codex" to "Codex", "dsh" to "DeepSeek Harness").map { (id, label) ->
+            EngineInfo(id = id, available = true, path = "", multiTurn = true, progress = true, label = label)
+        }
     }
-    val rest = engines.filter { it.id != "codex" && it.id != "dsh" }
-    return base + rest
+    val rank = mapOf("native" to 0, "acp" to 1, "shim" to 2)
+    return engines.sortedWith(
+        compareBy({ rank[it.tier] ?: 3 }, { if (it.available) 0 else 1 }, { it.displayName }),
+    )
 }
 
 @Composable
@@ -403,39 +407,68 @@ private fun KernelRow(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    Row(
+    val enabled = engine.selectable
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .background(
-                if (selected) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surface,
+                when {
+                    selected -> MaterialTheme.colorScheme.primaryContainer
+                    enabled -> MaterialTheme.colorScheme.surface
+                    else -> MaterialTheme.colorScheme.surfaceVariant
+                },
             )
-            .clickable(onClick = onClick)
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                engine.id,
+                engine.displayName,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
-                color = if (selected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurface,
+                color = when {
+                    selected -> MaterialTheme.colorScheme.primary
+                    enabled -> MaterialTheme.colorScheme.onSurface
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
             )
+            Spacer(Modifier.size(6.dp))
             Text(
-                text = buildString {
-                    if (engine.multiTurn) append("多轮连续") else append("单轮")
-                    if (engine.progress) append(" · 有进度")
-                    if (!engine.available) append(" · 不可用")
+                text = when (engine.tier) {
+                    "acp" -> "ACP"
+                    "shim" -> "CLI"
+                    else -> "已接入"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(horizontal = 5.dp, vertical = 1.dp),
             )
+            if (!engine.available) {
+                Spacer(Modifier.size(6.dp))
+                Text("未安装", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, maxLines = 1)
+            }
         }
+        Spacer(Modifier.size(2.dp))
+        Text(
+            text = engine.detail.ifBlank {
+                buildString {
+                    if (engine.multiTurn) append("多轮连续") else append("单轮")
+                    if (engine.progress) append(" · 有进度")
+                }
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

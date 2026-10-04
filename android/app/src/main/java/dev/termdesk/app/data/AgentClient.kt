@@ -1374,6 +1374,10 @@ class AgentClient(
                         path = o.optString("path"),
                         multiTurn = o.optBoolean("multiTurn", false),
                         progress = o.optBoolean("progress", false),
+                        label = o.optString("label"),
+                        tier = o.optString("tier", "native"),
+                        detail = o.optString("detail"),
+                        resume = o.optBoolean("resume", false),
                     ),
                 )
             }

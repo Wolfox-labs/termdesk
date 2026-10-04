@@ -204,53 +204,49 @@ fun ChatSection(
 
 @Composable
 private fun RecordedSessionHeader(session: SessionDetail, onClose: () -> Unit, onResume: () -> Unit, canResume: Boolean) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(52.dp)
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onClose) {
-            Icon(
-                Icons.Outlined.ArrowBack,
-                contentDescription = "返回",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Column(Modifier.weight(1f)) {
+    // Two rows. The title row carries only icon + title + action, so the title is
+    // not squeezed against the badge; the detail line below has the badge as a
+    // prefix and wraps up to two lines, so a long path stays readable instead of
+    // collapsing into an ellipsis.
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onClose) {
+                Icon(Icons.Outlined.ArrowBack, contentDescription = "返回", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Text(
                 session.title?.takeIf { it.isNotBlank() } ?: "会话记录",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
             )
+            TextButton(onClick = onResume, enabled = canResume) { Text("继续对话") }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            KernelBadge(session.engine)
             Text(
                 text = buildString {
-                    append(session.engine)
-                    session.cwd?.let { append(" · $it") }
-                    append(" · ${session.totalEvents} 条")
+                    session.cwd?.takeIf { it.isNotBlank() }?.let { append(it) }
+                    if (isNotEmpty()) append(" · ")
+                    append("${session.totalEvents} 条")
                     if (session.truncated) append("（已截断）")
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(start = 6.dp),
             )
         }
-        TextButton(onClick = onResume, enabled = canResume) { Text("继续对话") }
     }
 }
-
-/**
- * A session recorded on disk, shown read-only.
- *
- * Recorded events use the stored vocabulary rather than the live chat kinds, so
- * they are mapped onto the same rows. Nothing is rewritten: this is the engine's
- * own record, which is exactly what the user asked to see.
- */
 @Composable
 private fun RecordedTranscript(session: SessionDetail) {
     if (session.events.isEmpty()) {
@@ -304,67 +300,89 @@ private fun ChatHeader(
     onNew: () -> Unit,
     onLeave: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(52.dp)
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onMenu) {
-            Icon(
-                Icons.Outlined.Menu,
-                contentDescription = "会话列表",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (activeChat != null) {
-            IconButton(onClick = onLeave) {
-                Icon(
-                    Icons.Outlined.ArrowBack,
-                    contentDescription = "返回列表",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+    // Same two-row shape as the recorded header: the title keeps its own room,
+    // and the engine/model/cwd line gets the full width and wraps to two lines.
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onMenu) {
+                Icon(Icons.Outlined.Menu, contentDescription = "会话列表", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        }
-
-        Column(Modifier.weight(1f)) {
+            if (activeChat != null) {
+                IconButton(onClick = onLeave) {
+                    Icon(Icons.Outlined.ArrowBack, contentDescription = "返回列表", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             Text(
                 text = activeChat?.title ?: "会话",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
             )
-            val subtitle = activeChat?.let { chat ->
-                buildString {
-                    append(chat.model.ifBlank { chat.provider })
-                    when {
-                        chat.isRunning -> append(" · 回复中")
-                        chat.ready -> append(" · 就绪")
-                        chat.isFailed -> append(" · 失败")
-                        else -> append(" · 未启动")
-                    }
-                }
-            } ?: "选择或新建一个对话"
+            IconButton(onClick = onNew) {
+                Icon(Icons.Outlined.Add, contentDescription = "新建会话", tint = MaterialTheme.colorScheme.primary)
+            }
+        }
+        if (activeChat != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                KernelBadge(activeChat.engine)
+                Text(
+                    text = buildString {
+                        append(activeChat.model.ifBlank { activeChat.provider })
+                        when {
+                            activeChat.isRunning -> append(" · 回复中")
+                            activeChat.ready -> append(" · 就绪")
+                            activeChat.isFailed -> append(" · 失败")
+                            else -> append(" · 未启动")
+                        }
+                        if (activeChat.cwd.isNotBlank()) append(" · ${activeChat.cwd}")
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(start = 6.dp),
+                )
+            }
+        } else {
             Text(
-                subtitle,
+                "选择或新建一个对话",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-
-        IconButton(onClick = onNew) {
-            Icon(
-                Icons.Outlined.Add,
-                contentDescription = "新建会话",
-                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
             )
         }
     }
+}
+
+/** Small badge so a glance tells you which kernel a conversation runs on. */
+@Composable
+private fun KernelBadge(engine: String?) {
+    val text = when (engine?.lowercase()) {
+        null, "" -> return
+        "codex" -> "CODEX"
+        "dsh" -> "DSH"
+        else -> engine.uppercase()
+    }
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onPrimaryContainer,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    )
 }
 
 /**

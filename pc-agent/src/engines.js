@@ -496,26 +496,105 @@ export class EngineManager {
     });
   }
 
-  /** Engines available on this machine, for the client to offer. */
+  /**
+   * Kernel discovery: what this PC can actually talk to.
+   *
+   * Answers three questions the picker needs — is it installed, how is it
+   * reached, and what can it do — and is honest about the tier:
+   *
+   *   native  an adapter is wired into the chat pipeline (codex, dsh)
+   *   acp     the kernel serves ACP (session list/resume/prompt); adapter pending
+   *   shim    CLI-shaped kernel; needs a manifest shim
+   *
+   * `detail` is user-facing: it says *why* an entry is not usable, so the picker
+   * never offers something the phone cannot actually open.
+   *
+   * Discovery is deliberately cheap (PATH + known install paths, no process
+   * spawn). `TERMDESK_KERNELS_PROBE=1` additionally runs the ACP handshakes and
+   * reports the declared capabilities.
+   */
   async probeEngines() {
     const codex = findCodex();
     const dsh = findDsh();
-    return [
+    const list = [
       {
         id: 'codex',
+        label: 'Codex',
+        tier: 'native',
+        transport: 'app-server',
         available: fs.existsSync(codex) || codex === 'codex',
         path: codex,
+        detail: '官方 app-server：列表/读取/恢复/fork/打断全部由内核提供',
         multiTurn: true,
         progress: true,
+        resume: true,
       },
       {
         id: 'dsh',
+        label: 'DeepSeek Harness',
+        tier: 'native',
+        transport: 'sdk',
         available: fs.existsSync(dsh),
         path: dsh,
-        multiTurn: false, // context is re-fed manually; no native session resume
-        progress: false,
+        // The chat path uses the sdk profile, which has no session resume; the
+        // acp profile can list/resume but has no transcript replay.
+        detail: '当前走 sdk 协议（原生延续，不支持恢复历史会话）',
+        multiTurn: true,
+        progress: true,
+        resume: false,
       },
     ];
+
+    // Kernels that expose ACP but are not wired into the chat pipeline yet.
+    const acpHints = [
+      { id: 'opencode', label: 'OpenCode', candidates: [process.env.TERMDESK_OPENCODE, 'D:\\OpenCode\\opencode-cli.exe', 'opencode'] },
+      { id: 'mimo', label: 'MiMo Code', candidates: [process.env.TERMDESK_MIMO, path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'mimo.cmd'), 'mimo'] },
+      { id: 'qoder', label: 'QoderWork', tier: 'shim', candidates: [path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'QoderWork CN', 'resources', 'bin', 'qoderclicn.exe')] },
+      { id: 'command-code', label: 'Command Code', tier: 'shim', candidates: [path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'command-code.ps1'), 'command-code'] },
+    ];
+    for (const hint of acpHints) {
+      const found = hint.candidates.find((c) => c && fs.existsSync(c)) ?? null;
+      const tier = hint.tier ?? 'acp';
+      list.push({
+        id: hint.id,
+        label: hint.label,
+        tier,
+        transport: tier === 'acp' ? 'acp' : 'cli',
+        available: Boolean(found),
+        path: found,
+        detail: !found
+          ? '未在本机找到'
+          : tier === 'acp'
+            ? '已发现 ACP 服务端；TermDesk 适配器尚未接入（选择后暂不可用）'
+            : 'CLI 形状，需要 shim 适配（选择后暂不可用）',
+        multiTurn: tier === 'acp',
+        progress: tier === 'acp',
+        resume: tier === 'acp',
+      });
+    }
+
+    if (process.env.TERMDESK_KERNELS_PROBE === '1') {
+      for (const entry of list) {
+        if (!entry.available || entry.tier !== 'acp') continue;
+        entry.detail = await this.probeAcpKernel(entry).catch((err) => `ACP 握手失败：${String(err?.message ?? err).slice(0, 80)}`);
+      }
+    }
+    return list;
+  }
+
+  /** One ACP `initialize` handshake, reported as a human-readable capability line. */
+  async probeAcpKernel(entry) {
+    const { probeAcpServer } = await import('./kernels/acp-probe.js');
+    const caps = await probeAcpServer(entry);
+    entry.acp = caps;
+    const bits = [];
+    if (caps.loadSession) bits.push('可回放历史');
+    if (caps.sessionList) bits.push('可列会话');
+    if (caps.sessionResume) bits.push('可恢复');
+    if (caps.fork) bits.push('可fork');
+    if (caps.promptOk) bits.push('可发消息');
+    for (const key of ['loadSession', 'sessionList', 'sessionResume', 'fork', 'promptOk']) delete caps[key];
+    return `ACP：${bits.join('/') || '仅握手'}`;
   }
 
   disposeAll() {

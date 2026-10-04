@@ -1,6 +1,15 @@
 package dev.termdesk.app.data
 
-/** An AI engine the PC can drive. */
+/**
+ * One agent kernel discovered on the PC.
+ *
+ * Discovery is the PC's answer to "what can this machine talk to", so the picker
+ * shows reality instead of a hard-coded list:
+ *
+ *   native  an adapter is wired into the chat pipeline — selectable
+ *   acp     the kernel serves ACP but the adapter is not wired yet
+ *   shim    CLI-shaped kernel; needs a manifest shim
+ */
 data class EngineInfo(
     val id: String,
     val available: Boolean,
@@ -9,7 +18,20 @@ data class EngineInfo(
     val multiTurn: Boolean,
     /** True when the engine reports per-step progress while running. */
     val progress: Boolean,
-)
+    /** Display name from discovery (falls back to the id). */
+    val label: String = "",
+    /** native | acp | shim */
+    val tier: String = "native",
+    /** Why it is or is not usable, straight from the PC (never invented here). */
+    val detail: String = "",
+    /** True when the kernel can continue a recorded session. */
+    val resume: Boolean = false,
+) {
+    /** Only a kernel with a wired adapter can be opened from the phone today. */
+    val selectable: Boolean get() = available && tier == "native"
+
+    val displayName: String get() = label.ifBlank { id }
+}
 
 /** Lifecycle of a submitted task. */
 enum class TaskStatus {
