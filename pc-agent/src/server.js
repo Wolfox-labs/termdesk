@@ -13,7 +13,10 @@
  *   node src/server.js --port 7420
  */
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 
@@ -136,6 +139,34 @@ function pairingUrl() {
   return `ws://127.0.0.1:${args.port}`;
 }
 
+/**
+ * The built Android APK, newest first.
+ *
+ * Serving it lets a phone install or upgrade itself with no cable: the agent is
+ * already reachable from the phone (LAN or tunnel), so "open this URL on the
+ * phone" replaces "plug it in and run adb". Not a secret — it is the app the
+ * user is about to run.
+ */
+function findClientApk() {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const candidates = [
+    path.join(root, 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk'),
+    path.join(root, 'android', 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk'),
+  ];
+  let newest = null;
+  for (const candidate of candidates) {
+    try {
+      const stat = fs.statSync(candidate);
+      if (stat.isFile() && (newest === null || stat.mtimeMs > newest.mtimeMs)) {
+        newest = { path: candidate, size: stat.size, mtimeMs: stat.mtimeMs };
+      }
+    } catch {
+      // not built yet
+    }
+  }
+  return newest;
+}
+
 /** Every non-internal IPv4 address, so we can print usable URLs. */
 function localAddresses() {
   const out = [];
@@ -173,6 +204,40 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // The phone installs itself from here. Checked before the access key on
+  // purpose: a phone that has no app yet cannot present a key, and shipping the
+  // client binary is not what the key protects.
+  if (url.pathname === '/app.apk' || url.pathname === '/app') {
+    const apk = findClientApk();
+    if (apk === null) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('还没有构建 APK：cd android && ./gradlew :app:assembleDebug\n');
+      return;
+    }
+    if (url.pathname === '/app' && !/apk|android/i.test(req.headers.accept ?? '')) {
+      // A browser gets told what this is; a downloader gets the file.
+      const host = req.headers.host ?? `127.0.0.1:${args.port}`;
+      const scheme = tunnel.url ? 'https' : 'http';
+      const page = `<!doctype html><meta charset="utf-8"><title>TermDesk App</title>
+<body style="font-family:system-ui;background:#272822;color:#f8f8f2;padding:28px;max-width:560px">
+<h1 style="font-size:19px">安装 TermDesk 手机端</h1>
+<p style="color:#a6a28c;font-size:14px;line-height:1.7">下载并安装下面的 APK（同签名的旧版本会原地升级，配对信息保留）。</p>
+<p><a style="color:#66d9ef;font-size:16px" href="${scheme}://${host}/app.apk">下载 APK（${Math.round(apk.size / 1024 / 1024)} MB）</a></p>
+<p style="color:#a6a28c;font-size:13px;line-height:1.7">装好后回到电脑上打开配对页扫码：<br>http://127.0.0.1:${args.port}/pair</p>
+</body>`;
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(page);
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': 'application/vnd.android.package-archive',
+      'content-length': String(apk.size),
+      'content-disposition': 'attachment; filename="termdesk.apk"',
+    });
+    fs.createReadStream(apk.path).pipe(res);
+    return;
+  }
+
   // Pairing: loopback only, because the page contains the token.
   if (url.pathname === '/pair' || url.pathname === '/pair.json') {
     if (!isLoopback(req)) {
@@ -197,12 +262,18 @@ const server = http.createServer((req, res) => {
         }));
         return;
       }
+      // The phone must reach the install URL from its own network, so prefer the
+      // public one; loopback would only work on the machine itself.
+      const appUrl = status.url
+        ? `${status.url}/app.apk`
+        : `http://${localAddresses()[0] ?? '127.0.0.1'}:${args.port}/app.apk`;
       const html = await pairPage({
         payload,
         wsUrl,
         token,
         tunnel: status,
         lanUrls: localAddresses().map((a) => `ws://${a}:${args.port}`),
+        appUrl,
         expiresAt: Date.now(),
       });
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -423,6 +494,10 @@ server.listen(args.port, args.host, () => {
   console.log(`  shell  : ${SHELL_ENABLED ? 'ENABLED (arbitrary commands allowed)' : 'disabled (start with --enable-shell)'}`);
   console.log(`  roots  : ${allowedRoots().join('  ')}`);
   console.log(`  pair   : http://127.0.0.1:${args.port}/pair   (扫码配对，仅本机可访问)`);
+  const apk = findClientApk();
+  if (apk) {
+    console.log(`  app    : http://127.0.0.1:${args.port}/app       (手机装/升级 App)`);
+  }
 
   // A public address is the point of the tunnel: with it the phone works on
   // mobile data, on a friend's Wi-Fi, anywhere — no Tailscale and no port

@@ -46,7 +46,7 @@ function escapeHtml(value) {
  * Loopback only (the caller enforces it): it contains the token, so it must
  * never be reachable through the tunnel it is describing.
  */
-export async function pairPage({ payload, wsUrl, token, tunnel, lanUrls, expiresAt }) {
+export async function pairPage({ payload, wsUrl, token, tunnel, lanUrls, appUrl, expiresAt }) {
   const qr = await qrSvg(payload);
   const rows = [
     ['连接地址', wsUrl],
@@ -89,10 +89,14 @@ export async function pairPage({ payload, wsUrl, token, tunnel, lanUrls, expires
   <p class="sub">用手机相机扫下面这个码，手机会直接打开 TermDesk 并完成配对。</p>
   <div class="qr">${qr}</div>
   <ol>
-    <li>在手机上打开相机（或系统扫码），对准上面的码</li>
-    <li>识别出的链接点开会跳到 TermDesk</li>
-    <li>App 自动填入地址与令牌并连接</li>
+    <li>手机上先装好 App（见下方链接；同签名会原地升级）</li>
+    <li>用手机相机对准上面的码，识别出的链接点开会跳到 TermDesk</li>
+    <li>App 自动填入地址与令牌并连接，之后换网也会自动重连</li>
   </ol>
+  <div class="row"><div class="label">安装/升级</div>
+    <div class="value">${escapeHtml(appUrl ?? '')}</div></div>
+  <div class="row"><div class="label">手机打开</div>
+    <div class="value">用手机浏览器打开上面的安装地址即可</div></div>
   ${rows}
   <div class="note">
     ${tunnelLine}<br>
