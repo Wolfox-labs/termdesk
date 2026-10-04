@@ -97,6 +97,13 @@ class AgentClient(
     private val _transfer = MutableStateFlow<TransferState?>(null)
     val transfer: StateFlow<TransferState?> = _transfer.asStateFlow()
 
+    /** Result of the last file-name search, or null when not searching. */
+    private val _search = MutableStateFlow<SearchResults?>(null)
+    val search: StateFlow<SearchResults?> = _search.asStateFlow()
+
+    private val _searching = MutableStateFlow(false)
+    val searching: StateFlow<Boolean> = _searching.asStateFlow()
+
     /** The file currently open in the phone's viewer, if any. */
     private val _preview = MutableStateFlow<FilePreview?>(null)
     val preview: StateFlow<FilePreview?> = _preview.asStateFlow()
@@ -879,6 +886,64 @@ class AgentClient(
         _preview.value = null
     }
 
+    // ---- file search -------------------------------------------------------
+
+    /**
+     * Search for files by name under [dirPath].
+     *
+     * The walk happens on the PC and is bounded there (count, depth, time), so a
+     * broad query cannot hang the phone; the answer says when it was cut short.
+     */
+    fun searchFiles(dirPath: String, query: String) {
+        val q = query.trim()
+        if (q.isEmpty()) {
+            clearSearch()
+            return
+        }
+        _searching.value = true
+        sendFrame(
+            JSONObject()
+                .put("type", "fs.search")
+                .put("path", dirPath)
+                .put("query", q)
+                .put("limit", 200),
+        )
+    }
+
+    fun clearSearch() {
+        _search.value = null
+        _searching.value = false
+    }
+
+    private fun parseSearch(frame: JSONObject): SearchResults {
+        val arr = frame.optJSONArray("items")
+        val items = buildList {
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val isDir = o.optBoolean("isDir", false)
+                    add(
+                        FileEntry(
+                            name = o.optString("name"),
+                            path = o.optString("path"),
+                            isDir = isDir,
+                            sizeBytes = o.optLong("sizeBytes"),
+                            mtime = if (o.isNull("mtime")) null else o.optString("mtime"),
+                            kind = o.optString("kind", if (isDir) "dir" else "other"),
+                        ),
+                    )
+                }
+            }
+        }
+        return SearchResults(
+            path = frame.optString("path"),
+            query = frame.optString("query"),
+            items = items,
+            truncated = frame.optBoolean("truncated", false),
+            scannedDirs = frame.optInt("scannedDirs"),
+        )
+    }
+
     /** Copy the previewed file into the phone's download folder for later use. */
     fun savePreviewToDownloads() {
         val open = _preview.value ?: return
@@ -1037,6 +1102,10 @@ class AgentClient(
                     }
                     _fsRoots.value = roots
                 }
+                "fs.results" -> {
+                    _searching.value = false
+                    _search.value = parseSearch(frame)
+                }
                 "fs.doctext" -> {
                     // The PC extracted a Word document's text. The viewer owns
                     // this, not the editor: the file itself stays on the PC.
@@ -1153,6 +1222,9 @@ class AgentClient(
                     // longer knows. Re-attach by the native session identity rather
                     // than leaving a dead conversation on screen.
                     if (frame.optString("code") == "no_chat") reattachActiveChat()
+                    // A refused request must not leave a spinner turning forever.
+                    _searching.value = false
+                    _preview.value = _preview.value?.copy(loading = false, message = msg)
                 }
                 // ---- P4 frames ----
                 "ai.engines" -> _engines.value = parseEngines(frame.optJSONArray("engines"))

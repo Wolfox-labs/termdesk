@@ -63,6 +63,7 @@ import dev.termdesk.app.data.EngineInfo
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.HostStatus
 import dev.termdesk.app.data.ProcessInfo
+import dev.termdesk.app.data.SearchResults
 import dev.termdesk.app.data.ServiceInfo
 import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
@@ -157,6 +158,10 @@ fun AppShell(
     connectionLabel: String,
     section: Section,
     onSectionChange: (Section) -> Unit,
+    search: SearchResults?,
+    searching: Boolean,
+    onSearchFiles: (String, String) -> Unit,
+    onClearSearch: () -> Unit,
 ) {
     var panelOpen by remember { mutableStateOf(false) }
     // Sections live in a drawer rather than a permanent rail: a phone is about
@@ -205,6 +210,10 @@ fun AppShell(
                 SectionBody(
                     section = section,
                     status = status,
+                    search = search,
+                    searching = searching,
+                    onSearchFiles = onSearchFiles,
+                    onClearSearch = onClearSearch,
                     processes = processes,
                     services = services,
                     listing = listing,
@@ -511,6 +520,10 @@ private fun SectionBody(
     onRefreshEngines: () -> Unit,
     onOpenSections: () -> Unit,
     onConfigureChat: (String, String?, String?) -> Unit,
+    search: SearchResults?,
+    searching: Boolean,
+    onSearchFiles: (String, String) -> Unit,
+    onClearSearch: () -> Unit,
 ) {
     when (section) {
         Section.System -> SystemSection(
@@ -535,6 +548,10 @@ private fun SectionBody(
             onCreate = onCreateEntry,
             onDelete = onDeleteEntry,
             onRename = onRenameEntry,
+            search = search,
+            searching = searching,
+            onSearch = onSearchFiles,
+            onClearSearch = onClearSearch,
         )
         Section.Terminal -> TerminalSection(
             lines = termLines,

@@ -38,6 +38,8 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     vm.fsRoots.collectAsState()
     val openFile by vm.openFile.collectAsState()
     val preview by vm.preview.collectAsState()
+    val search by vm.search.collectAsState()
+    val searching by vm.searching.collectAsState()
     val transfer by vm.transfer.collectAsState()
     val termLines by vm.termLines.collectAsState()
     val termSession by vm.termSession.collectAsState()
@@ -216,6 +218,10 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 connectionLabel = connectionLabel,
                 section = section,
                 onSectionChange = { section = it },
+                search = search,
+                searching = searching,
+                onSearchFiles = vm::searchFiles,
+                onClearSearch = vm::clearSearch,
             )
         }
 

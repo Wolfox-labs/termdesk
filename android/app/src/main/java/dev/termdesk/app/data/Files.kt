@@ -23,6 +23,16 @@ data class DirectoryListing(
     val items: List<FileEntry>,
 )
 
+/** One file-name search across a directory tree on the PC. */
+data class SearchResults(
+    val path: String,
+    val query: String,
+    val items: List<FileEntry>,
+    /** True when a cap (count, depth, time) stopped the walk early. */
+    val truncated: Boolean,
+    val scannedDirs: Int,
+)
+
 /** A text file opened for editing. */
 data class TextFile(
     val path: String,

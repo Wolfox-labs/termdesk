@@ -19,6 +19,7 @@ import {
   listDirectory,
   readTextFile,
   readDocxText,
+  searchFiles,
   renameEntry,
   writeTextFile,
 } from './files.js';
@@ -179,6 +180,17 @@ export function createFrameHandler(ctx) {
           send(S2C.FS_FILE, await readTextFile(frame.path));
         } catch (err) {
           send(S2C.ERROR, { code: err?.code ?? 'fs_failed', message: String(err?.message ?? err), path: frame.path });
+        }
+        break;
+
+      case C2S.FS_SEARCH:
+        try {
+          send(S2C.FS_RESULTS, await searchFiles(frame.path, frame.query, {
+            limit: frame.limit,
+            maxDepth: frame.maxDepth,
+          }));
+        } catch (err) {
+          send(S2C.ERROR, { code: err?.code ?? 'search_failed', message: String(err?.message ?? err), path: frame.path });
         }
         break;
 

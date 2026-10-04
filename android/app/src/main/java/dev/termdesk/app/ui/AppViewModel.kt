@@ -14,6 +14,7 @@ import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.EngineInfo
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.FilePreview
+import dev.termdesk.app.data.SearchResults
 import dev.termdesk.app.data.HostStatus
 import dev.termdesk.app.data.LinkState
 import dev.termdesk.app.data.ProcessInfo
@@ -215,6 +216,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun openPreview(entry: FileEntry) = client.openPreview(entry)
     fun closePreview() = client.closePreview()
     fun savePreviewToDownloads() = client.savePreviewToDownloads()
+
+    // ---- file search ----
+    val search: StateFlow<SearchResults?> = client.search
+    val searching: StateFlow<Boolean> = client.searching
+
+    fun searchFiles(dirPath: String, query: String) = client.searchFiles(dirPath, query)
+    fun clearSearch() = client.clearSearch()
     fun writeFile(path: String, text: String) = client.writeFile(path, text)
     fun createEntry(dir: String, name: String, isDir: Boolean) = client.createEntry(dir, name, isDir)
     fun deleteEntry(path: String) = client.deleteEntry(path)

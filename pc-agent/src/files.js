@@ -250,6 +250,95 @@ export async function renameEntry(fromPath, toName) {
   return { from, to };
 }
 
+/**
+ * Directories a name search does not descend into.
+ *
+ * These are build outputs and package caches: they hold tens of thousands of
+ * files whose names match almost any query, and walking them would turn a phone
+ * search into a multi-minute scan of the whole disk.
+ */
+const SEARCH_SKIP_DIRS = new Set([
+  'node_modules', '.git', '__pycache__', '.venv', 'venv', '.gradle', '.cache',
+  '.npm', '.cargo', '.rustup', '.m2', '.next', '.nuxt', '.idea', '.vs',
+  'AppData', 'System Volume Information', 'Windows',
+]);
+
+/**
+ * Find files by name under a directory.
+ *
+ * Bounded on purpose: a result cap, a depth cap, a directory budget and a wall
+ * clock, because the caller is a phone waiting on a socket. When any of them is
+ * hit the answer says so, rather than pretending the list is complete.
+ */
+export async function searchFiles(startPath, query, options = {}) {
+  const root = await resolveSafePath(startPath);
+  const raw = String(query ?? '').trim();
+  if (raw.length === 0) {
+    const err = new Error('query is required');
+    err.code = 'bad_query';
+    throw err;
+  }
+  const needle = raw.toLowerCase();
+  const limit = Math.min(Math.max(Number(options.limit) || 200, 1), 500);
+  const maxDepth = Math.min(Math.max(Number(options.maxDepth) || 10, 1), 24);
+  const deadline = Date.now() + 6000;
+  const dirBudget = 20000;
+
+  const items = [];
+  const stack = [{ dir: root, depth: 0 }];
+  let scannedDirs = 0;
+  let truncated = false;
+
+  while (stack.length > 0) {
+    if (items.length >= limit || scannedDirs >= dirBudget || Date.now() > deadline) {
+      truncated = true;
+      break;
+    }
+    const { dir, depth } = stack.pop();
+    scannedDirs += 1;
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue; // unreadable directory: skip, do not fail the whole search
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      const isDir = entry.isDirectory();
+      if (entry.name.toLowerCase().includes(needle)) {
+        let size = 0;
+        let mtime = null;
+        try {
+          const st = await fs.stat(full);
+          size = st.size;
+          mtime = st.mtime.toISOString();
+        } catch { /* broken link or denied: list it without stats */ }
+        items.push({
+          name: entry.name,
+          path: full,
+          isDir,
+          sizeBytes: isDir ? 0 : size,
+          mtime,
+          readable: !isDir && isProbablyText(entry.name),
+          kind: previewKind(entry.name, isDir),
+        });
+        if (items.length >= limit) { truncated = true; break; }
+      }
+      if (isDir && depth < maxDepth && !SEARCH_SKIP_DIRS.has(entry.name) && !entry.name.startsWith('$')) {
+        stack.push({ dir: full, depth: depth + 1 });
+      }
+    }
+  }
+
+  return {
+    path: root,
+    query: raw,
+    items,
+    truncated,
+    scannedDirs,
+  };
+}
+
 const MAX_DOCX_BYTES = 24 * 1024 * 1024;
 
 /**
