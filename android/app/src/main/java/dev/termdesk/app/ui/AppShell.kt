@@ -64,6 +64,8 @@ import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.HostStatus
 import dev.termdesk.app.data.ProcessInfo
 import dev.termdesk.app.data.SearchResults
+import dev.termdesk.app.data.StorageEntry
+import dev.termdesk.app.data.StorageUse
 import dev.termdesk.app.data.ServiceInfo
 import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
@@ -162,6 +164,9 @@ fun AppShell(
     searching: Boolean,
     onSearchFiles: (String, String) -> Unit,
     onClearSearch: () -> Unit,
+    storage: StorageUse?,
+    onLoadStorage: () -> Unit,
+    onClearStorage: (StorageEntry) -> Unit,
 ) {
     var panelOpen by remember { mutableStateOf(false) }
     // Sections live in a drawer rather than a permanent rail: a phone is about
@@ -214,6 +219,9 @@ fun AppShell(
                     searching = searching,
                     onSearchFiles = onSearchFiles,
                     onClearSearch = onClearSearch,
+                    storage = storage,
+                    onLoadStorage = onLoadStorage,
+                    onClearStorage = onClearStorage,
                     processes = processes,
                     services = services,
                     listing = listing,
@@ -524,6 +532,9 @@ private fun SectionBody(
     searching: Boolean,
     onSearchFiles: (String, String) -> Unit,
     onClearSearch: () -> Unit,
+    storage: StorageUse?,
+    onLoadStorage: () -> Unit,
+    onClearStorage: (StorageEntry) -> Unit,
 ) {
     when (section) {
         Section.System -> SystemSection(
@@ -599,6 +610,9 @@ private fun SectionBody(
             defaultEngine = defaultEngine,
             onSetDefaultEngine = onSetDefaultEngine,
             onRefreshEngines = onRefreshEngines,
+            storage = storage,
+            onLoadStorage = onLoadStorage,
+            onClearStorage = onClearStorage,
             onLoad = onCodexLoad,
             onApply = onCodexApply,
             onRestore = onCodexRestore,

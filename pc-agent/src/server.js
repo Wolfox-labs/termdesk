@@ -25,6 +25,8 @@ import { TerminalManager } from './terminal.js';
 import { EngineManager } from './engines.js';
 import { ChatManager } from './chat.js';
 import { loadRelayConfig, startRelayConnector } from './relay-client.js';
+import { Tunnel, findCloudflared } from './tunnel.js';
+import { pairPage, pairPayload, qrTerminal } from './pair.js';
 import { createFrameHandler, pushStatusFrame } from './handlers.js';
 
 const DEFAULT_PORT = 7420;
@@ -94,14 +96,44 @@ const chats = new ChatManager();
 let routedSocket = null;
 
 function parseArgs(argv) {
-  const args = { port: DEFAULT_PORT, host: '0.0.0.0', showToken: false };
+  const args = { port: DEFAULT_PORT, host: '0.0.0.0', showToken: false, tunnel: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--show-token') args.showToken = true;
+    else if (a === '--tunnel') args.tunnel = true;
     else if (a === '--port') args.port = Number(argv[++i]);
     else if (a === '--host') args.host = argv[++i];
   }
   return args;
+}
+
+/**
+ * Is this request from the machine itself?
+ *
+ * The pairing page carries the token, so it is served on loopback only: a page
+ * that leaked the token through the tunnel would defeat the tunnel's auth.
+ */
+function isLoopback(req) {
+  const peer = req.socket?.remoteAddress ?? '';
+  return peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+}
+
+const tunnel = new Tunnel();
+/** In-flight tunnel start, so repeated /pair hits do not spawn several. */
+let tunnelStart = null;
+
+function ensureTunnel() {
+  if (tunnel.status().running) return Promise.resolve(tunnel.status());
+  if (tunnelStart === null) {
+    tunnelStart = tunnel.start({ port: args.port }).finally(() => { tunnelStart = null; });
+  }
+  return tunnelStart;
+}
+
+/** The address the phone should use: the tunnel when up, else loopback. */
+function pairingUrl() {
+  if (tunnel.url) return `wss://${tunnel.url.replace(/^https:\/\//, '')}`;
+  return `ws://127.0.0.1:${args.port}`;
 }
 
 /** Every non-internal IPv4 address, so we can print usable URLs. */
@@ -138,6 +170,50 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, service: 'termdesk-pc-agent', protocol: PROTOCOL_VERSION }));
+    return;
+  }
+
+  // Pairing: loopback only, because the page contains the token.
+  if (url.pathname === '/pair' || url.pathname === '/pair.json') {
+    if (!isLoopback(req)) {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, code: 'loopback_only', message: '配对页面只在本机可访问' }));
+      return;
+    }
+    const respond = async () => {
+      let status = tunnel.status();
+      if (!status.running) status = await ensureTunnel().catch(() => tunnel.status());
+      const wsUrl = pairingUrl();
+      const payload = pairPayload({ wsUrl, token, name: os.hostname() });
+      if (url.pathname === '/pair.json') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          url: wsUrl,
+          token,
+          payload,
+          tunnel: status,
+          cloudflared: findCloudflared(),
+        }));
+        return;
+      }
+      const html = await pairPage({
+        payload,
+        wsUrl,
+        token,
+        tunnel: status,
+        lanUrls: localAddresses().map((a) => `ws://${a}:${args.port}`),
+        expiresAt: Date.now(),
+      });
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(html);
+    };
+    respond().catch((err) => {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, code: 'pair_failed', message: String(err?.message ?? err) }));
+      }
+    });
     return;
   }
 
@@ -346,11 +422,36 @@ server.listen(args.port, args.host, () => {
   console.log(`  token  : ${token.slice(0, 6)}…  (full token at ${tokenPath()})`);
   console.log(`  shell  : ${SHELL_ENABLED ? 'ENABLED (arbitrary commands allowed)' : 'disabled (start with --enable-shell)'}`);
   console.log(`  roots  : ${allowedRoots().join('  ')}`);
+  console.log(`  pair   : http://127.0.0.1:${args.port}/pair   (扫码配对，仅本机可访问)`);
+
+  // A public address is the point of the tunnel: with it the phone works on
+  // mobile data, on a friend's Wi-Fi, anywhere — no Tailscale and no port
+  // forwarding. Starting it is explicit (--tunnel) so the machine is not put on
+  // the internet merely by running the agent.
+  if (args.tunnel) {
+    console.log('  tunnel : starting cloudflared…');
+    tunnel.start({ port: args.port })
+      .then(async (status) => {
+        console.log(`  tunnel : ${status.url}  (${status.mode === 'named' ? '固定域名' : '临时地址'})`);
+        console.log(`  public : wss://${status.url.replace(/^https:\/\//, '')}`);
+        const terminal = await qrTerminal(pairPayload({
+          wsUrl: `wss://${status.url.replace(/^https:\/\//, '')}`,
+          token,
+          name: os.hostname(),
+        }));
+        console.log(terminal);
+      })
+      .catch((err) => {
+        console.error(`  tunnel : failed — ${err?.message ?? err}`);
+        console.error(`  tunnel : ${findCloudflared() ? '检查网络' : '把 cloudflared 放进 tools/ 或设置 TERMDESK_CLOUDFLARED'}`);
+      });
+  }
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
     relayConnector?.stop();
+    tunnel.stop();
     terminals.disposeAll();
     engines.disposeAll();
     chats.disposeAll();

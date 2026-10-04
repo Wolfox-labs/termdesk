@@ -17,7 +17,11 @@
     "node": ">=20"
   },
   "dependencies": {
+    "qrcode": "^1.5.4",
     "socks-proxy-agent": "^10.1.0",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "jsqr": "^1.4.0"
   }
 }

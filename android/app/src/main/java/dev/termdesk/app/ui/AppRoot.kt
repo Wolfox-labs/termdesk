@@ -23,10 +23,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.termdesk.app.data.LinkState
+import dev.termdesk.app.data.PairRequest
 import dev.termdesk.app.data.SessionInfo
 
 @Composable
-fun AppRoot(vm: AppViewModel = viewModel()) {
+fun AppRoot(
+    vm: AppViewModel = viewModel(),
+    pairRequest: PairRequest? = null,
+    onPairHandled: () -> Unit = {},
+) {
     val link by vm.link.collectAsState()
     val status by vm.status.collectAsState()
     val processes by vm.processes.collectAsState()
@@ -40,6 +45,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     val preview by vm.preview.collectAsState()
     val search by vm.search.collectAsState()
     val searching by vm.searching.collectAsState()
+    val storage by vm.storage.collectAsState()
     val transfer by vm.transfer.collectAsState()
     val termLines by vm.termLines.collectAsState()
     val termSession by vm.termSession.collectAsState()
@@ -70,6 +76,18 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     var newChatSuggestedCwd by remember { mutableStateOf<String?>(null) }
     var newChatOpen by remember { mutableStateOf(false) }
     var connectionOpen by remember { mutableStateOf(vm.savedToken.isBlank()) }
+
+
+    // A scanned pairing link carries everything the app needs: address and
+    // token. It is the only path that does not involve typing a secret.
+    LaunchedEffect(pairRequest) {
+        val request = pairRequest ?: return@LaunchedEffect
+        onPairHandled()
+        if (!request.isUsable) return@LaunchedEffect
+        connectionOpen = false
+        vm.connect(request.url, request.token)
+        snackbarHostState.showSnackbar("已通过二维码配对 · ${request.name ?: request.url}")
+    }
     val connected = link is LinkState.Connected
     // Kernel discovery is metadata only (it never runs a model), so it can be
     // refreshed on every connect: Settings and the new-chat sheet then show what
@@ -222,6 +240,9 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 searching = searching,
                 onSearchFiles = vm::searchFiles,
                 onClearSearch = vm::clearSearch,
+                storage = storage,
+                onLoadStorage = vm::loadStorage,
+                onClearStorage = vm::clearStorage,
             )
         }
 

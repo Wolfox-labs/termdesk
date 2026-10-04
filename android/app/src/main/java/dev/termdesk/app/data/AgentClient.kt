@@ -2,6 +2,8 @@ package dev.termdesk.app.data
 
 import android.content.ContentResolver
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.provider.OpenableColumns
 import kotlinx.coroutines.CoroutineScope
@@ -190,6 +192,15 @@ class AgentClient(
 
     private val credentials = appContext?.let { DeviceCredentials(it) }
     private var generation = 0
+    /**
+     * Total size the offline history snapshots may take on the phone.
+     *
+     * A session snapshot is the only thing that lets history stay readable with
+     * the PC offline, but a snapshot of a long session is megabytes; without a
+     * budget the cache grows with every session the user opens, forever.
+     */
+    private val historyCacheBudget = 48L * 1024 * 1024
+
     private fun cacheFile(name: String): File? = appContext?.let {
         val dir = File(it.filesDir, "history-cache").apply { mkdirs() }
         val hash = java.security.MessageDigest.getInstance("SHA-256").digest(name.toByteArray()).joinToString("") { b -> "%02x".format(b) }
@@ -199,16 +210,31 @@ class AgentClient(
         runCatching {
             val file = cacheFile(name) ?: return
             val text = frame.toString()
-            if (text.toByteArray().size > 5 * 1024 * 1024) return
+            // A single snapshot larger than a quarter of the budget would evict
+            // everything else and still not fit: refuse it instead of thrashing.
+            if (text.toByteArray().size > historyCacheBudget / 4) return
             val tmp = File(file.parentFile, "${file.name}.tmp")
             tmp.writeText(text); tmp.renameTo(file)
-            val files = file.parentFile?.listFiles()?.filter { it.extension == "json" }?.sortedBy { it.lastModified() } ?: emptyList()
-            var bytes = files.sumOf { it.length() }
-            for (old in files) if (bytes > 20 * 1024 * 1024 && old != file) { bytes -= old.length(); old.delete() }
+            pruneHistoryCache()
         }
     }
     private fun cached(name: String): JSONObject? = runCatching { cacheFile(name)?.takeIf { it.exists() }?.readText()?.let { JSONObject(it) } }.getOrNull()
+
+    /** Drop the oldest snapshots until the cache fits its budget. */
+    private fun pruneHistoryCache() {
+        val dir = cacheFile("index")?.parentFile ?: return
+        runCatching {
+            val files = dir.listFiles()?.filter { it.isFile }?.sortedBy { it.lastModified() } ?: return
+            var total = files.sumOf { it.length() }
+            for (file in files) {
+                if (total <= historyCacheBudget) break
+                val size = file.length()
+                if (file.delete()) total -= size
+            }
+        }
+    }
     init {
+        pruneHistoryCache()
         cached("index")?.let {
             _sessions.value = parseSessionList(it.optJSONArray("sessions"))
             _workspaces.value = parseWorkspaces(it.optJSONArray("workspaces"))
@@ -221,6 +247,27 @@ class AgentClient(
 
     @Volatile
     private var manuallyClosed = false
+
+    /** Consecutive failed attempts, for the reconnect backoff. */
+    private var attempt = 0
+
+    /**
+     * Reconnect the moment the phone gets a network.
+     *
+     * Turning Wi-Fi off and on again, or coming back into range, is a normal
+     * thing to do; without this the app could sit in a failed state until it was
+     * restarted, which reads as "it broke".
+     */
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            retryNow()
+        }
+    }
+
+    fun registerNetworkCallback() {
+        val cm = appContext?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        runCatching { cm.registerDefaultNetworkCallback(networkCallback) }
+    }
 
     fun connect(url: String, token: String) {
         generation += 1
@@ -236,6 +283,7 @@ class AgentClient(
         socket = null
 
         _link.value = LinkState.Connecting
+        // A fresh attempt is a fresh sequence: keep the first retries quick.
 
         runCatching {
             val request = Request.Builder().url(url).build()
@@ -548,6 +596,11 @@ class AgentClient(
     private fun clearChatTranscript() {
         chatEventIndex = LinkedHashMap()
         _chatEvents.value = emptyList()
+    }
+
+    /** Surface a message that originated on the phone, not on the PC. */
+    fun reportLocalMessage(text: String) {
+        _lastAction.value = ActionResult("storage", "", true, "cleared", text)
     }
 
     fun clearLastAction() {
@@ -883,6 +936,9 @@ class AgentClient(
     }
 
     fun closePreview() {
+        // The fetched copy exists only so the platform could decode it; leaving
+        // every file the user glanced at would turn a cache into a leak.
+        _preview.value?.localFile?.delete()
         _preview.value = null
     }
 
@@ -958,6 +1014,7 @@ class AgentClient(
      * every file they glance at.
      */
     private fun fetchPreviewBytes(entry: FileEntry) {
+        _preview.value?.localFile?.delete()
         val base = httpBaseUrl()
         val tok = lastToken
         if (base == null || tok == null) {
@@ -1019,15 +1076,42 @@ class AgentClient(
         return ws.send(obj.toString())
     }
 
-    /** Reconnect with backoff after an unexpected drop. */
+    /**
+     * Reconnect after an unexpected drop.
+     *
+     * Backoff, not a single 3-second retry, and it never gives up on its own:
+     * switching Wi-Fi off and on again, or walking out of range and back, must
+     * not leave the app dead until it is restarted. A refused token is the one
+     * case that stops retrying, because that cannot fix itself.
+     */
     private fun scheduleReconnect() {
         if (manuallyClosed) return
         val url = lastUrl ?: return
         val token = lastToken ?: return
+        reconnectJob?.cancel()
+        val waitMs = minOf(30_000L, 2_000L shl minOf(attempt, 4))
+        attempt += 1
         reconnectJob = scope.launch {
-            delay(3000)
+            delay(waitMs)
             if (!manuallyClosed) connect(url, token)
         }
+    }
+
+    /**
+     * Retry immediately, ignoring any pending backoff.
+     *
+     * Called when the phone gains a network and when the app returns to the
+     * foreground: both are moments where waiting out the backoff would look like
+     * a broken app.
+     */
+    fun retryNow() {
+        val url = lastUrl ?: return
+        val token = lastToken ?: return
+        if (manuallyClosed) return
+        if (_link.value is LinkState.Connected) return
+        attempt = 0
+        reconnectJob?.cancel()
+        connect(url, token)
     }
 
     private inner class Listener(private val token: String, private val epoch: Int) : WebSocketListener() {
@@ -1062,6 +1146,7 @@ class AgentClient(
                         return
                     }
                     _link.value = LinkState.Connected(frame.optString("hostname", "unknown"))
+                    attempt = 0
                     webSocket.send(
                         JSONObject().put("type", "status.subscribe").put("intervalMs", 2000).toString(),
                     )

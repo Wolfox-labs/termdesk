@@ -86,9 +86,31 @@ node src/server.js                        # 端口 7420，终端关闭
 node src/server.js --enable-shell         # 开启终端（可执行任意命令）
 node src/server.js --show-token           # 只打印配对令牌
 node src/server.js --port 7420 --host 0.0.0.0
+node src/server.js --tunnel --enable-shell   # 同时起公网隧道，手机哪里都能连
 ```
 
 健康检查：<http://127.0.0.1:7420/healthz>
+
+### 扫码配对（内置 cloudflared）
+
+`--tunnel` 让代理自己拉起 `tools/cloudflared-*.exe`，把这个端口发布到一个
+Cloudflare 地址上（PC 主动出站，不需要公网 IP、端口映射或 VPN）。启动后：
+
+```text
+  pair   : http://127.0.0.1:7420/pair   (扫码配对，仅本机可访问)
+  tunnel : https://<随机名>.trycloudflare.com  (临时地址)
+  public : wss://<随机名>.trycloudflare.com
+```
+
+在电脑上打开 <http://127.0.0.1:7420/pair>，页面里有一个二维码。**用手机相机扫它**，
+手机会直接跳到 TermDesk 并自动填入地址与令牌——不用手输那 43 位令牌。终端里也会
+打印同一张码（块字符版），没有浏览器时可用。
+
+- 配对页面只监听本机（`127.0.0.1`），因为它包含令牌，不能经隧道暴露。
+- 临时隧道地址每次重启都会变。要固定地址，把带有固定域名的隧道写进
+  `~/.termdesk/cloudflared.json`：`{"token": "<tunnel token>", "hostname": "term.example.com"}`，
+  代理检测到 token 就改用命名隧道。
+- 地址与令牌都进了手机的系统钥匙串/偏好；扫码即完成配对，App 之后自动重连。
 
 配对令牌存在 `~/.termdesk/token`（首次运行自动生成，权限 600）。
 
@@ -168,9 +190,12 @@ adb install -r -t android/app/build/outputs/apk/debug/app-debug.apk
 
 本机部署同时提供两条通道：
 
+手机在任意网络（移动数据、别家 Wi-Fi）都能连的路径只有一条：公网隧道。局域网直连与
+Tailscale 只在特定网络下有效——**换网就断**，这也是为什么隧道是主通道。
+
 | 通道 | 地址 | 说明 |
 |---|---|---|
-| **公网（主）** | `wss://term.<your-domain>` | Cloudflare Tunnel，PC 主动出站，零入站端口 |
+| **公网（主）** | `--tunnel` 打印的 `wss://…trycloudflare.com` | 内置 cloudflared，PC 主动出站，零入站端口 |
 | **公网（浏览器）** | `https://dsh.<your-domain>` | DSH Web，手机浏览器直接用 |
 | Tailscale | `ws://<tailscale-ip>:7420` | 备用；部分网络下打洞失败，会绕中继 |
 | 局域网 | `ws://<lan-ip>:7420` | 同网段 |

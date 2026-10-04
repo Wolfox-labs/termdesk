@@ -34,6 +34,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -54,6 +55,9 @@ import androidx.compose.ui.unit.dp
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.EngineInfo
+import dev.termdesk.app.data.Storage
+import dev.termdesk.app.data.StorageEntry
+import dev.termdesk.app.data.StorageUse
 import dev.termdesk.app.ui.theme.Semantic
 import dev.termdesk.app.ui.theme.ThemeMode
 
@@ -74,11 +78,17 @@ fun SettingsSection(
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
     onRefreshEngines: () -> Unit,
+    storage: StorageUse?,
+    onLoadStorage: () -> Unit,
+    onClearStorage: (StorageEntry) -> Unit,
     onLoad: () -> Unit,
     onApply: (String, String, String?, String?, Long?) -> Unit,
     onRestore: (String?) -> Unit,
 ) {
-    LaunchedEffect(Unit) { onLoad() }
+    LaunchedEffect(Unit) {
+        onLoad()
+        onLoadStorage()
+    }
 
     var kernelOpen by remember { mutableStateOf(false) }
     var modelsOpen by remember { mutableStateOf(false) }
@@ -228,6 +238,58 @@ fun SettingsSection(
                         onClick = { onThemeModeChange(mode) },
                     )
                 }
+            }
+        }
+
+        // --- on-phone storage -------------------------------------------------
+        Card {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("存储", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    storage?.let { Storage.format(it.totalBytes) } ?: "—",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            val entries = storage?.entries.orEmpty()
+            if (entries.isEmpty()) {
+                Text(
+                    "正在统计…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            entries.forEach { entry ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(entry.label, style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            entry.note,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        Storage.format(entry.bytes),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                    if (entry.removable && entry.bytes > 0) {
+                        TextButton(onClick = { onClearStorage(entry) }) {
+                            Text("清理", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
             }
         }
 

@@ -31,6 +31,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!--
+              Pairing links from the PC's pairing page. The phone's own camera can
+              scan the code and hand the address and token straight to the app.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="termdesk" android:host="pair" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>

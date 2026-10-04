@@ -15,6 +15,9 @@ import dev.termdesk.app.data.EngineInfo
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.FilePreview
 import dev.termdesk.app.data.SearchResults
+import dev.termdesk.app.data.Storage
+import dev.termdesk.app.data.StorageEntry
+import dev.termdesk.app.data.StorageUse
 import dev.termdesk.app.data.HostStatus
 import dev.termdesk.app.data.LinkState
 import dev.termdesk.app.data.ProcessInfo
@@ -223,6 +226,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun searchFiles(dirPath: String, query: String) = client.searchFiles(dirPath, query)
     fun clearSearch() = client.clearSearch()
+
+    // ---- on-phone storage ----
+
+    /**
+     * What the app is using on this phone, measured rather than assumed.
+     * Recomputed on demand because the answer changes as files are viewed.
+     */
+    private val _storage = MutableStateFlow<StorageUse?>(null)
+    val storage: StateFlow<StorageUse?> = _storage.asStateFlow()
+
+    fun loadStorage() {
+        _storage.value = Storage.inspect(getApplication())
+    }
+
+    fun clearStorage(entry: StorageEntry) {
+        val freed = Storage.clear(entry)
+        loadStorage()
+        client.reportLocalMessage("已清理 ${entry.label}，释放 ${Storage.format(freed)}")
+    }
     fun writeFile(path: String, text: String) = client.writeFile(path, text)
     fun createEntry(dir: String, name: String, isDir: Boolean) = client.createEntry(dir, name, isDir)
     fun deleteEntry(path: String) = client.deleteEntry(path)
@@ -234,6 +256,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val savedToken: String get() = credentials.read()
 
     init {
+        client.registerNetworkCallback()
         // Auto-reconnect when we already have credentials, so returning to the
         // app from a phone lock does not mean re-pairing every time.
         // Debug-only deployment handoff from a trusted ADB session. Never an exported intent.
@@ -264,6 +287,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun disconnect() {
         client.disconnect()
     }
+
+    /** Retry now: used when a network appears and when the app comes forward. */
+    fun retryNow() = client.retryNow()
 
     fun forgetDevice() {
         client.disconnect()
