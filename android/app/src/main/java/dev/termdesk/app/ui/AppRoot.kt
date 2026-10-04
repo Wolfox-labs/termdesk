@@ -57,6 +57,19 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     // cwd; kernel/model/cwd stay explicit user choices inside NewChatSheet.
     var newChatSuggestedCwd by remember { mutableStateOf<String?>(null) }
     var newChatOpen by remember { mutableStateOf(false) }
+    var connectionOpen by remember { mutableStateOf(vm.savedToken.isBlank()) }
+    val connected = link is LinkState.Connected
+    val hostname = when (val state = link) {
+        is LinkState.Connected -> state.hostname
+        is LinkState.NodeOffline -> state.hostname
+        else -> "TermDesk"
+    }
+    val connectionLabel = when (val state = link) {
+        is LinkState.NodeOffline -> "VPS 已连接 · ${state.hostname} 内核离线，上线后自动恢复"
+        is LinkState.Connecting -> "正在连接节点 · 已缓存记录仍可查看"
+        is LinkState.Failed -> "连接暂不可用 · 点击查看：${state.reason}"
+        else -> "离线模式 · 点击连接或管理设备"
+    }
 
     // Surface every action outcome, including refusals, so the user is never
     // left wondering whether a tap did anything.
@@ -77,11 +90,14 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
             .background(MaterialTheme.colorScheme.background),
     ) {
         when {
-            link !is LinkState.Connected -> ConnectionScreen(
+            connectionOpen -> ConnectionScreen(
                 link = link,
                 initialUrl = vm.savedUrl,
                 initialToken = vm.savedToken,
-                onConnect = vm::connect,
+                onConnect = { url, token -> connectionOpen = false; vm.connect(url, token) },
+                onClose = { connectionOpen = false },
+                onDisconnect = vm::disconnect,
+                onForget = { vm.forgetDevice(); connectionOpen = true },
             )
 
             // An open file takes over the work area: editing is a focused mode.
@@ -93,7 +109,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
 
             else -> AppShell(
                 status = status,
-                hostname = (link as LinkState.Connected).hostname,
+                hostname = hostname,
                 processes = processes,
                 services = services,
                 listing = listing,
@@ -147,9 +163,12 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 onCloseRecorded = vm::closeSession,
                 onLoadSessions = { vm.loadSessions() },
                 onOpenSession = { session -> vm.openSession(session) },
+                onResumeSession = vm::resumeSession,
+                connected = connected,
                 themeMode = themeMode,
                 onThemeModeChange = vm::setThemeMode,
-                onDisconnect = vm::disconnect,
+                onDisconnect = { connectionOpen = true },
+                connectionLabel = connectionLabel,
             )
         }
 

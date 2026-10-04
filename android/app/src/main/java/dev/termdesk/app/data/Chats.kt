@@ -18,6 +18,10 @@ data class ChatInfo(
     val status: String,
     /** True once the runtime handshake finished and prompts can be accepted. */
     val ready: Boolean,
+    /** codex | dsh — which kernel this chat runs on. */
+    val engine: String,
+    /** The kernel's own session id (Codex thread id once the first turn ran). */
+    val threadId: String?,
     val sessionId: String?,
     val createdAt: Long,
     val lastUsedAt: Long,

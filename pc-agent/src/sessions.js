@@ -54,22 +54,6 @@ function dshRoot() {
 }
 
 /** Walk a tree and collect files whose name matches. */
-function walkFiles(root, predicate, out = [], depth = 0) {
-  if (depth > 8) return out;
-  let entries;
-  try {
-    entries = fs.readdirSync(root, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const e of entries) {
-    const p = path.join(root, e.name);
-    if (e.isDirectory()) walkFiles(p, predicate, out, depth + 1);
-    else if (predicate(e.name)) out.push(p);
-  }
-  return out;
-}
-
 /**
  * Decode a DSH workspace directory name back into a path.
  * DSH encodes the cwd by replacing every path separator with '-', so
@@ -141,144 +125,7 @@ function makeEvent({ kind, role = null, text = '', at = null, name = null, meta 
  * Normalise one Codex JSONL line.
  * Returns null for lines that carry no user-visible conversation content.
  */
-function codexLineToEvent(obj) {
-  const at = obj.timestamp ?? null;
-  const p = obj.payload ?? {};
-
-  if (obj.type === 'session_meta') {
-    return null; // Session-level metadata; surfaced separately.
-  }
-
-  if (obj.type === 'response_item') {
-    if (p.type === 'message') {
-      const text = (p.content ?? [])
-        .map((c) => c.text ?? c.input_text ?? c.output_text ?? '')
-        .filter(Boolean)
-        .join('\n');
-      if (!text.trim()) return null;
-      // `developer` messages are injected instructions, not conversation.
-      if (p.role === 'developer' || p.role === 'system') return null;
-      return makeEvent({
-        kind: 'message',
-        role: p.role === 'user' ? 'user' : 'assistant',
-        text,
-        at,
-      });
-    }
-    if (p.type === 'reasoning') {
-      const text = (p.summary ?? []).map((s) => s.text ?? '').filter(Boolean).join('\n');
-      if (!text.trim()) return null;
-      return makeEvent({ kind: 'reasoning', role: 'assistant', text, at });
-    }
-    if (p.type === 'function_call') {
-      return makeEvent({
-        kind: 'tool',
-        role: 'assistant',
-        name: p.name ?? 'tool',
-        text: p.arguments ?? '',
-        at,
-      });
-    }
-    if (p.type === 'function_call_output') {
-      const out = typeof p.output === 'string' ? p.output : JSON.stringify(p.output ?? '');
-      return makeEvent({ kind: 'tool_result', role: 'tool', text: out, at });
-    }
-    return null;
-  }
-
-  if (obj.type === 'event_msg') {
-    if (p.type === 'task_complete') {
-      // Codex's own end-of-turn signal. Kept as an event so the client can show
-      // the engine's boundary rather than inventing one.
-      return makeEvent({ kind: 'turn', text: p.last_agent_message ?? '', at, meta: { state: 'complete' } });
-    }
-    if (p.type === 'task_started') {
-      return makeEvent({ kind: 'turn', text: '', at, meta: { state: 'started' } });
-    }
-    if (p.type === 'token_count') {
-      const usage = p.info?.total_token_usage;
-      if (!usage) return null;
-      return makeEvent({
-        kind: 'usage',
-        text: '',
-        at,
-        meta: { total: usage.total_tokens ?? null, input: usage.input_tokens ?? null, output: usage.output_tokens ?? null },
-      });
-    }
-    return null;
-  }
-
-  return null;
-}
-
 /** Parse a Codex session file into { meta, events }. */
-function parseCodexSession(filePath) {
-  let text;
-  try {
-    text = fs.readFileSync(filePath, 'utf8');
-  } catch {
-    return null;
-  }
-
-  const lines = text.split('\n');
-  const events = [];
-  const meta = {
-    engine: 'codex',
-    id: null,
-    cwd: null,
-    createdAt: null,
-    title: null,
-    filePath,
-  };
-
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      continue; // A partially written trailing line is normal.
-    }
-
-    if (obj.type === 'session_meta') {
-      const p = obj.payload ?? {};
-      meta.id = p.session_id ?? p.id ?? meta.id;
-      meta.cwd = p.cwd ?? meta.cwd;
-      meta.createdAt = obj.timestamp ?? meta.createdAt;
-      meta.title = p.instructions ? null : meta.title;
-      continue;
-    }
-    if (obj.type === 'turn_context' && obj.payload?.cwd) {
-      meta.cwd = meta.cwd ?? obj.payload.cwd;
-      continue;
-    }
-
-    const ev = codexLineToEvent(obj);
-    if (ev) events.push(ev);
-  }
-
-  // Fall back to the filename for the id, and use the first user message as a
-  // display title only if the engine recorded none.
-  if (!meta.id) {
-    const m = /-([0-9a-f-]{36})\.jsonl$/.exec(path.basename(filePath));
-    meta.id = m ? m[1] : path.basename(filePath);
-  }
-  if (!meta.title) {
-    const firstUser = events.find((e) => e.role === 'user' && e.text.trim());
-    meta.title = firstUser ? firstUser.text.trim().slice(0, 120) : meta.id;
-  }
-  if (!meta.createdAt) {
-    try { meta.createdAt = fs.statSync(filePath).mtime.toISOString(); } catch { /* ignore */ }
-  }
-
-  return {
-    meta,
-    events: events.slice(0, MAX_EVENTS),
-    totalEvents: events.length,
-    truncated: events.length > MAX_EVENTS,
-  };
-}
-
 /**
  * Normalise one DSH event line.
  *
@@ -506,7 +353,7 @@ function parseDshSession(filePath, workspaceName) {
 
   return {
     meta,
-    events: events.slice(0, MAX_EVENTS),
+    events: events.slice(-MAX_EVENTS),
     // Report whether events were dropped. Counting the recorded events (not the
     // raw lines) is the honest signal: a 11 MB session can hold 40k raw lines
     // but only a few hundred displayable ones, and nothing is lost in that case.
@@ -524,26 +371,7 @@ function parseDshSession(filePath, workspaceName) {
  */
 export async function listSessions({ engine } = {}) {
   const out = [];
-  const wantCodex = !engine || engine === 'codex';
   const wantDsh = !engine || engine === 'dsh';
-
-  if (wantCodex) {
-    for (const file of walkFiles(codexRoot(), (n) => n.endsWith('.jsonl'))) {
-      let stat;
-      try { stat = fs.statSync(file); } catch { continue; }
-      const meta = readCodexHeader(file);
-      out.push({
-        engine: 'codex',
-        id: meta.id ?? path.basename(file, '.jsonl'),
-        title: meta.title,
-        cwd: meta.cwd,
-        createdAt: meta.createdAt ?? stat.mtime.toISOString(),
-        updatedAt: stat.mtime.toISOString(),
-        sizeBytes: stat.size,
-        path: file,
-      });
-    }
-  }
 
   if (wantDsh) {
     const root = dshRoot();
@@ -578,70 +406,43 @@ export async function listSessions({ engine } = {}) {
 }
 
 /** Read just enough of a Codex file to get its identity. */
-function readCodexHeader(filePath) {
-  const out = { id: null, cwd: null, createdAt: null, title: null };
-  let text;
-  try {
-    // The header is the first line; a bounded read avoids loading 90 MB files.
-    const fd = fs.openSync(filePath, 'r');
-    const buf = Buffer.alloc(64 * 1024);
-    const read = fs.readSync(fd, buf, 0, buf.length, 0);
-    fs.closeSync(fd);
-    text = buf.subarray(0, read).toString('utf8');
-  } catch {
-    return out;
-  }
-  for (const line of text.split('\n').slice(0, 40)) {
-    if (!line.trim()) continue;
-    let obj;
-    try { obj = JSON.parse(line); } catch { continue; }
-    if (obj.type === 'session_meta') {
-      out.id = obj.payload?.session_id ?? obj.payload?.id ?? null;
-      out.cwd = obj.payload?.cwd ?? null;
-      out.createdAt = obj.timestamp ?? null;
-      break;
-    }
-  }
-  return out;
-}
-
-/** Read one session in full, by engine and id (or explicit path). */
+/**
+ * Read one DSH session in full.
+ *
+ * Codex sessions are NOT read here any more: the kernel serves them through
+ * `thread/read` (see kernels/codex.js). A second reader would only drift from
+ * what the kernel reports.
+ */
 export async function readSession({ engine, id, sessionPath }) {
+  if (engine && engine !== 'dsh') return null;
   let filePath = sessionPath ?? null;
 
   if (!filePath) {
     if (!id) return null;
-    if (engine === 'codex') {
-      const found = walkFiles(codexRoot(), (n) => n.endsWith('.jsonl') && n.includes(id));
-      filePath = found[0] ?? null;
-    } else if (engine === 'dsh') {
-      const root = dshRoot();
-      let workspaces = [];
-      try { workspaces = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()); } catch { workspaces = []; }
-      for (const ws of workspaces) {
-        const candidate = path.join(root, ws.name, id, 'session.jsonl.zstd');
-        if (fs.existsSync(candidate)) { filePath = candidate; break; }
-      }
+    const root = dshRoot();
+    let workspaces = [];
+    try { workspaces = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()); } catch { workspaces = []; }
+    for (const ws of workspaces) {
+      const candidate = path.join(root, ws.name, id, 'session.jsonl.zstd');
+      if (fs.existsSync(candidate)) { filePath = candidate; break; }
     }
   }
   if (!filePath || !fs.existsSync(filePath)) return null;
 
-  // Refuse paths outside the two session roots: the client supplies this value.
-  const resolved = path.resolve(filePath);
-  const allowed = [path.resolve(codexRoot()), path.resolve(dshRoot())];
-  const inside = allowed.some((root) => {
-    const rel = path.relative(root, resolved);
-    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-  });
-  if (!inside) return null;
+  // Refuse paths outside the DSH session root: the client supplies this value.
+  let resolved;
+  try { resolved = fs.realpathSync(filePath); } catch { return null; }
+  let allowed;
+  try { allowed = fs.realpathSync(dshRoot()); } catch { allowed = path.resolve(dshRoot()); }
+  const rel = path.relative(allowed, resolved);
+  if (rel !== '' && (rel.startsWith('..') || path.isAbsolute(rel))) return null;
 
-  if (engine === 'dsh' || resolved.endsWith('.zstd')) {
+  if (resolved.endsWith('.zstd')) {
     const wsName = resolved.split(path.sep).slice(-3)[0] ?? '';
     return parseDshSession(resolved, wsName);
   }
-  return parseCodexSession(resolved);
+  return null;
 }
-
 export function sessionRoots() {
   return { codex: codexRoot(), dsh: dshRoot() };
 }

@@ -5,6 +5,7 @@ sealed interface LinkState {
     data object Idle : LinkState
     data object Connecting : LinkState
     data class Connected(val hostname: String) : LinkState
+    data class NodeOffline(val hostname: String) : LinkState
     data class Failed(val reason: String) : LinkState
 }
 

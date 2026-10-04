@@ -177,6 +177,32 @@ class AgentClient(
     private val _liveEvents = MutableStateFlow<List<TaskEvent>>(emptyList())
     val liveEvents: StateFlow<List<TaskEvent>> = _liveEvents.asStateFlow()
 
+    private val credentials = appContext?.let { DeviceCredentials(it) }
+    private var generation = 0
+    private fun cacheFile(name: String): File? = appContext?.let {
+        val dir = File(it.filesDir, "history-cache").apply { mkdirs() }
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(name.toByteArray()).joinToString("") { b -> "%02x".format(b) }
+        File(dir, "$hash.json")
+    }
+    private fun cache(name: String, frame: JSONObject) {
+        runCatching {
+            val file = cacheFile(name) ?: return
+            val text = frame.toString()
+            if (text.toByteArray().size > 5 * 1024 * 1024) return
+            val tmp = File(file.parentFile, "${file.name}.tmp")
+            tmp.writeText(text); tmp.renameTo(file)
+            val files = file.parentFile?.listFiles()?.filter { it.extension == "json" }?.sortedBy { it.lastModified() } ?: emptyList()
+            var bytes = files.sumOf { it.length() }
+            for (old in files) if (bytes > 20 * 1024 * 1024 && old != file) { bytes -= old.length(); old.delete() }
+        }
+    }
+    private fun cached(name: String): JSONObject? = runCatching { cacheFile(name)?.takeIf { it.exists() }?.readText()?.let { JSONObject(it) } }.getOrNull()
+    init {
+        cached("index")?.let {
+            _sessions.value = parseSessionList(it.optJSONArray("sessions"))
+            _workspaces.value = parseWorkspaces(it.optJSONArray("workspaces"))
+        }
+    }
     private var socket: WebSocket? = null
     private var reconnectJob: Job? = null
     private var lastUrl: String? = null
@@ -186,6 +212,7 @@ class AgentClient(
     private var manuallyClosed = false
 
     fun connect(url: String, token: String) {
+        generation += 1
         lastUrl = url
         lastToken = token
         manuallyClosed = false
@@ -199,11 +226,14 @@ class AgentClient(
 
         _link.value = LinkState.Connecting
 
-        val request = Request.Builder().url(url).build()
-        socket = client.newWebSocket(request, Listener(token))
+        runCatching {
+            val request = Request.Builder().url(url).build()
+            socket = client.newWebSocket(request, Listener(token, generation))
+        }.onFailure { _link.value = LinkState.Failed("节点地址无效：${it.message}") }
     }
 
     fun disconnect() {
+        generation += 1
         manuallyClosed = true
         reconnectJob?.cancel()
         socket?.close(1000, "client closing")
@@ -378,6 +408,12 @@ class AgentClient(
      * conversation while the new one is loading.
      */
     fun openSession(session: SessionInfo) {
+        if (_link.value !is LinkState.Connected) {
+            val snapshot = cached("session-${session.engine}-${session.id}")
+            if (snapshot != null) { _sessionDetail.value = parseSessionDetail(snapshot); _activeChat.value = null }
+            else _lastAction.value = ActionResult("sessions.read", session.id, false, "not_cached", "这条记录尚未缓存，请在电脑内核在线时打开一次")
+            return
+        }
         _sessionDetail.value = null
         _sessionsLoading.value = true
         // Same single-column view as a live chat, so one closes the other.
@@ -463,6 +499,14 @@ class AgentClient(
     /** Forget a chat and release its runtime on the PC. */
     fun closeChat(chatId: String) {
         sendFrame(JSONObject().put("type", "chat.close").put("chatId", chatId))
+    }
+
+    fun resumeSession(session: SessionDetail) {
+        val recorded = _sessions.value.find { it.id == session.id && it.engine == session.engine }
+        _chatSending.value = true
+        val frame = JSONObject().put("type", "chat.resume").put("engine", session.engine).put("sessionId", session.id)
+        recorded?.let { frame.put("path", it.path) }
+        sendFrame(frame)
     }
 
     /** Leave the conversation view without closing the chat itself. */
@@ -765,8 +809,12 @@ class AgentClient(
 
     private fun sendFrame(obj: JSONObject): Boolean {
         val ws = socket
-        if (ws == null) {
-            _lastAction.value = ActionResult("", "", false, "offline", "未连接到电脑")
+        if (ws == null || _link.value !is LinkState.Connected) {
+            _loading.value = false
+            _chatSending.value = false
+            _sessionsLoading.value = false
+            _termBusy.value = false
+            _lastAction.value = ActionResult("", "", false, "offline", "电脑内核离线，操作未发送；已缓存内容仍可查看")
             return false
         }
         return ws.send(obj.toString())
@@ -783,16 +831,37 @@ class AgentClient(
         }
     }
 
-    private inner class Listener(private val token: String) : WebSocketListener() {
+    private inner class Listener(private val token: String, private val epoch: Int) : WebSocketListener() {
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (epoch != generation) { webSocket.close(1000, "superseded"); return }
             webSocket.send(JSONObject().put("type", "auth").put("token", token).toString())
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            if (epoch != generation) return
             val frame = runCatching { JSONObject(text) }.getOrNull() ?: return
             when (frame.optString("type")) {
+                "device.paired" -> {
+                    val permanent = frame.optString("token")
+                    if (permanent.isNotBlank()) {
+                        credentials?.write(permanent)
+                        lastToken = permanent
+                    }
+                }
+                "node.status" -> {
+                    if (!frame.optBoolean("online")) {
+                        _link.value = LinkState.NodeOffline(frame.optString("hostname", "电脑"))
+                        _loading.value = false
+                        _chatSending.value = false
+                        _termBusy.value = false
+                    }
+                }
                 "auth.ok" -> {
+                    if (frame.has("nodeOnline") && !frame.optBoolean("nodeOnline")) {
+                        _link.value = LinkState.NodeOffline(frame.optString("hostname", "电脑"))
+                        return
+                    }
                     _link.value = LinkState.Connected(frame.optString("hostname", "unknown"))
                     webSocket.send(
                         JSONObject().put("type", "status.subscribe").put("intervalMs", 2000).toString(),
@@ -801,6 +870,9 @@ class AgentClient(
                     // directory is a property of the PC, not of this app, so
                     // the client must not assume one.
                     sendFrame(JSONObject().put("type", "fs.roots"))
+                    loadChats()
+                    loadSessions()
+                    _activeChat.value?.let { sendFrame(JSONObject().put("type", "chat.read").put("chatId", it.id)) }
                 }
                 "auth.fail" -> {
                     _link.value = LinkState.Failed("鉴权失败：${frame.optString("reason", "token 无效")}")
@@ -888,13 +960,18 @@ class AgentClient(
                     }
                 }
                 "action.result" -> {
+                    val action = frame.optString("action")
+                    if (action.startsWith("chat.")) _chatSending.value = false
                     _lastAction.value = ActionResult(
-                        action = frame.optString("action"),
+                        action = action,
                         target = frame.optString("target"),
                         ok = frame.optBoolean("ok", false),
                         code = frame.optString("code"),
                         message = frame.optString("message"),
                     )
+                    // Same self-heal as the "error" branch: a send to a chat the
+                    // restarted agent forgot re-attaches instead of failing.
+                    if (action == "chat.send" && frame.optString("code") == "no_chat") reattachActiveChat()
                 }
                 "codex.config" -> {
                     _codexConfig.value = parseCodexConfig(frame.optJSONObject("config"))
@@ -929,6 +1006,11 @@ class AgentClient(
                     val msg = frame.optString("message")
                     if (msg.isNotEmpty()) _lastAction.value =
                         ActionResult(frame.optString("code"), "", false, frame.optString("code"), msg)
+                    // The agent keeps chats in memory, so a phone that was showing
+                    // a conversation when the agent restarted holds an id it no
+                    // longer knows. Re-attach by the native session identity rather
+                    // than leaving a dead conversation on screen.
+                    if (frame.optString("code") == "no_chat") reattachActiveChat()
                 }
                 // ---- P4 frames ----
                 "ai.engines" -> _engines.value = parseEngines(frame.optJSONArray("engines"))
@@ -956,11 +1038,13 @@ class AgentClient(
                 }
                 "sessions" -> {
                     _sessionsLoading.value = false
+                    cache("index", frame)
                     _sessions.value = parseSessionList(frame.optJSONArray("sessions"))
                     _workspaces.value = parseWorkspaces(frame.optJSONArray("workspaces"))
                 }
                 "session" -> {
                     _sessionsLoading.value = false
+                    cache("session-${frame.optString("engine")}-${frame.optString("id")}", frame)
                     _sessionDetail.value = parseSessionDetail(frame)
                 }
                 // ---- live chat frames ----
@@ -969,6 +1053,7 @@ class AgentClient(
                     _chatSending.value = false
                     val info = parseChatInfo(frame)
                     if (info != null) {
+                        _sessionDetail.value = null
                         _activeChat.value = info
                         upsertChat(info)
                     }
@@ -1023,11 +1108,16 @@ class AgentClient(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (epoch != generation) return
+            socket = null
             _link.value = LinkState.Failed(t.message ?: "连接失败")
             scheduleReconnect()
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (epoch != generation) return
+            socket = null
+            if (code == 4401 || code == 4409) manuallyClosed = true
             if (!manuallyClosed) _link.value = LinkState.Failed("连接已断开 ($code $reason)")
             scheduleReconnect()
         }
@@ -1045,6 +1135,23 @@ class AgentClient(
         }
     }
 
+    /**
+     * Re-attach the open conversation after the agent forgot it.
+     *
+     * Chats are process-local handles on the PC; the kernel's session id is the
+     * durable identity. Resuming is metadata-only on the agent side, so this
+     * costs no model work and can run on every reconnect.
+     */
+    private fun reattachActiveChat(): Boolean {
+        val chat = _activeChat.value ?: return false
+        if (chat.engine != "codex") return false
+        val native = chat.threadId?.takeIf { it.isNotBlank() } ?: chat.sessionId?.takeIf { it.isNotBlank() } ?: return false
+        _chatSending.value = false
+        return sendFrame(
+            JSONObject().put("type", "chat.resume").put("engine", chat.engine).put("sessionId", native),
+        )
+    }
+
     private fun parseChatInfo(o: JSONObject): ChatInfo? {
         val id = o.optString("id")
         if (id.isEmpty()) return null
@@ -1056,6 +1163,8 @@ class AgentClient(
             model = o.optString("model"),
             status = o.optString("status", "idle"),
             ready = o.optBoolean("ready", false),
+            engine = o.optString("engine", "dsh"),
+            threadId = if (o.isNull("threadId")) null else o.optString("threadId"),
             sessionId = if (o.isNull("sessionId")) null else o.optString("sessionId"),
             createdAt = o.optLong("createdAt"),
             lastUsedAt = o.optLong("lastUsedAt"),

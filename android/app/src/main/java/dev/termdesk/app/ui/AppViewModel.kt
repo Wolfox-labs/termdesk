@@ -3,6 +3,7 @@ package dev.termdesk.app.ui
 import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
+import dev.termdesk.app.data.DeviceCredentials
 import dev.termdesk.app.data.AgentClient
 import dev.termdesk.app.data.ActionResult
 import dev.termdesk.app.data.ChatEvent
@@ -36,6 +37,7 @@ import kotlinx.coroutines.flow.asStateFlow
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val prefs = app.getSharedPreferences("termdesk", Context.MODE_PRIVATE)
+    private val credentials = DeviceCredentials(app.applicationContext)
     private val client = AgentClient(app.applicationContext)
 
     val link: StateFlow<LinkState> = client.link
@@ -145,6 +147,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun loadSessions(engine: String? = null) = client.loadSessions(engine)
     fun openSession(session: SessionInfo) = client.openSession(session)
     fun closeSession() = client.closeSession()
+    fun resumeSession(session: SessionDetail) = client.resumeSession(session)
 
     // ---- theme ----
 
@@ -189,11 +192,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun uploadFile(uri: android.net.Uri, remoteDir: String) = client.uploadFile(uri, remoteDir)
 
     val savedUrl: String get() = prefs.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL
-    val savedToken: String get() = prefs.getString(KEY_TOKEN, "") ?: ""
+    val savedToken: String get() = credentials.read()
 
     init {
         // Auto-reconnect when we already have credentials, so returning to the
         // app from a phone lock does not mean re-pairing every time.
+        // Debug-only deployment handoff from a trusted ADB session. Never an exported intent.
+        val pairingFile = java.io.File(app.filesDir, "pairing.json")
+        if (app.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 && pairingFile.exists()) {
+            runCatching {
+                val handoff = org.json.JSONObject(pairingFile.readText())
+                val url = handoff.getString("url")
+                require(url.startsWith("wss://"))
+                credentials.write(handoff.getString("token"))
+                prefs.edit().putString(KEY_URL, url).commit()
+            }
+            pairingFile.delete()
+        }
         val url = savedUrl
         val token = savedToken
         if (url.isNotBlank() && token.isNotBlank()) {
@@ -202,13 +217,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun connect(url: String, token: String) {
-        prefs.edit().putString(KEY_URL, url).putString(KEY_TOKEN, token).apply()
+        credentials.write(token)
+        prefs.edit().putString(KEY_URL, url).apply()
         client.connect(url, token)
     }
 
     fun disconnect() {
-        prefs.edit().remove(KEY_TOKEN).apply()
         client.disconnect()
+    }
+
+    fun forgetDevice() {
+        client.disconnect()
+        credentials.forget()
     }
 
     override fun onCleared() {

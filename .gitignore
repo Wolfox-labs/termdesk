@@ -39,3 +39,8 @@ pc-agent/tools/*-out.txt
 DEPLOYMENT.local.md
 *.local.md
 .local-notes/
+
+# Local scratch artifacts (Termux bootstrap tarball, etc.)
+$d/
+*.tar
+

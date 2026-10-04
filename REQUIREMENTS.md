@@ -64,12 +64,12 @@ Windows 电脑办公。要求不是"远程桌面"（手机屏幕小、流量贵�
                                                        └─> 127.0.0.1:3080  DSH Web
 ```
 
-- `https://term.example.com/healthz` → **200**（手机纯蜂窝实测 1.03 s）
-- `https://dsh.example.com/` → **200**（手机纯蜂窝实测 1.19 s）
+- `https://term.wolfoxlabs.xyz/healthz` → **200**（手机纯蜂窝实测 1.03 s）
+- `https://dsh.wolfoxlabs.xyz/` → **200**（手机纯蜂窝实测 1.19 s）
 
 **为什么用 Cloudflare Tunnel 而不是 Tailscale**：本校园网下 Tailscale 打洞失败，
 流量绕道中继（PC→纽伦堡 144ms，手机→孟买 217ms）；而 Cloudflare 隧道口 7844
-实测 20/20 全通。这与使用者既有的 `api.example.com` 方案同构。
+实测 20/20 全通。这与使用者既有的 `api.wolfoxlabs.xyz` 方案同构。
 
 ---
 
@@ -163,7 +163,7 @@ node src/server.js
 ### 4.2 P5-1 缺陷详述
 
 ### 现象
-手机浏览器打开 `https://dsh.example.com/`，左侧栏展开后**没有任何方式收起**，
+手机浏览器打开 `https://dsh.wolfoxlabs.xyz/`，左侧栏展开后**没有任何方式收起**，
 只能刷新页面。
 
 ### 根因（已用真实浏览器取证，非推断）
@@ -246,7 +246,7 @@ Tauri 检测：`window.__TAURI__` / `__TAURI_INTERNALS__` / `__TAURI_IPC__` 任�
 DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 
 `~/.dsh/cordis.patch.yml` 当前已含一处针对本部署的修改（`trustedHosts` 追加
-`dsh.example.com`），那是为了让隧道域名通过 Host 围栏，与本缺陷无关。
+`dsh.wolfoxlabs.xyz`），那是为了让隧道域名通过 Host 围栏，与本缺陷无关。
 
 ---
 
@@ -282,7 +282,7 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 | C→S | `ai.engines` · `ai.submit` · `ai.tasks` · `ai.task` · `ai.cancel` · `ai.reset`（**deprecated**，一次性任务兼容面） |
 | C→S | `codex.get` · `codex.apply` · `codex.restore` |
 | C→S | `sessions.list` · `sessions.read`（磁盘上的历史会话，只读） |
-| C→S | `chat.list` · `chat.create` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` |
+| C→S | `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` |
 | S→C | `auth.ok` · `auth.fail` · `hello` · `status` · `procs` · `services` |
 | S→C | `fs.listing` · `fs.file` · `fs.written` · `fs.roots` |
 | S→C | `term.opened` · `term.output` · `term.exit` · `term.list` |

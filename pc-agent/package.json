@@ -17,6 +17,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "socks-proxy-agent": "^10.1.0",
     "ws": "^8.18.0"
   }
 }

@@ -27,11 +27,15 @@ console.log(`dsh root  : ${roots.dsh}`);
 try {
   // --- listing ------------------------------------------------------------
   const all = await listSessions();
-  check('lists sessions from both engines', all.length > 0, `${all.length} sessions`);
-
-  const codex = all.filter((s) => s.engine === 'codex');
   const dsh = all.filter((s) => s.engine === 'dsh');
-  check('finds codex sessions', codex.length > 0, `${codex.length}`);
+  check('lists sessions from disk', all.length > 0, `${all.length} sessions`);
+  // Codex sessions are owned by the kernel now (thread/list + thread/read) and
+  // are covered by tools/codex-adapter-test.js and tools/codex-ws-e2e.js. The
+  // disk reader must no longer produce them — that is the contract here.
+  check('disk reader produces no codex entries', all.every((s) => s.engine !== 'codex'),
+    [...new Set(all.map((s) => s.engine))].join(','));
+  check('readSession refuses codex outright',
+    (await readSession({ engine: 'codex', id: 'not-a-thread' })) === null);
   check('finds dsh sessions', dsh.length > 0, `${dsh.length}`);
   check('list is sorted newest-first', (() => {
     for (let i = 1; i < Math.min(all.length, 40); i += 1) {
@@ -42,37 +46,18 @@ try {
 
   check('every entry has an engine and id', all.every((s) => s.engine && s.id));
   check('every entry has a path', all.every((s) => typeof s.path === 'string' && s.path.length > 0));
-  check('no entry leaked outside the session roots', all.every((s) => {
-    const p = s.path;
-    return p.startsWith(roots.codex) || p.startsWith(roots.dsh);
-  }));
+  check('no entry leaked outside the session roots', all.every((s) => s.path.startsWith(roots.dsh)));
 
   // Working directory is required for the workspace index in the app.
   const withCwd = all.filter((s) => s.cwd);
   check('most entries report a working directory', withCwd.length > all.length * 0.5,
     `${withCwd.length}/${all.length}`);
-
-  const codexCwd = codex.filter((s) => s.cwd).length;
-  check('codex entries report a cwd', codexCwd > 0, `${codexCwd}/${codex.length}`);
   const dshCwd = dsh.filter((s) => s.cwd).length;
   check('dsh entries report a cwd', dshCwd > 0, `${dshCwd}/${dsh.length}`);
 
   // The DSH workspace directory name must decode back to a Windows path.
   const sample = dsh.find((s) => s.cwd && /^[A-Z]:\\/.test(s.cwd));
   check('dsh workspace names decode to drive paths', Boolean(sample), sample?.cwd);
-
-  // --- reading a codex session -------------------------------------------
-  const codexPick = codex.filter((s) => s.sizeBytes > 5000)[0] ?? codex[0];
-  const codexRead = await readSession({ engine: 'codex', id: codexPick.id });
-  check('reads a codex session', Boolean(codexRead), codexPick.id);
-  check('codex session has events', (codexRead?.events.length ?? 0) > 0, `${codexRead?.events.length} events`);
-  check('codex session carries its cwd', Boolean(codexRead?.meta.cwd), codexRead?.meta.cwd);
-  check('codex events are normalised', (codexRead?.events ?? []).every(
-    (e) => typeof e.kind === 'string' && typeof e.text === 'string' && 'role' in e));
-
-  const codexKinds = [...new Set((codexRead?.events ?? []).map((e) => e.kind))];
-  check('codex events include message content', codexKinds.includes('message'), codexKinds.join(','));
-
   // --- reading a dsh session ---------------------------------------------
   const dshPick = dsh.filter((s) => s.sizeBytes > 100000)[0] ?? dsh[0];
   const dshRead = await readSession({ engine: 'dsh', id: dshPick.id });

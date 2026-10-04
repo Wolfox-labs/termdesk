@@ -148,9 +148,12 @@ fun AppShell(
     onCloseRecorded: () -> Unit,
     onLoadSessions: () -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
+    onResumeSession: (SessionDetail) -> Unit,
+    connected: Boolean,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     onDisconnect: () -> Unit,
+    connectionLabel: String,
 ) {
     var section by remember { mutableStateOf(Section.Sessions) }
     var panelOpen by remember { mutableStateOf(false) }
@@ -175,6 +178,7 @@ fun AppShell(
                     onDisconnect = onDisconnect,
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                if (!connected) Text(connectionLabel, modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).clickable { onDisconnect() }.padding(10.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                 Box(Modifier.weight(1f)) {
                     SectionBody(
@@ -229,6 +233,8 @@ fun AppShell(
                         onCloseRecorded = onCloseRecorded,
                         onLoadSessions = onLoadSessions,
                         onOpenSession = onOpenSession,
+                        onResumeSession = onResumeSession,
+                        connected = connected,
                         themeMode = themeMode,
                         onThemeModeChange = onThemeModeChange,
                     )
@@ -421,6 +427,8 @@ private fun SectionBody(
     onCloseRecorded: () -> Unit,
     onLoadSessions: () -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
+    onResumeSession: (SessionDetail) -> Unit,
+    connected: Boolean,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
 ) {
@@ -478,6 +486,8 @@ private fun SectionBody(
             onCloseRecorded = onCloseRecorded,
             onLoadSessions = onLoadSessions,
             onOpenSession = onOpenSession,
+                        onResumeSession = onResumeSession,
+                        connected = connected,
         )
         Section.Settings -> CodexSettingsSection(
             config = codexConfig,

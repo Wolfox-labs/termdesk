@@ -1,0 +1,22 @@
+[Unit]
+Description=TermDesk isolated Cloudflare ingress on VPS
+After=network-online.target termdesk-relay.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=termdesk
+Group=termdesk
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config /etc/termdesk/tunnel.yml tunnel run
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryMax=256M
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+

@@ -24,6 +24,7 @@ import { handleTransferRequest } from './transfer.js';
 import { TerminalManager } from './terminal.js';
 import { EngineManager } from './engines.js';
 import { ChatManager } from './chat.js';
+import { loadRelayConfig, startRelayConnector } from './relay-client.js';
 import { createFrameHandler, pushStatusFrame } from './handlers.js';
 
 const DEFAULT_PORT = 7420;
@@ -333,7 +334,10 @@ wss.on('connection', (socket, req) => {
   });
 });
 
+let relayConnector = null;
 server.listen(args.port, args.host, () => {
+  const relayConfig = loadRelayConfig();
+  if (relayConfig) relayConnector = startRelayConnector({ config: relayConfig, port: args.port, token, accessKey: ACCESS_KEY });
   console.log('TermDesk PC agent listening');
   console.log(`  health : http://127.0.0.1:${args.port}/healthz`);
   for (const addr of localAddresses()) {
@@ -346,6 +350,7 @@ server.listen(args.port, args.host, () => {
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
+    relayConnector?.stop();
     terminals.disposeAll();
     engines.disposeAll();
     chats.disposeAll();

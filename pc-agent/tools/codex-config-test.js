@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Codex provider-configuration checks.
  *
  * Runs against a SANDBOX copy of a realistic config.toml. The real ~/.codex is
@@ -50,7 +50,7 @@ fs.writeFileSync(CONFIG, FIXTURE, 'utf8');
 
 // Preserve markers we expect to survive untouched.
 const preservedChecks = [
-  ['[desktop] 娈靛瓨鍦?, /\[desktop\]/],
+  ['[desktop] 变更存在', /\[desktop\]/],
   ['conversationDetailMode 淇濈暀', /conversationDetailMode/],
   ['appearanceTheme 淇濈暀', /appearanceTheme/],
   ['projects 淇′换绾у埆淇濈暀', /trust_level/],

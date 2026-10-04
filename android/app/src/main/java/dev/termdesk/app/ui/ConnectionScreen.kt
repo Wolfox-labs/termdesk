@@ -17,6 +17,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +43,9 @@ fun ConnectionScreen(
     initialUrl: String,
     initialToken: String,
     onConnect: (String, String) -> Unit,
+    onClose: () -> Unit,
+    onDisconnect: () -> Unit,
+    onForget: () -> Unit,
 ) {
     var url by remember { mutableStateOf(initialUrl) }
     var token by remember { mutableStateOf(initialToken) }
@@ -62,7 +67,7 @@ fun ConnectionScreen(
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "连接到你的电脑",
+            text = "一次绑定设备，之后自动连接 VPS 节点",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -72,8 +77,8 @@ fun ConnectionScreen(
         OutlinedTextField(
             value = url,
             onValueChange = { url = it.trim() },
-            label = { Text("代理地址") },
-            placeholder = { Text("ws://100.x.y.z:7420") },
+            label = { Text("节点地址") },
+            placeholder = { Text("wss://你的节点域名") },
             singleLine = true,
             enabled = !connecting,
             keyboardOptions = KeyboardOptions(
@@ -89,7 +94,8 @@ fun ConnectionScreen(
         OutlinedTextField(
             value = token,
             onValueChange = { token = it.trim() },
-            label = { Text("配对令牌") },
+            label = { Text("一次性绑定码 / 已保存的设备凭据") },
+            visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
             enabled = !connecting,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
@@ -128,9 +134,12 @@ fun ConnectionScreen(
             )
         }
 
+        TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("返回工作台 / 离线查看") }
+        TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("暂时断开（保留绑定）") }
+        TextButton(onClick = onForget, modifier = Modifier.fillMaxWidth()) { Text("忘记此设备绑定") }
         Spacer(Modifier.height(28.dp))
         Text(
-            text = "在电脑上运行：node src/server.js --show-token",
+            text = "仅首次绑定需要节点地址和短时绑定码。设备凭据加密保存；断开连接不会取消绑定。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

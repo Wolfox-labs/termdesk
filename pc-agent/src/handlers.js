@@ -29,6 +29,7 @@ import {
   PROVIDER_TEMPLATES,
 } from './codexconfig.js';
 import { listSessions, readSession, sessionRoots } from './sessions.js';
+import { threadSummaryToSession, threadToSessionDetail, discoverThreadIdsFromDisk } from './kernels/codex.js';
 
 const STATUS_INTERVAL_MS = 2000;
 
@@ -46,6 +47,63 @@ const STATUS_INTERVAL_MS = 2000;
  * @param {() => void} ctx.stopStatus
  * @param {(ms: number) => void} ctx.startStatusTimer
  */
+/**
+ * The Codex session list: kernel first, rollout filenames for discovery.
+ *
+ * `thread/list` returns only the kernel's recent window (measured on this
+ * machine: 9 of 54 root sessions), while `thread/read` serves ANY thread id.
+ * So the ids the index missed come from rollout FILENAMES and every title, cwd
+ * and timestamp still comes from the kernel. Every entry in this list is
+ * therefore openable and resumable by construction.
+ *
+ * Cached briefly: a phone refresh must not re-read 80 headers every time.
+ */
+const CODEX_LIST_TTL_MS = 60_000;
+let codexListCache = { at: 0, value: null };
+
+async function listCodexSessions(chats) {
+  const now = Date.now();
+  if (codexListCache.value && now - codexListCache.at < CODEX_LIST_TTL_MS) return codexListCache.value;
+
+  const server = chats.codexServer();
+  const listed = await server.listThreads({ limit: 300 });
+  const native = (listed?.data ?? []).map(threadSummaryToSession);
+  const known = new Set(native.map((s) => s.id));
+
+  // Archiving is state the rollout files do not carry, so ask for the archived
+  // window explicitly and keep those ids out of the disk-discovered extras.
+  const archivedIds = new Set(
+    ((await server.listThreads({ limit: 500, archived: true }).catch(() => null))?.data ?? []).map((t) => t.id),
+  );
+
+  const extraIds = discoverThreadIdsFromDisk({ root: sessionRoots().codex, limit: 80 })
+    .filter((id) => !known.has(id) && !archivedIds.has(id));
+  const extra = [];
+  const BATCH = 8;
+  for (let i = 0; i < extraIds.length; i += BATCH) {
+    const batch = await Promise.all(
+      extraIds.slice(i, i + BATCH).map((id) => server.readThread(id, { includeTurns: false }).catch(() => null)),
+    );
+    for (const thread of batch) {
+      // Child (subagent) rollouts are not root sessions the user can open.
+      if (!thread?.id || thread.parentThreadId || thread.threadSource === 'subagent') continue;
+      extra.push(threadSummaryToSession(thread));
+    }
+  }
+
+  // One entry per native thread id: the two discovery paths can overlap when a
+  // thread appears both in the kernel window and in a rollout file name.
+  const byId = new Map();
+  for (const entry of [...native, ...extra]) if (!byId.has(entry.id)) byId.set(entry.id, entry);
+  const sessions = [...byId.values()];
+  const value = {
+    sessions,
+    source: `kernel(${native.length})+disk-index(${extra.length})`,
+  };
+  codexListCache = { at: now, value };
+  return value;
+}
+
 export function createFrameHandler(ctx) {
   const { send, socket, shellEnabled, terminals, engines, chats } = ctx;
 
@@ -407,7 +465,26 @@ export function createFrameHandler(ctx) {
 
       case C2S.SESSIONS_LIST: {
         try {
-          const all = await listSessions({ engine: frame.engine });
+          // The kernel is the authority for its own sessions; TermDesk only asks.
+          // The on-disk scan survives as a fallback so history stays visible when
+          // Codex itself is unreachable.
+          const wantCodex = !frame.engine || frame.engine === 'codex';
+          const wantDsh = !frame.engine || frame.engine === 'dsh';
+          const all = [];
+          let codexSource = null;
+          if (wantDsh) all.push(...(await listSessions({ engine: 'dsh' })));
+          if (wantCodex) {
+            try {
+              const codexList = await listCodexSessions(chats);
+              all.push(...codexList.sessions);
+              codexSource = codexList.source;
+            } catch (err) {
+              // The kernel is the only Codex session source now. Say so instead
+              // of quietly falling back to a second, divergent reader.
+              codexSource = `kernel-unavailable: ${String(err?.message ?? err).slice(0, 140)}`;
+            }
+            all.sort((a, b) => new Date(b.updatedAt ?? 0) - new Date(a.updatedAt ?? 0));
+          }
           // Group by working directory so the client can render a workspace
           // index directly, without re-deriving it from raw paths.
           const byWorkspace = new Map();
@@ -431,6 +508,9 @@ export function createFrameHandler(ctx) {
             total: all.length,
             workspaces,
             sessions: all.slice(0, 600),
+            // Tells the client where the Codex index came from: the kernel's own
+            // session API, or the on-disk fallback when Codex is unreachable.
+            codexSource,
           });
         } catch (err) {
           send(S2C.ERROR, { code: 'sessions_failed', message: String(err?.message ?? err) });
@@ -440,11 +520,22 @@ export function createFrameHandler(ctx) {
 
       case C2S.SESSIONS_READ: {
         try {
-          const detail = await readSession({
-            engine: frame.engine,
-            id: frame.sessionId,
-            sessionPath: frame.path,
-          });
+          let detail = null;
+          if (frame.engine === 'codex') {
+            // Native transcript straight from the kernel's own session store.
+            try {
+              const thread = await chats.codexServer().readThread(frame.sessionId, { includeTurns: true });
+              detail = thread ? threadToSessionDetail(thread) : null;
+            } catch { detail = null; }
+            // No on-disk fallback for Codex any more: the kernel can read any
+            // thread id, and a second reader would only drift from it.
+          } else {
+            detail = await readSession({
+              engine: frame.engine,
+              id: frame.sessionId,
+              sessionPath: frame.path,
+            });
+          }
           if (detail === null) {
             send(S2C.ERROR, { code: 'session_not_found', message: '找不到该会话' });
           } else {
@@ -494,6 +585,21 @@ export function createFrameHandler(ctx) {
             code: result.code,
             message: result.message,
           });
+        }
+        break;
+      }
+
+      case C2S.CHAT_RESUME: {
+        try {
+          const result = await chats.resume({ engine: frame.engine, id: frame.sessionId, sessionPath: frame.path });
+          if (result.ok) {
+            send(S2C.CHAT, result.chat);
+            send(S2C.CHATS, { chats: chats.list() });
+          } else {
+            send(S2C.ACTION_RESULT, { action: 'chat.resume', target: frame.sessionId, ok: false, code: result.code, message: result.message });
+          }
+        } catch (err) {
+          send(S2C.ACTION_RESULT, { action: 'chat.resume', target: frame.sessionId, ok: false, code: 'resume_failed', message: String(err?.message ?? err) });
         }
         break;
       }

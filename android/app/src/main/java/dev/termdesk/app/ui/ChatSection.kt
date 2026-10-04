@@ -48,6 +48,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -110,6 +111,8 @@ fun ChatSection(
     onCloseRecorded: () -> Unit,
     onLoadSessions: () -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
+    onResumeSession: (SessionDetail) -> Unit,
+    connected: Boolean,
 ) {
     var drawerOpen by remember { mutableStateOf(false) }
 
@@ -118,14 +121,25 @@ fun ChatSection(
         onLoadSessions()
     }
 
+    // Opening a recorded session attaches the kernel to it (metadata-only on the
+    // PC), so history and a live conversation become the same view rather than
+    // two separate objects. The button below stays as a manual retry for when the
+    // engine refuses — for example when the session is in use by the desktop app.
+    // DSH has no resume, so its history stays read-only and says so.
+    LaunchedEffect(recordedSession?.engine, recordedSession?.id, connected) {
+        val session = recordedSession
+        if (session != null && connected && session.engine == "codex") onResumeSession(session)
+    }
+
     Box(Modifier.fillMaxSize()) {
         // One column: the conversation, or the index when nothing is open.
         Column(Modifier.fillMaxSize()) {
             // A recorded session takes over the view when one is picked from the
             // index: it is history, so it is shown read-only.
             if (recordedSession != null) {
-                RecordedSessionHeader(session = recordedSession, onClose = onCloseRecorded)
+                RecordedSessionHeader(session = recordedSession, onClose = onCloseRecorded, onResume = { onResumeSession(recordedSession) }, canResume = connected && recordedSession.engine == "codex" && !sending)
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                if (recordedSession.engine == "dsh") Text("DSH 内核暂未开放可靠的原生恢复；此处保留只读，不伪造上下文。", modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.labelSmall)
                 RecordedTranscript(recordedSession)
             } else {
                 ChatHeader(
@@ -151,6 +165,7 @@ fun ChatSection(
                         sending = sending,
                         onSend = onSend,
                         onCancel = onCancel,
+                        connected = connected,
                     )
                 }
             }
@@ -188,7 +203,7 @@ fun ChatSection(
 }
 
 @Composable
-private fun RecordedSessionHeader(session: SessionDetail, onClose: () -> Unit) {
+private fun RecordedSessionHeader(session: SessionDetail, onClose: () -> Unit, onResume: () -> Unit, canResume: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -225,6 +240,7 @@ private fun RecordedSessionHeader(session: SessionDetail, onClose: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        TextButton(onClick = onResume, enabled = canResume) { Text("继续对话") }
     }
 }
 
@@ -481,6 +497,7 @@ private fun Conversation(
     sending: Boolean,
     onSend: (String, String) -> Unit,
     onCancel: (String) -> Unit,
+    connected: Boolean,
 ) {
     // Fresh state per chat: opening or switching a conversation always lands at
     // its end, never at a leftover scroll offset from the previous one.
@@ -548,7 +565,7 @@ private fun Conversation(
             onDraftChange = { draft = it },
             sending = sending,
             running = chat.isRunning,
-            canSend = chat.ready || chat.isRunning || chat.status != "stopped",
+            canSend = connected && (chat.ready || chat.isRunning || chat.status != "stopped"),
             onSend = {
                 val text = draft.trim()
                 if (text.isNotEmpty()) {
