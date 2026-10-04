@@ -17,6 +17,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,6 +37,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     // Collected so startPath recomputes once the agent reports its roots.
     vm.fsRoots.collectAsState()
     val openFile by vm.openFile.collectAsState()
+    val preview by vm.preview.collectAsState()
     val transfer by vm.transfer.collectAsState()
     val termLines by vm.termLines.collectAsState()
     val termSession by vm.termSession.collectAsState()
@@ -59,6 +61,10 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
 
     // New-chat picker: onCreateChat only requests the sheet with a suggested
     // cwd; kernel/model/cwd stay explicit user choices inside NewChatSheet.
+    // Which section is open lives here, not inside AppShell: a file viewer (or
+    // the new-chat sheet) replaces the whole shell, and a section remembered
+    // inside it would silently reset to 会话 every time one was opened.
+    var section by rememberSaveable { mutableStateOf(Section.Sessions) }
     var newChatSuggestedCwd by remember { mutableStateOf<String?>(null) }
     var newChatOpen by remember { mutableStateOf(false) }
     var connectionOpen by remember { mutableStateOf(vm.savedToken.isBlank()) }
@@ -103,9 +109,10 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
     // file. Deeper layers (drawer, conversation, section) register their own
     // handlers and win by being composed later. Only when nothing is open does
     // the press reach the OS and leave the app.
-    BackHandler(enabled = newChatOpen || openFile != null) {
+    BackHandler(enabled = newChatOpen || openFile != null || preview != null) {
         when {
             newChatOpen -> newChatOpen = false
+            preview != null -> vm.closePreview()
             else -> vm.closeOpenFile()
         }
     }
@@ -126,7 +133,14 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 onForget = { vm.forgetDevice(); connectionOpen = true },
             )
 
-            // An open file takes over the work area: editing is a focused mode.
+            // An open file takes over the work area: viewing and editing are
+            // both focused modes, never a panel beside the browser.
+            preview != null -> FilePreviewScreen(
+                preview = preview!!,
+                onClose = vm::closePreview,
+                onSave = vm::savePreviewToDownloads,
+            )
+
             openFile != null -> FileEditor(
                 file = openFile!!,
                 onSave = vm::writeFile,
@@ -147,7 +161,7 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 onKillProcess = vm::killProcess,
                 onServiceAction = vm::controlService,
                 onNavigate = vm::listDirectory,
-                onOpenFile = { entry -> vm.readFile(entry.path) },
+                onOpenFile = { entry -> vm.openPreview(entry) },
                 onDownload = { entry -> vm.downloadFile(entry.path, entry.name) },
                 onUpload = vm::uploadFile,
                 onCreateEntry = vm::createEntry,
@@ -200,6 +214,8 @@ fun AppRoot(vm: AppViewModel = viewModel()) {
                 onRefreshEngines = vm::loadEngines,
                 onDisconnect = { connectionOpen = true },
                 connectionLabel = connectionLabel,
+                section = section,
+                onSectionChange = { section = it },
             )
         }
 

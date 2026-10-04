@@ -1,6 +1,7 @@
 package dev.termdesk.app.ui
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -75,6 +76,16 @@ fun FilesSection(
     onRename: (String, String) -> Unit,
 ) {
     var pending by remember { mutableStateOf<PendingFileAction?>(null) }
+
+    // Inside the browser, back means "up one level" until the starting
+    // directory is reached; only then does it leave the section. Anything
+    // else would turn a directory tree into a flat place you cannot climb.
+    val browsePath = listing?.path.orEmpty()
+    BackHandler(
+        enabled = browsePath.isNotBlank() && browsePath != initialPath,
+    ) {
+        listing?.parent?.takeIf { it.isNotBlank() }?.let(onNavigate)
+    }
     var showNewFolder by remember { mutableStateOf(false) }
     var showNewFile by remember { mutableStateOf(false) }
 

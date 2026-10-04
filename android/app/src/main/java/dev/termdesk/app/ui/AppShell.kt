@@ -155,8 +155,9 @@ fun AppShell(
     onRefreshEngines: () -> Unit,
     onDisconnect: () -> Unit,
     connectionLabel: String,
+    section: Section,
+    onSectionChange: (Section) -> Unit,
 ) {
-    var section by remember { mutableStateOf(Section.Sessions) }
     var panelOpen by remember { mutableStateOf(false) }
     // Sections live in a drawer rather than a permanent rail: a phone is about
     // 400dp wide and the rail charged every screen 56dp for it.
@@ -169,7 +170,7 @@ fun AppShell(
         when {
             sectionDrawerOpen -> sectionDrawerOpen = false
             panelOpen -> panelOpen = false
-            else -> section = Section.Sessions
+            else -> onSectionChange(Section.Sessions)
         }
     }
 
@@ -311,7 +312,7 @@ fun AppShell(
                 section = section,
                 connected = connected,
                 onSelect = {
-                    section = it
+                    onSectionChange(it)
                     sectionDrawerOpen = false
                 },
             )

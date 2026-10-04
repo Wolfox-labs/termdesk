@@ -12,6 +12,8 @@ import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.EngineInfo
+import dev.termdesk.app.data.FileEntry
+import dev.termdesk.app.data.FilePreview
 import dev.termdesk.app.data.HostStatus
 import dev.termdesk.app.data.LinkState
 import dev.termdesk.app.data.ProcessInfo
@@ -51,6 +53,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val listing: StateFlow<DirectoryListing?> = client.listing
     val openFile: StateFlow<TextFile?> = client.openFile
     val transfer: StateFlow<TransferState?> = client.transfer
+    val preview: StateFlow<FilePreview?> = client.preview
 
     /**
      * Directories the PC allows browsing, reported by the agent after auth.
@@ -207,6 +210,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun listDirectory(path: String) = client.listDirectory(path)
     fun readFile(path: String) = client.readFile(path)
     fun closeOpenFile() = client.closeOpenFile()
+
+    // ---- file viewer ----
+    fun openPreview(entry: FileEntry) = client.openPreview(entry)
+    fun closePreview() = client.closePreview()
+    fun savePreviewToDownloads() = client.savePreviewToDownloads()
     fun writeFile(path: String, text: String) = client.writeFile(path, text)
     fun createEntry(dir: String, name: String, isDir: Boolean) = client.createEntry(dir, name, isDir)
     fun deleteEntry(path: String) = client.deleteEntry(path)

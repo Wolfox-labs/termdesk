@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Only the app's own caches are shared. A viewer that handed out broad paths
+  would let any installed app read whatever TermDesk can read on the phone.
+-->
+<paths>
+    <cache-path name="preview" path="preview/" />
+    <external-files-path name="downloads" path="downloads/" />
+</paths>

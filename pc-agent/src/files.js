@@ -11,6 +11,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import zlib from 'node:zlib';
 
 /** Directories the client may browse. Override with TERMDESK_ROOTS=a;b;c */
 function defaultRoots() {
@@ -87,6 +88,30 @@ const TEXT_EXTENSIONS = new Set([
   '.csv', '.log', '.env', '.gitignore', '.properties', '.gradle', '.vue', '.svg',
 ]);
 
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic', '.heif']);
+const PDF_EXTENSIONS = new Set(['.pdf']);
+const DOCX_EXTENSIONS = new Set(['.docx']);
+
+/**
+ * How the phone should try to show a file.
+ *
+ * dir    navigate instead of opening
+ * text   read as text (editable)
+ * image  fetch the bytes and draw them
+ * pdf    fetch the bytes and rasterise with the platform renderer
+ * docx   ask the PC for extracted text (the phone has no Word engine)
+ * other  no viewer here; offer "open with" / download
+ */
+export function previewKind(name, isDir) {
+  if (isDir) return 'dir';
+  const ext = path.extname(name).toLowerCase();
+  if (IMAGE_EXTENSIONS.has(ext)) return 'image';
+  if (PDF_EXTENSIONS.has(ext)) return 'pdf';
+  if (DOCX_EXTENSIONS.has(ext)) return 'docx';
+  if (isProbablyText(name)) return 'text';
+  return 'other';
+}
+
 export function isProbablyText(name) {
   const ext = path.extname(name).toLowerCase();
   if (TEXT_EXTENSIONS.has(ext)) return true;
@@ -120,6 +145,7 @@ export async function listDirectory(dirPath) {
       sizeBytes: isDir ? 0 : size,
       mtime,
       readable: isProbablyText(entry.name) && !isDir,
+      kind: previewKind(entry.name, isDir),
     });
   }
 
@@ -222,6 +248,106 @@ export async function renameEntry(fromPath, toName) {
   const to = await resolveSafePath(path.join(path.dirname(from), cleanName));
   await fs.rename(from, to);
   return { from, to };
+}
+
+const MAX_DOCX_BYTES = 24 * 1024 * 1024;
+
+/**
+ * Read one entry out of a ZIP archive held in memory.
+ *
+ * A .docx is a ZIP, and the only part that matters for reading it is
+ * `word/document.xml`. Node ships no ZIP reader, but the end-of-central-directory
+ * record plus each local header is enough to locate and inflate exactly one
+ * entry — no dependency, no shelling out to a converter that may not exist.
+ */
+function readZipEntry(buf, wantedName) {
+  let eocd = -1;
+  const floor = Math.max(0, buf.length - 22 - 65536);
+  for (let i = buf.length - 22; i >= floor; i -= 1) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) return null;
+  const count = buf.readUInt16LE(eocd + 10);
+  let off = buf.readUInt32LE(eocd + 16);
+  for (let n = 0; n < count; n += 1) {
+    if (off + 46 > buf.length || buf.readUInt32LE(off) !== 0x02014b50) return null;
+    const method = buf.readUInt16LE(off + 10);
+    const compressedSize = buf.readUInt32LE(off + 20);
+    const nameLen = buf.readUInt16LE(off + 28);
+    const extraLen = buf.readUInt16LE(off + 30);
+    const commentLen = buf.readUInt16LE(off + 32);
+    const localOffset = buf.readUInt32LE(off + 42);
+    const name = buf.toString('utf8', off + 46, off + 46 + nameLen);
+    if (name === wantedName) {
+      const localNameLen = buf.readUInt16LE(localOffset + 26);
+      const localExtraLen = buf.readUInt16LE(localOffset + 28);
+      const start = localOffset + 30 + localNameLen + localExtraLen;
+      const data = buf.subarray(start, start + compressedSize);
+      if (method === 0) return data;
+      if (method === 8) return zlib.inflateRawSync(data);
+      return null;
+    }
+    off += 46 + nameLen + extraLen + commentLen;
+  }
+  return null;
+}
+
+/** Turn WordprocessingML into readable plain text, keeping paragraph breaks. */
+export function docxXmlToText(xml) {
+  return xml
+    .replace(/<w:tab\b[^>]*\/>/g, '\t')
+    .replace(/<w:br\b[^>]*\/>/g, '\n')
+    .replace(/<\/w:p>/g, '\n')
+    .replace(/<\/w:tr>/g, '\n')
+    .replace(/<\/w:tc>/g, '\t')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(Number(dec)))
+    .replace(/&#x([0-9A-Fa-f]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&amp;/g, '&')
+    .replace(/\t+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]+$/gm, '')
+    .trim();
+}
+
+/**
+ * Extract the text of a .docx.
+ *
+ * Deliberately no styling: the phone shows this as a text document, and a
+ * faithful layout would need a Word engine that this machine does not
+ * necessarily have. The bytes stay on the PC; only the text travels.
+ */
+export async function readDocxText(filePath) {
+  const target = await resolveSafePath(filePath);
+  const st = await fs.stat(target);
+  if (st.isDirectory()) {
+    const err = new Error('path is a directory');
+    err.code = 'is_directory';
+    throw err;
+  }
+  if (!DOCX_EXTENSIONS.has(path.extname(target).toLowerCase())) {
+    const err = new Error('not a .docx');
+    err.code = 'not_docx';
+    throw err;
+  }
+  if (st.size > MAX_DOCX_BYTES) {
+    const err = new Error(`docx is too large to read (${Math.round(st.size / 1024 / 1024)} MB, limit 24 MB)`);
+    err.code = 'too_large';
+    throw err;
+  }
+  const buf = await fs.readFile(target);
+  const entry = readZipEntry(buf, 'word/document.xml');
+  if (!entry) {
+    const err = new Error('无法读取 docx 内容（不是有效的 Word 文档）');
+    err.code = 'bad_docx';
+    throw err;
+  }
+  const text = docxXmlToText(entry.toString('utf8'));
+  return { path: target, text, sizeBytes: st.size, mtime: st.mtime.toISOString() };
 }
 
 export function maxTextBytes() {

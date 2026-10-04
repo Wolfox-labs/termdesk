@@ -7,7 +7,14 @@ data class FileEntry(
     val isDir: Boolean,
     val sizeBytes: Long,
     val mtime: String?,
-)
+    /**
+     * How the phone should show this file: dir | text | image | pdf | docx | other.
+     * Decided by the PC from the extension, so the client does not guess.
+     */
+    val kind: String = "other",
+) {
+    val isPreviewable: Boolean get() = !isDir && kind != "other"
+}
 
 /** A directory listing plus where we are and how to go up. */
 data class DirectoryListing(

@@ -18,6 +18,7 @@ import {
   deleteEntry,
   listDirectory,
   readTextFile,
+  readDocxText,
   renameEntry,
   writeTextFile,
 } from './files.js';
@@ -178,6 +179,14 @@ export function createFrameHandler(ctx) {
           send(S2C.FS_FILE, await readTextFile(frame.path));
         } catch (err) {
           send(S2C.ERROR, { code: err?.code ?? 'fs_failed', message: String(err?.message ?? err), path: frame.path });
+        }
+        break;
+
+      case C2S.FS_DOCTEXT:
+        try {
+          send(S2C.FS_DOCTEXT, await readDocxText(frame.path));
+        } catch (err) {
+          send(S2C.ERROR, { code: err?.code ?? 'docx_failed', message: String(err?.message ?? err), path: frame.path });
         }
         break;
 

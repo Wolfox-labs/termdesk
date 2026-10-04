@@ -97,6 +97,10 @@ class AgentClient(
     private val _transfer = MutableStateFlow<TransferState?>(null)
     val transfer: StateFlow<TransferState?> = _transfer.asStateFlow()
 
+    /** The file currently open in the phone's viewer, if any. */
+    private val _preview = MutableStateFlow<FilePreview?>(null)
+    val preview: StateFlow<FilePreview?> = _preview.asStateFlow()
+
     // ---- P3: terminal ----
 
     private val _termLines = MutableStateFlow<List<TermLine>>(emptyList())
@@ -819,6 +823,117 @@ class AgentClient(
     }
 
     /** App-private external directory: no storage permission required. */
+    // ---- file preview ------------------------------------------------------
+
+    /**
+     * Open a file in the phone's viewer.
+     *
+     * text goes to the editor; image and pdf are fetched into the app cache and
+     * drawn locally (Android has a PDF rasteriser, so no conversion on the PC);
+     * docx has its text extracted on the PC, because a phone has no Word engine
+     * and shipping a layout converter would be a lie about fidelity. Anything
+     * else is shown as information with "open with" and download.
+     */
+    fun openPreview(entry: FileEntry) {
+        if (entry.isDir) return
+        when (entry.kind) {
+            "text" -> {
+                _preview.value = null
+                readFile(entry.path)
+            }
+            "docx" -> {
+                _openFile.value = null
+                _preview.value = FilePreview(
+                    kind = "docx",
+                    name = entry.name,
+                    path = entry.path,
+                    loading = true,
+                    sizeBytes = entry.sizeBytes,
+                )
+                sendFrame(JSONObject().put("type", "fs.doctext").put("path", entry.path))
+            }
+            "image", "pdf" -> {
+                _openFile.value = null
+                _preview.value = FilePreview(
+                    kind = entry.kind,
+                    name = entry.name,
+                    path = entry.path,
+                    loading = true,
+                    sizeBytes = entry.sizeBytes,
+                )
+                fetchPreviewBytes(entry)
+            }
+            else -> {
+                _openFile.value = null
+                _preview.value = FilePreview(
+                    kind = "other",
+                    name = entry.name,
+                    path = entry.path,
+                    sizeBytes = entry.sizeBytes,
+                )
+            }
+        }
+    }
+
+    fun closePreview() {
+        _preview.value = null
+    }
+
+    /** Copy the previewed file into the phone's download folder for later use. */
+    fun savePreviewToDownloads() {
+        val open = _preview.value ?: return
+        downloadFile(open.path, open.name)
+    }
+
+    /**
+     * Fetch the bytes into the app cache.
+     *
+     * The cache, not the download folder: this copy exists only so the platform
+     * can decode it, and a viewer must not litter the user's Downloads with
+     * every file they glance at.
+     */
+    private fun fetchPreviewBytes(entry: FileEntry) {
+        val base = httpBaseUrl()
+        val tok = lastToken
+        if (base == null || tok == null) {
+            _preview.value = _preview.value?.copy(loading = false, message = "未连接到电脑")
+            return
+        }
+        scope.launch {
+            runCatching {
+                val encoded = URLEncoder.encode(entry.path, "UTF-8")
+                val request = Request.Builder()
+                    .url("$base/download?path=$encoded")
+                    .header("Authorization", "Bearer $tok")
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) error("HTTP ${response.code}")
+                    val body = response.body ?: error("响应为空")
+                    val dir = previewDir()
+                    val out = File(dir, safeFileName(entry.name))
+                    body.byteStream().use { input ->
+                        out.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    out
+                }
+            }.onSuccess { file ->
+                _preview.value = _preview.value?.copy(loading = false, localFile = file)
+            }.onFailure { err ->
+                _preview.value = _preview.value?.copy(loading = false, message = "无法读取：${err.message}")
+            }
+        }
+    }
+
+    private fun previewDir(): File {
+        val ctx = appContext ?: return File("/data/local/tmp")
+        val dir = File(ctx.cacheDir, "preview")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    private fun safeFileName(name: String): String =
+        name.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "preview.bin" }
+
     private fun downloadDir(): File {
         val ctx = appContext ?: return File("/sdcard/Download")
         val dir = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "downloads")
@@ -921,6 +1036,14 @@ class AgentClient(
                         }
                     }
                     _fsRoots.value = roots
+                }
+                "fs.doctext" -> {
+                    // The PC extracted a Word document's text. The viewer owns
+                    // this, not the editor: the file itself stays on the PC.
+                    _preview.value = _preview.value?.copy(
+                        loading = false,
+                        text = frame.optString("text"),
+                    )
                 }
                 "fs.file" -> {
                     _openFile.value = TextFile(
@@ -1315,6 +1438,10 @@ class AgentClient(
                             isDir = o.optBoolean("isDir", false),
                             sizeBytes = o.optLong("sizeBytes"),
                             mtime = if (o.isNull("mtime")) null else o.optString("mtime"),
+                            kind = o.optString(
+                                "kind",
+                                if (o.optBoolean("isDir", false)) "dir" else "other",
+                            ),
                         ),
                     )
                 }
