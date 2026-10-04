@@ -531,8 +531,23 @@ private fun KernelCard(
         }
         Spacer(Modifier.height(2.dp))
         Text(
-            "内核决定这台手机在指挥谁。Codex / DSH 这类 PC 内核跑在电脑上，对话、文件、终端、进程都指向那台电脑；" +
-                "手机本机内核尚未接入。新对话默认使用这里选定的内核。",
+            "内核就是目标：选了它，会话、文件、终端、进程就都指向它。" +
+                "产品上只有两个内核——远程（这台电脑）与本机（手机沙盒）；" +
+                "codex / dsh 这类引擎是远程内核里的选择，不是另一个内核。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "远程 · 这台电脑",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "引擎跑在电脑上，因此指向电脑的任务、文件夹、终端与进程；离开电脑就用不了。"
+            ,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -561,11 +576,26 @@ private fun KernelCard(
         }
         if (defaultEngine == null) {
             Text(
-                "尚未指定默认内核，新对话将使用第一个可用内核。",
+                "尚未指定默认引擎，新对话将使用第一个可用引擎。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+
+        Spacer(Modifier.height(14.dp))
+        Text(
+            "本机 · Termux 沙盒",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "尚未接入：手机侧运行时还没打包，所以本机的文件、沙盒、Linux 终端与进程暂不可选。" +
+                "实现后，这里会出现第二个可选项。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
