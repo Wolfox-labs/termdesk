@@ -227,6 +227,8 @@ export class AcpKernel extends EventEmitter {
     this.stderrTail = '';
     this.capabilities = null;
     this.authMethods = [];
+    /** What each live session offers (models / modes / config options). */
+    this.sessionMeta = new Map();
     /** Allow tool permissions by default: the PC owner already opted into full
      *  control of this machine. Every decision is surfaced to the transcript. */
     this.approvalPolicy = process.env.TERMDESK_ACP_APPROVE === 'deny' ? 'deny' : 'allow';
@@ -438,7 +440,51 @@ export class AcpKernel extends EventEmitter {
     const result = await this.call('session/new', { cwd, mcpServers });
     const sessionId = result?.sessionId ?? result?.session?.sessionId ?? null;
     if (!sessionId) throw new Error('session/new 未返回会话标识');
+    // session/new hands back what this conversation can be changed into:
+    //   models        { currentModelId, availableModels[] }
+    //   modes         { currentModeId, availableModes[] }
+    //   configOptions configId -> selectable values (the generic ACP shape)
+    // Kept so the phone can offer a real choice instead of a free-text guess.
+    this.sessionMeta.set(sessionId, {
+      models: result?.models ?? null,
+      modes: result?.modes ?? null,
+      configOptions: Array.isArray(result?.configOptions) ? result.configOptions : [],
+    });
     return sessionId;
+  }
+
+  /**
+   * Change the model of a live session.
+   *
+   * Two shapes are in the wild: `session/set_model` (what OpenCode answers with
+   * its own `_meta`) and the generic `session/set_config_option`. The first is
+   * tried, the second is the fallback, and both were verified against
+   * opencode-cli 1.3.16 on this machine.
+   */
+  async setModel(sessionId, modelId) {
+    if (!modelId) return false;
+    try {
+      await this.call('session/set_model', { sessionId, modelId }, { timeout: 30_000 });
+    } catch (err) {
+      await this.call('session/set_config_option', { sessionId, configId: 'model', value: modelId }, { timeout: 30_000 });
+    }
+    const meta = this.sessionMeta.get(sessionId);
+    if (meta?.models) meta.models.currentModelId = modelId;
+    return true;
+  }
+
+  /** The models this session says it can switch to. */
+  availableModels(sessionId) {
+    const meta = this.sessionMeta.get(sessionId);
+    const list = meta?.models?.availableModels;
+    if (!Array.isArray(list)) return { current: null, models: [] };
+    return {
+      current: meta.models.currentModelId ?? null,
+      models: list.map((m) => ({
+        id: m?.modelId ?? m?.id ?? null,
+        label: m?.name ?? m?.modelId ?? null,
+      })).filter((m) => m.id),
+    };
   }
 
   /**

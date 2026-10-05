@@ -328,6 +328,8 @@ const server = http.createServer((req, res) => {
         return;
       }
       const chatId = created.chat.id;
+      // The phone is not the one that created this chat, so it has to be told.
+      pushChats();
       const optionId = await chats.approvals.request({
         chatId,
         engine,
@@ -681,6 +683,22 @@ const onListenError = (err) => {
 // unhandled, is a crash before any message can be printed.
 server.on('error', onListenError);
 wss.on('error', onListenError);
+
+/**
+ * Tell the connected client which conversations exist right now.
+ *
+ * Handlers answer a chat.* request with the list, but a conversation can also
+ * appear without the phone asking: the desktop window creates one, and the
+ * development hook below does too. Without this the phone keeps showing an empty
+ * list while a chat exists on the PC.
+ */
+function pushChats() {
+  if (!routedSocket || routedSocket.readyState !== routedSocket.OPEN) return;
+  routedSocket.send(encodeFrame(S2C.CHATS, {
+    chats: chats.list(),
+    approvals: chats.approvals.pending(),
+  }));
+}
 
 let relayConnector = null;
 server.listen(args.port, args.host, async () => {

@@ -55,6 +55,22 @@ for (const entry of found) {
     const sessionId = await kernel.newSession({ cwd });
     check(`${entry.id}: session/new returns an id`, typeof sessionId === 'string' && sessionId.length > 0, sessionId);
 
+    // What the phone's model picker is built from.
+    const models = kernel.availableModels(sessionId);
+    check(`${entry.id}: the session lists its models`, models.models.length > 0, `${models.models.length} models, current ${models.current}`);
+    if (models.models.length > 0) {
+      const target = models.models.find((m) => m.id !== models.current) ?? models.models[0];
+      let switched = false;
+      try {
+        await kernel.setModel(sessionId, target.id);
+        switched = kernel.availableModels(sessionId).current === target.id;
+      } catch (err) {
+        switched = false;
+        console.log(`      switch error: ${String(err?.message ?? err).slice(0, 120)}`);
+      }
+      check(`${entry.id}: a model can be switched`, switched, `-> ${target.id}`);
+    }
+
     const replayed = [];
     const listener = (id, update) => { if (id === sessionId) replayed.push(update); };
     kernel.on('update', listener);

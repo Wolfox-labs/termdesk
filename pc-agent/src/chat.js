@@ -195,6 +195,10 @@ class Chat {
     this.runtimeStarted = false;
     /** Codex thread id (engine=codex only), kept separately for resume. */
     this.threadId = threadId;
+    /** ACP: { current, models[] } as the kernel described the session. */
+    this.availableModels = null;
+    /** ACP: the model already pushed to the kernel, so it is pushed once. */
+    this.appliedModel = null;
     /**
      * True while this chat's ACP session is backed by a live kernel process.
      * ACP chats hold no child of their own (one process serves every session on
@@ -254,6 +258,7 @@ class Chat {
       ready: this.ready,
       sessionId: this.sessionId,
       threadId: this.threadId,
+      availableModels: this.availableModels,
       createdAt: this.createdAt,
       lastUsedAt: this.lastUsedAt,
       eventCount: this.events.length,
@@ -374,7 +379,14 @@ export class ChatManager {
     this.dropIdleChat();
     chatCounter += 1;
     const id = `c-${crypto.randomUUID()}`;
-    const route = eng === 'dsh' ? defaultRoute() : { provider: null, model: null };
+    // ACP kernels keep their own default model, which may be an expensive one.
+    // TERMDESK_ACP_MODEL pins it (a cost decision belongs to the machine's owner),
+    // and the phone's picker overrides it per conversation.
+    const route = eng === 'dsh'
+      ? defaultRoute()
+      : isAcpKernel(eng)
+        ? { provider: null, model: process.env.TERMDESK_ACP_MODEL || null }
+        : { provider: null, model: null };
     const workdir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
     const chat = new Chat({
       id,
@@ -887,9 +899,28 @@ export class ChatManager {
         chat.sessionId = sessionId;
         chat.nativeResume = true;
         chat.ready = true;
+        // What this kernel says the conversation can be switched to. The phone
+        // offers exactly this list, so a model choice is never a guess.
+        chat.availableModels = kernel.availableModels(sessionId);
         this.acpSessions.set(sessionId, chat);
       } catch (err) {
         return this.failAcp(chat, `${chat.engine} 无法创建会话：${String(err?.message ?? err)}`, userSeq, 'session_failed');
+      }
+    }
+
+    // A model set on the chat (or sent with this turn) has to reach the kernel;
+    // otherwise the picker would be decoration. Once per change, not per turn.
+    if (chat.model && chat.appliedModel !== chat.model) {
+      try {
+        await kernel.setModel(chat.sessionId, chat.model);
+        chat.appliedModel = chat.model;
+      } catch (err) {
+        chat.push({
+          kind: 'engine_note',
+          role: 'engine',
+          text: `无法切换模型（${chat.model}）：${String(err?.message ?? err)}`,
+          name: 'warning',
+        });
       }
     }
 

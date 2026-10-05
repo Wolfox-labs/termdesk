@@ -304,11 +304,19 @@ private fun ApprovalDialog(approval: ChatApproval, onAnswer: (String, String) ->
                             .padding(10.dp),
                     )
                 }
+                // Fixed-shape lines on purpose. A countdown whose text re-wraps
+                // every second is a dialog whose buttons move while the user is
+                // reaching for them, and a mis-tap here decides whether the
+                // kernel may run something. mm:ss never grows past the wrap.
+                if (seconds > 0) {
+                    Text(
+                        "${approvalEngineLabel(approval.engine)} · 剩余 ${countdownText(seconds)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
-                    buildString {
-                        append(approvalEngineLabel(approval.engine))
-                        if (seconds > 0) append(" · ${seconds} 秒后按「${approval.fallbackText}」处理")
-                    },
+                    "超时按「${approval.fallbackText}」处理；关掉这个框只是稍后再说",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -337,6 +345,12 @@ private fun ApprovalDialog(approval: ChatApproval, onAnswer: (String, String) ->
         confirmButton = {},
         containerColor = MaterialTheme.colorScheme.surfaceVariant,
     )
+}
+
+/** mm:ss, so the line never changes width enough to move the buttons. */
+private fun countdownText(seconds: Int): String {
+    val safe = seconds.coerceAtLeast(0)
+    return "%d:%02d".format(safe / 60, safe % 60)
 }
 
 /** The kernel's name as the settings list spells it. */

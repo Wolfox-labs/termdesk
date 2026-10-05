@@ -26,9 +26,17 @@ data class EngineInfo(
     val detail: String = "",
     /** True when the kernel can continue a recorded session. */
     val resume: Boolean = false,
+    /**
+     * The PC's own verdict on whether a conversation may run on it.
+     *
+     * Null only when an older agent did not send one. The PC is the side that
+     * knows whether an adapter is wired, so its answer is used as-is: the phone
+     * re-deriving it is exactly how the ACP kernels ended up labelled 暂不可用
+     * while the PC was already driving them.
+     */
+    val selectableOnPc: Boolean? = null,
 ) {
-    /** Only a kernel with a wired adapter can be opened from the phone today. */
-    val selectable: Boolean get() = available && tier == "native"
+    val selectable: Boolean get() = selectableOnPc ?: (available && tier == "native")
 
     val displayName: String get() = label.ifBlank { id }
 }

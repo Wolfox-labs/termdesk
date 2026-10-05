@@ -1772,6 +1772,7 @@ class AgentClient(
                         tier = o.optString("tier", "native"),
                         detail = o.optString("detail"),
                         resume = o.optBoolean("resume", false),
+                        selectableOnPc = if (o.has("selectable")) o.optBoolean("selectable") else null,
                     ),
                 )
             }
