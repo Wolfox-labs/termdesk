@@ -31,7 +31,7 @@ import {
   PROVIDER_TEMPLATES,
 } from './codexconfig.js';
 import { listSessions, readSession, sessionRoots } from './sessions.js';
-import { chatEngineIds, getKernel, isAcpKernel, listKernels } from './kernels/registry.js';
+import { chatEngineIds, getKernel, isAdapterKernel, kernelTier, listKernels } from './kernels/registry.js';
 import { threadSummaryToSession, threadToSessionDetail, discoverThreadIdsFromDisk } from './kernels/codex.js';
 
 const STATUS_INTERVAL_MS = 2000;
@@ -456,11 +456,14 @@ export function createFrameHandler(ctx) {
           let codexSource = null;
           // ACP kernels keep their own index; asking the kernel is the only way
           // the list can contain exactly the sessions that can be opened again.
-          const acpWanted = frame.engine
-            ? (isAcpKernel(frame.engine) ? [frame.engine] : [])
-            : chatEngineIds().filter((id) => isAcpKernel(id));
+          // ACP kernels AND CLI shims keep their own index: both are asked, and
+          // asking the kernel is the only way the list can contain exactly the
+          // sessions that can be opened again.
+          const kernelWanted = frame.engine
+            ? (isAdapterKernel(frame.engine) ? [frame.engine] : [])
+            : chatEngineIds().filter((id) => isAdapterKernel(id));
           const acpSources = {};
-          for (const engineId of acpWanted) {
+          for (const engineId of kernelWanted) {
             try {
               all.push(...(await chats.listAcpSessions(engineId)));
               acpSources[engineId] = 'kernel';
@@ -528,7 +531,25 @@ export function createFrameHandler(ctx) {
             } catch { detail = null; }
             // No on-disk fallback for Codex any more: the kernel can read any
             // thread id, and a second reader would only drift from it.
-          } else if (isAcpKernel(frame.engine)) {
+          } else if (kernelTier(frame.engine) === 'shim') {
+            // A CLI keeps no transcript we can parse, so there is no body to
+            // show. Said out loud instead of an empty conversation: the session
+            // can still be continued, just not replayed.
+            send(S2C.SESSION, {
+              meta: {
+                engine: frame.engine,
+                id: frame.sessionId,
+                cwd: frame.cwd ?? null,
+                title: null,
+                ...resumeVerdict(frame.engine),
+                bodyNote: '该内核不提供历史正文，只能继续对话',
+              },
+              events: [],
+              totalEvents: 0,
+              truncated: false,
+            });
+            break;
+          } else if (kernelTier(frame.engine) === 'acp') {
             // The kernel replays its own transcript; TermDesk parses nothing.
             detail = await chats.readAcpSession(frame.engine, frame.sessionId);
           } else {

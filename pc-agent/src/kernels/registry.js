@@ -136,15 +136,35 @@ function table() {
       id: 'qoder',
       label: 'QoderWork CN',
       tier: 'shim',
+      // The CLI can continue a session by id (--resume / --session), so the
+      // phone may offer "继续对话" - but no transcript body, which the chat
+      // pipeline says out loud instead of showing an empty conversation.
+      resume: true,
       transport: 'cli',
-      detail: 'CLI 具备会话清单（--list-sessions）与按 id 恢复（--resume），shim 规格已写好，尚缺一次实测',
+      detail: 'CLI 形状：协议已用真实 CLI 输出核对（v1.1.26），但本机 CLI 尚未登录，所以还不能跑通一轮',
       shim: {
-        // Recorded from `qoderclicn --help` (v0.15.x). `--print` is the
-        // non-interactive form; `--output-format` selects the NDJSON stream.
+        // Measured against qoderclicn 1.1.26, not the 0.15.x help text first
+        // recorded: -p prints and exits, -o accepts text|json|stream-json, and
+        // stream-json is NDJSON with type system|assistant|result. The answer
+        // lives at message.content[0].text while it streams and at result.result
+        // on the final line - emitting both would show it twice, so `result` is
+        // only used when nothing streamed.
         newArgs: ['--print', '--output-format', 'stream-json'],
         resumeArgs: ['--print', '--output-format', 'stream-json', '--resume'],
-        listArgs: ['--list-sessions'],
+        prompt: 'argv',
         sessionId: 'session_id',
+        textPaths: ['message.content'],
+        resultPaths: ['result'],
+        errorPaths: ['error'],
+        errorTextPaths: ['result'],
+        // -m/--model exists, so a model choice is real for this kernel.
+        modelFlag: '--model',
+        // --list-sessions answers in human text ("No previous sessions found
+        // for this project"), which this adapter does not parse yet, so it does
+        // not claim a session index. A small parser is the follow-up (方案 §8.2).
+        listParsed: false,
+        replay: false,
+        verified: false,
       },
       resolve: () => fileOrNull(process.env.TERMDESK_QODER)
         ?? firstFile([path.join(LOCAL_PROGRAMS, 'QoderWork CN', 'resources', 'bin', 'qoderclicn.exe')]),
@@ -153,13 +173,24 @@ function table() {
       id: 'command-code',
       label: 'Command Code',
       tier: 'shim',
+      // The CLI can continue a session by id (--resume / --session), so the
+      // phone may offer "继续对话" - but no transcript body, which the chat
+      // pipeline says out loud instead of showing an empty conversation.
+      resume: true,
       transport: 'cli',
-      detail: 'CLI 具备 --resume / --session / --output-format json，shim 规格已写好，尚缺一次实测',
+      detail: 'CLI 形状：--print / --output-format json / --session 已记录（v1.65.0），shim 适配器已就绪，尚缺一次真实 CLI 实测',
       shim: {
-        // Recorded from `command-code --help` (v1.65.0).
+        // Recorded from `command-code --help` (v1.65.0). Same caveat as
+        // QoderWork: the text key and prompt transport await one real run.
         newArgs: ['--print', '--output-format', 'json'],
         resumeArgs: ['--print', '--output-format', 'json', '--session'],
+        // Metadata keys for the session index. Still guesses until a real run:
+        // a wrong guess yields a missing title, not a wrong one.
+        prompt: 'argv',
         sessionId: 'session_id',
+        text: 'text',
+        replay: false,
+        verified: false,
       },
       resolve: () => {
         if (process.env.TERMDESK_COMMAND_CODE) return fileOrNull(process.env.TERMDESK_COMMAND_CODE) ?? process.env.TERMDESK_COMMAND_CODE;
@@ -208,12 +239,54 @@ function envKernels() {
       // it for every kernel added through the environment.)
       resume: k.resume !== false,
       detail: '来自 TERMDESK_ACP_KERNELS 的 ACP 内核',
-      resolve: () => (fileOrNull(k.bin) ?? k.bin),
+      // `preArgs` is the prelude a node-hosted CLI needs (node + script);
+      // without it the flags would go to the runtime instead of the CLI.
+      resolve: () => (Array.isArray(k.preArgs) && k.preArgs.length
+        ? { bin: fileOrNull(k.bin) ?? k.bin, args: k.preArgs }
+        : (fileOrNull(k.bin) ?? k.bin)),
+    }));
+}
+
+/**
+ * Extra CLI kernels from the environment, symmetric with TERMDESK_ACP_KERNELS.
+ *
+ * A CLI kernel needs a manifest, so the environment carries one. Kernels added
+ * this way are trusted by default (the declarer states the contract) unless the
+ * entry says `verified: false`.
+ */
+function envCliKernels() {
+  const raw = process.env.TERMDESK_CLI_KERNELS;
+  if (!raw) return [];
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return []; }
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .filter((k) => k && typeof k.id === 'string' && typeof k.bin === 'string')
+    .map((k) => ({
+      id: k.id,
+      label: k.label ?? k.id,
+      tier: 'shim',
+      transport: 'cli',
+      resume: k.resume !== false,
+      detail: k.detail ?? '来自 TERMDESK_CLI_KERNELS 的 CLI 内核',
+      shim: {
+        prompt: 'argv',
+        sessionId: 'session_id',
+        text: 'text',
+        replay: false,
+        verified: k.verified !== false,
+        ...(k.shim ?? {}),
+      },
+      // `preArgs` is the prelude a node-hosted CLI needs (node + script);
+      // without it the flags would go to the runtime instead of the CLI.
+      resolve: () => (Array.isArray(k.preArgs) && k.preArgs.length
+        ? { bin: fileOrNull(k.bin) ?? k.bin, args: k.preArgs }
+        : (fileOrNull(k.bin) ?? k.bin)),
     }));
 }
 
 function allEntries() {
-  return [...table(), ...envKernels()];
+  return [...table(), ...envKernels(), ...envCliKernels()];
 }
 
 /**
@@ -236,6 +309,14 @@ export function kernelCommand(entry) {
  * on the kernel today. A kernel that is installed but whose adapter is missing
  * says exactly that in `detail`, instead of being offered and then failing.
  */
+/** A shim manifest is only trusted once a real CLI run has confirmed it. */
+function shimVerified(entry) {
+  if (!entry?.shim) return false;
+  if (entry.shim.verified) return true;
+  const forced = String(process.env.TERMDESK_SHIM_VERIFIED ?? '').split(',').map((s) => s.trim());
+  return forced.includes(entry.id);
+}
+
 export function listKernels() {
   return allEntries().map((entry) => {
     const command = kernelCommand(entry);
@@ -246,13 +327,19 @@ export function listKernels() {
       tier: entry.tier,
       transport: entry.transport,
       available,
-      selectable: available && (entry.tier === 'native' || entry.tier === 'acp'),
+      // A shim is selectable only once its manifest has been confirmed by a
+      // real run: an unverified manifest is a guess about argv and about which
+      // JSON key carries the answer, and offering it would be offering a kernel
+      // that may well answer nothing.
+      selectable: available && (
+        entry.tier === 'native' || entry.tier === 'acp' || (entry.tier === 'shim' && shimVerified(entry))
+      ),
       path: command ? (command.script ?? command.bin) : null,
       args: command?.args ?? null,
       detail: available ? entry.detail : (entry.tier === 'unsupported' ? '未安装' : '未在本机找到'),
       shim: entry.shim ?? null,
-      multiTurn: entry.tier === 'native' || entry.tier === 'acp',
-      progress: entry.tier === 'native' || entry.tier === 'acp',
+      multiTurn: entry.tier === 'native' || entry.tier === 'acp' || (entry.tier === 'shim' && shimVerified(entry)),
+      progress: entry.tier === 'native' || entry.tier === 'acp' || entry.tier === 'shim',
       // Per kernel, NOT per tier: "native" describes how it is driven, not
       // whether it can reopen a past conversation. DSH is native and still has
       // no verified resume, and saying otherwise is what makes a phone offer a
@@ -298,6 +385,17 @@ export function kernelTier(id) {
 }
 
 /** True when the kernel is driven by the shared ACP adapter. */
+/** Kernels driven by the CLI shim adapter. */
+export function isCliKernel(id) {
+  const entry = allEntries().find((k) => k.id === id);
+  return entry?.tier === 'shim' && Boolean(entry.shim);
+}
+
+/** True for every kernel the chat pipeline can drive through an adapter. */
+export function isAdapterKernel(id) {
+  return isAcpKernel(id) || isCliKernel(id);
+}
+
 export function isAcpKernel(id) {
   return kernelTier(id) === 'acp';
 }

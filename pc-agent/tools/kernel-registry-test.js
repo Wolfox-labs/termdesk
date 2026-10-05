@@ -5,7 +5,7 @@
  *
  *   node tools/kernel-registry-test.js
  */
-import { listKernels, chatEngineIds, spawnSpec, kernelTier, isAcpKernel, shimSpec } from '../src/kernels/registry.js';
+import { listKernels, chatEngineIds, spawnSpec, kernelTier, isAcpKernel, isCliKernel, shimSpec } from '../src/kernels/registry.js';
 import { CHAT_ENGINES, ChatManager } from '../src/chat.js';
 
 const results = [];
@@ -23,11 +23,11 @@ check('codex and dsh are native', byId.codex?.tier === 'native' && byId.dsh?.tie
 check('every tier is a known value',
   list.every((k) => ['native', 'acp', 'shim', 'unsupported'].includes(k.tier)),
   [...new Set(list.map((k) => k.tier))].join(','));
-check('only native and acp kernels are selectable',
-  list.every((k) => !k.selectable || k.tier === 'native' || k.tier === 'acp'));
+check('only native, acp and verified shim kernels are selectable',
+  list.every((k) => !k.selectable || k.tier === 'native' || k.tier === 'acp' || k.shim?.verified === true));
 check('an unavailable kernel is never selectable',
-  list.every((k) => !k.available || true) && list.every((k) => k.available || k.selectable === false));
-check('a shim kernel is installed but not selectable',
+  list.every((k) => k.available || k.selectable === false));
+check('a shim kernel is installed but not selectable before a real run',
   !byId.qoder || (byId.qoder.available === true && byId.qoder.selectable === false));
 check('an unsupported kernel says why',
   !byId.antigravity || byId.antigravity.detail.length > 0);
@@ -40,8 +40,20 @@ check('dsh cannot (and does not claim to)', byId.dsh?.resume === false, String(b
 check('ACP kernels can reopen a past conversation',
   list.filter((k) => k.tier === 'acp').every((k) => k.resume === true),
   list.filter((k) => k.tier === 'acp').map((k) => `${k.id}:${k.resume}`).join(','));
-check('a shim kernel does not claim resume',
-  list.filter((k) => k.tier === 'shim').every((k) => k.resume === false));
+
+// A shim CAN continue a session: it hands the id to the CLI's own --resume, and
+// the phone-level test (tools/phone-cli-shim-e2e.mjs) proves that end to end.
+// What it must not do is be offered before its manifest has been confirmed by a
+// real run - the argv and the JSON keys are guesses until then.
+check('a shim claims resume, because the CLI can continue a session',
+  list.filter((k) => k.tier === 'shim' && k.available).every((k) => k.resume === true),
+  list.filter((k) => k.tier === 'shim').map((k) => `${k.id}:${k.resume}`).join(','));
+check('an unverified shim is installed but NOT selectable',
+  list.filter((k) => k.tier === 'shim' && k.shim?.verified !== true).every((k) => k.selectable === false),
+  list.filter((k) => k.tier === 'shim').map((k) => `${k.id}:${k.selectable}`).join(','));
+check('a shim is driven by the CLI adapter, not by ACP',
+  list.filter((k) => k.tier === 'shim').every((k) => isCliKernel(k.id) && !isAcpKernel(k.id)),
+  list.filter((k) => k.tier === 'shim').map((k) => `${k.id}:${isCliKernel(k.id)}`).join(','));
 
 // The chat pipeline and the picker must agree, or the phone offers a kernel the
 // pipeline rejects.
@@ -76,7 +88,7 @@ for (const id of chatEngineIds()) {
   if (created.ok) manager.close(created.chat.id);
 }
 const refused = manager.create({ engine: 'qoder' });
-check('chat.create refuses a shim engine', refused.ok === false && refused.code === 'bad_engine', refused.message);
+check('chat.create refuses an unverified shim engine', refused.ok === false && refused.code === 'bad_engine', refused.message);
 check('the refusal explains the tier', String(refused.message).includes('shim'), refused.message);
 const unknown = manager.create({ engine: 'nope' });
 check('chat.create refuses an unknown engine', unknown.ok === false && unknown.code === 'bad_engine');

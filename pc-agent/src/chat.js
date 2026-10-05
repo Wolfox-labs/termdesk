@@ -70,7 +70,8 @@ import crypto from 'node:crypto';
 import { CodexAppServer, notificationToChatEvents, turnToChatEvents } from './kernels/codex.js';
 import { AcpKernel, acpUpdateToChatEvents, acpSessionToSessionInfo } from './kernels/acp.js';
 import { decisionFor } from './kernels/codex.js';
-import { chatEngineIds, isAcpKernel, kernelTier, spawnSpec } from './kernels/registry.js';
+import { CliKernel } from './kernels/cli.js';
+import { chatEngineIds, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
 import { ApprovalBroker, OPTIONS, describe as describeApproval } from './approvals.js';
 import { dshEventToChatEvent } from './sessions.js';
 
@@ -370,7 +371,7 @@ export class ChatManager {
         ok: false,
         code: 'bad_engine',
         message: tier === 'shim'
-          ? `"${eng}" 需要 CLI shim 适配，尚未开放`
+          ? `"${eng}" 的 CLI shim 适配器已就绪，但 manifest 还没经过一次真实实测，暂不开放`
           : tier === 'unsupported'
             ? `"${eng}" 没有可编程接口，无法接入`
             : `不支持的引擎 "${engine}"（可用：${CHAT_ENGINES.join(' / ')}）`,
@@ -384,7 +385,7 @@ export class ChatManager {
     // and the phone's picker overrides it per conversation.
     const route = eng === 'dsh'
       ? defaultRoute()
-      : isAcpKernel(eng)
+      : isAcpKernel(eng) || isCliKernel(eng)
         ? { provider: null, model: process.env.TERMDESK_ACP_MODEL || null }
         : { provider: null, model: null };
     const workdir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
@@ -426,7 +427,7 @@ export class ChatManager {
     // ACP kernels own their session store, so "open history" is the same
     // operation as "continue": the kernel replays it and the next message
     // continues it. Nothing is reconstructed from display text.
-    if (isAcpKernel(engine)) return this.resumeAcp(engine, id);
+    if (isAcpKernel(engine) || isCliKernel(engine)) return this.resumeAcp(engine, id);
     // Every resumable engine now goes through its own adapter; there is no
     // generic fallback that reconstructs a session out of display text.
     return { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
@@ -503,7 +504,7 @@ export class ChatManager {
     }
 
     if (chat.engine === 'codex') return this.sendCodex(chat, message, userSeq);
-    if (isAcpKernel(chat.engine)) return this.sendAcp(chat, message, userSeq);
+    if (isAcpKernel(chat.engine) || isCliKernel(chat.engine)) return this.sendAcp(chat, message, userSeq);
     return this.sendDsh(chat, message, userSeq);
   }
 
@@ -862,11 +863,23 @@ export class ChatManager {
    * permission decision is written into the transcript so the user can always
    * see what the kernel was allowed to do on their machine.
    */
-  acpKernel(engineId) {
+  kernelFor(engineId) {
     let kernel = this.acp.get(engineId);
     if (kernel) return kernel;
     const spec = spawnSpec(engineId);
     if (!spec) throw new Error(`找不到 ACP 内核 "${engineId}" 的可执行文件`);
+    if (isCliKernel(engineId)) {
+      // A CLI-shaped kernel: one adapter, driven by its manifest. Updates are
+      // emitted in the ACP shape, so everything downstream is the same code.
+      const manifest = shimSpec(engineId);
+      if (!manifest) throw new Error('内核没有 shim manifest');
+      // spec.args is the prelude (node + script for a node-hosted CLI).
+      const cli = new CliKernel({ id: engineId, bin: spec.bin, preArgs: spec.args, manifest, log: (line) => console.log(line) });
+      cli.on('update', (sessionId, update) => this.handleAcpUpdate(engineId, sessionId, update));
+      cli.on('exit', () => this.acp.delete(engineId));
+      this.acp.set(engineId, cli);
+      return cli;
+    }
     kernel = new AcpKernel({ id: engineId, bin: spec.bin, args: spec.args, log: (line) => console.log(line) });
     kernel.on('update', (sessionId, update) => this.handleAcpUpdate(engineId, sessionId, update));
     kernel.on('permission', (info) => this.handleAcpPermission(engineId, info));
@@ -892,7 +905,7 @@ export class ChatManager {
   async sendAcp(chat, message, userSeq) {
     let kernel;
     try {
-      kernel = this.acpKernel(chat.engine);
+      kernel = this.kernelFor(chat.engine);
       await kernel.ensureStarted();
     } catch (err) {
       return this.failAcp(chat, `无法启动 ${chat.engine} 内核：${String(err?.message ?? err)}`, userSeq, 'spawn_failed');
@@ -901,13 +914,16 @@ export class ChatManager {
     if (!chat.ready || !chat.nativeResume) {
       try {
         const sessionId = await kernel.newSession({ cwd: chat.cwd });
+        // A CLI kernel names its session, so this can be empty: the id arrives
+        // with the first turn. Routing is only keyed once there is something to
+        // key on - an empty map key would catch another chat's updates.
         chat.sessionId = sessionId;
         chat.nativeResume = true;
         chat.ready = true;
         // What this kernel says the conversation can be switched to. The phone
         // offers exactly this list, so a model choice is never a guess.
         chat.availableModels = kernel.availableModels(sessionId);
-        this.acpSessions.set(sessionId, chat);
+        if (sessionId) this.acpSessions.set(sessionId, chat);
       } catch (err) {
         return this.failAcp(chat, `${chat.engine} 无法创建会话：${String(err?.message ?? err)}`, userSeq, 'session_failed');
       }
@@ -935,7 +951,15 @@ export class ChatManager {
     this.emitEvent(chat, userSeq);
 
     try {
-      const { stopReason } = await kernel.prompt(chat.sessionId, message);
+      const { stopReason, sessionId: namedSession } = await kernel.prompt(chat.sessionId, message);
+      // A kernel that names its own session (every CLI shim) hands the id back
+      // here; adopting it is what makes the NEXT turn a resume instead of a
+      // new conversation.
+      if (namedSession && namedSession !== chat.sessionId) {
+        chat.sessionId = namedSession;
+        chat.nativeSessionId = namedSession;
+        this.acpSessions.set(namedSession, chat);
+      }
       // A kernel can conclude a turn having said nothing at all — OpenCode does
       // exactly that when its provider refuses the call (measured: the free tier
       // is refused from third-party clients, and the ACP层 answers end_turn with
@@ -984,7 +1008,7 @@ export class ChatManager {
 
     let kernel;
     try {
-      kernel = this.acpKernel(engine);
+      kernel = this.kernelFor(engine);
       await kernel.ensureStarted();
     } catch (err) {
       return { ok: false, code: 'engine_unavailable', message: String(err?.message ?? err) };
@@ -1036,13 +1060,24 @@ export class ChatManager {
     }
     this.discardPreviews(chat, 'message');
     this.discardPreviews(chat, 'reasoning');
-    chat.push({ kind: 'local', role: 'engine', text: '已恢复内核原生会话 · 后续消息延续原上下文' });
+    chat.push({
+      kind: 'local',
+      role: 'engine',
+      text: kernel.canReplay === false
+        ? '已接上该内核的会话 · 后续消息延续原上下文（该内核不提供历史正文，所以这里没有回放）'
+        : '已恢复内核原生会话 · 后续消息延续原上下文',
+    });
     return { ok: true, chat: chat.detail() };
   }
 
   /** Route one session/update notification into the right transcript. */
   handleAcpUpdate(engineId, sessionId, update) {
-    const chat = sessionId ? this.acpSessions.get(sessionId) : null;
+    // Session-id routing, with one honest fallback: a CLI kernel usually names
+    // its session only at the end, so updates that arrive before the id is known
+    // belong to the one turn this engine has running.
+    const chat = (sessionId ? this.acpSessions.get(sessionId) : null)
+      ?? [...this.chats.values()].find((c) => c.engine === engineId && c.status === 'running')
+      ?? null;
     if (!chat || chat.engine !== engineId) return;
     if (chat.status === 'stopped') return;
 
@@ -1114,7 +1149,7 @@ export class ChatManager {
    * listed here is exactly one that resumeAcp can open.
    */
   async listAcpSessions(engineId, { cwd } = {}) {
-    const kernel = this.acpKernel(engineId);
+    const kernel = this.kernelFor(engineId);
     await kernel.ensureStarted();
     const { supported, sessions } = await kernel.listSessions({ cwd });
     if (!supported) return [];
@@ -1131,7 +1166,7 @@ export class ChatManager {
    * message they build), so a replayed answer looks like the original one.
    */
   async readAcpSession(engineId, id) {
-    const kernel = this.acpKernel(engineId);
+    const kernel = this.kernelFor(engineId);
     await kernel.ensureStarted();
 
     let info = null;
@@ -1202,7 +1237,7 @@ export class ChatManager {
     if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
     if (chat.status !== 'running') return { ok: false, code: 'not_running', message: '当前没有进行中的回复' };
 
-    if (isAcpKernel(chat.engine)) {
+    if (isAcpKernel(chat.engine) || isCliKernel(chat.engine)) {
       // ACP cancel is a notification, so there is nothing to await: the turn is
       // closed out here and the prompt response that follows is ignored
       // (finishAcpTurn returns early once status is 'stopped').
@@ -1210,7 +1245,9 @@ export class ChatManager {
       // because the kernel is waiting on those answers.
       this.approvals.cancelForChat(chat.id);
       const kernel = this.acp.get(chat.engine);
-      if (kernel && chat.sessionId) kernel.cancel(chat.sessionId);
+      // A CLI kernel cancels its process, so it must be reachable even before it
+      // has named its session.
+      if (kernel && (chat.sessionId || isCliKernel(chat.engine))) kernel.cancel(chat.sessionId);
       chat.status = 'stopped';
       chat.push({ kind: 'error', role: 'engine', text: '已停止本轮回复' });
       this.emit({ event: 'chat.turn', chatId: chat.id, state: 'cancelled' });
