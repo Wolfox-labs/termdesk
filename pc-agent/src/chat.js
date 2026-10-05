@@ -794,6 +794,11 @@ export class ChatManager {
         continue;
       }
       if (event.streaming) {
+        // Deltas are a PREVIEW of the message the kernel sends when the block
+        // finishes (item/completed), so each one replaces the last and the whole
+        // set is dropped once the authoritative item arrives. ACP works the other
+        // way round — see handleAcpUpdate — and using this rule there deleted the
+        // entire answer.
         this.discardPreviews(chat, event.kind);
         const record = chat.push(event);
         chat.previews.push(record);
@@ -931,6 +936,25 @@ export class ChatManager {
 
     try {
       const { stopReason } = await kernel.prompt(chat.sessionId, message);
+      // A kernel can conclude a turn having said nothing at all — OpenCode does
+      // exactly that when its provider refuses the call (measured: the free tier
+      // is refused from third-party clients, and the ACP层 answers end_turn with
+      // zero tokens instead of an error). Silence is indistinguishable from a
+      // broken product, so say what happened and quote the kernel's own output.
+      const produced = chat.events.some(
+        (e) => e.seq > userSeq.seq && (e.kind === 'message' || e.kind === 'tool' || e.kind === 'tool_result' || e.kind === 'reasoning'),
+      );
+      if (!produced) {
+        const tail = String(kernel.stderrTail ?? '').replace(/\s+/g, ' ').trim().slice(-300);
+        chat.push({
+          kind: 'engine_note',
+          role: 'engine',
+          text: tail
+            ? `内核这一轮没有返回任何内容（stopReason=${stopReason ?? '未知'}）。内核自己的最后输出：${tail}`
+            : `内核这一轮没有返回任何内容（stopReason=${stopReason ?? '未知'}），也没有给出原因。这通常意味着内核内部的模型调用被拒绝或额度受限。`,
+          name: 'warning',
+        });
+      }
       this.finishAcpTurn(chat, stopReason);
       return { ok: true, userSeq, messageId: null, sessionId: chat.sessionId };
     } catch (err) {
@@ -1040,9 +1064,20 @@ export class ChatManager {
         continue;
       }
       if (event.streaming) {
-        this.discardPreviews(chat, event.kind);
+        // ACP streams the answer as chunks and NEVER sends a finished copy of it,
+        // so the chunks ARE the message. Consecutive chunks of the same kind are
+        // coalesced into one record (same seq, growing text) and the phone is
+        // told to replace it; there is nothing to discard at the end of the turn.
+        // Treating them as previews instead deleted the whole answer — the phone
+        // showed the tool rows and not one word of text, which is the bug that
+        // was reported from the device.
+        const last = chat.events[chat.events.length - 1];
+        if (last && last.streaming && last.kind === event.kind && last.role === event.role) {
+          last.text += event.text;
+          this.emitEvent(chat, last, { stream: true });
+          continue;
+        }
         const record = chat.push(event);
-        chat.previews.push(record);
         this.emitEvent(chat, record, { stream: true });
         continue;
       }
@@ -1056,8 +1091,13 @@ export class ChatManager {
     if (chat.status === 'stopped') return;
     const cancelled = stopReason === 'cancelled';
     const failed = stopReason === 'refusal';
-    this.discardPreviews(chat, 'message');
-    this.discardPreviews(chat, 'reasoning');
+    // Everything streamed during this turn is finished text now, so the cursor
+    // stops. (There are no previews to discard on this path: ACP chunks are the
+    // message, not a preview of one.)
+    for (const record of chat.events.filter((e) => e.streaming)) {
+      record.streaming = false;
+      this.emitEvent(chat, record, { stream: false });
+    }
     chat.status = failed ? 'failed' : 'idle';
     chat.lastError = failed ? '内核拒绝了本轮请求' : null;
     chat.push({
