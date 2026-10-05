@@ -61,6 +61,7 @@ import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.KernelInfo
+import dev.termdesk.app.data.LocalKernelState
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.HostStatus
 import dev.termdesk.app.data.ProcessInfo
@@ -170,6 +171,10 @@ fun AppShell(
     storage: StorageUse?,
     onLoadStorage: () -> Unit,
     onClearStorage: (StorageEntry) -> Unit,
+    localKernel: LocalKernelState,
+    onLoadLocalKernel: () -> Unit,
+    onInstallLocalKernel: () -> Unit,
+    onRemoveLocalKernel: () -> Unit,
 ) {
     var panelOpen by remember { mutableStateOf(false) }
     // Sections live in a drawer rather than a permanent rail: a phone is about
@@ -225,6 +230,10 @@ fun AppShell(
                     storage = storage,
                     onLoadStorage = onLoadStorage,
                     onClearStorage = onClearStorage,
+                    localKernel = localKernel,
+                    onLoadLocalKernel = onLoadLocalKernel,
+                    onInstallLocalKernel = onInstallLocalKernel,
+                    onRemoveLocalKernel = onRemoveLocalKernel,
                     processes = processes,
                     services = services,
                     listing = listing,
@@ -542,6 +551,10 @@ private fun SectionBody(
     storage: StorageUse?,
     onLoadStorage: () -> Unit,
     onClearStorage: (StorageEntry) -> Unit,
+    localKernel: LocalKernelState,
+    onLoadLocalKernel: () -> Unit,
+    onInstallLocalKernel: () -> Unit,
+    onRemoveLocalKernel: () -> Unit,
 ) {
     when (section) {
         Section.System -> SystemSection(
@@ -622,6 +635,10 @@ private fun SectionBody(
             storage = storage,
             onLoadStorage = onLoadStorage,
             onClearStorage = onClearStorage,
+                    localKernel = localKernel,
+                    onLoadLocalKernel = onLoadLocalKernel,
+                    onInstallLocalKernel = onInstallLocalKernel,
+                    onRemoveLocalKernel = onRemoveLocalKernel,
             onLoad = onCodexLoad,
             onApply = onCodexApply,
             onRestore = onCodexRestore,

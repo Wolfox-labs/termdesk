@@ -11,7 +11,20 @@ android {
     defaultConfig {
         applicationId = "dev.termdesk.app"
         minSdk = 26
-        targetSdk = 35
+        // targetSdk 28, on purpose and with a cost: Android 10+ forbids an app
+        // process (untrusted_app) from EXECUTING a file in its own data dir, so
+        // a Termux userland unpacked into files/ cannot run at all - measured
+        // here: "error=13, Permission denied" on files/usr/bin/bash. Apps that
+        // target 28 or lower land in a domain where exec is allowed, which is
+        // exactly why Termux itself ships with targetSdkVersion 28.
+        //
+        // What it costs: legacy (non-scoped) storage behaviour, no Play Store
+        // upload without raising it again, and no API-30+ package visibility
+        // rules. TermDesk is sideloaded, uses only its own app-specific dirs,
+        // and its whole point is running the payload - so the trade is taken
+        // knowingly. Set TERMDESK_MODERN_TARGET_SDK=1 to build at 35 instead,
+        // which gives up the local kernel and keeps everything else.
+        targetSdk = if (System.getenv("TERMDESK_MODERN_TARGET_SDK") == "1") 35 else 28
         versionCode = 2
         versionName = "0.2.0"
     }

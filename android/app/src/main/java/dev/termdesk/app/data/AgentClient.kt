@@ -134,6 +134,53 @@ class AgentClient(
     private val _codexTemplates = MutableStateFlow<List<CodexProviderTemplate>>(emptyList())
     val codexTemplates: StateFlow<List<CodexProviderTemplate>> = _codexTemplates.asStateFlow()
 
+    // ---- local kernel (the sandbox that runs ON this phone) ----
+
+    private val localKernelInstaller = appContext?.let { LocalKernelInstaller(it, client) }
+
+    /** Install state of the phone-side kernel, including any failure reason. */
+    val localKernel: StateFlow<LocalKernelState> =
+        localKernelInstaller?.state ?: MutableStateFlow(LocalKernelState()).asStateFlow()
+
+    fun refreshLocalKernel() = localKernelInstaller?.refresh()
+
+    /**
+     * Install it: manifest -> download -> sha256 -> unpack -> run it once.
+     *
+     * The heavy work happens inside the installer on Dispatchers.IO; this only
+     * supplies the address and the token, and refuses politely when there is no
+     * connection instead of failing halfway through a 90 MB download.
+     */
+    fun installLocalKernel() {
+        val installer = localKernelInstaller ?: return
+        val base = httpBaseUrl()
+        val tok = lastToken
+        if (base == null || tok == null) {
+            _lastAction.value = ActionResult("kernel.local", "install", false, "offline", "未连接到电脑")
+            return
+        }
+        scope.launch {
+            val result = installer.install(base, tok)
+            _lastAction.value = ActionResult(
+                "kernel.local", "install", result.installed, if (result.installed) "ready" else "failed", result.note,
+            )
+        }
+    }
+
+    /** Ask the PC what it would send, without downloading it. */
+    fun loadLocalKernelManifest() {
+        val installer = localKernelInstaller ?: return
+        val base = httpBaseUrl()
+        val tok = lastToken
+        if (base == null || tok == null) return
+        scope.launch { installer.loadManifest(base, tok) }
+    }
+
+    fun removeLocalKernel() {
+        val installer = localKernelInstaller ?: return
+        scope.launch { installer.remove() }
+    }
+
     // ---- kernels (the PC kernel table: one source of truth) ----
 
     private val _engines = MutableStateFlow<List<KernelInfo>>(emptyList())

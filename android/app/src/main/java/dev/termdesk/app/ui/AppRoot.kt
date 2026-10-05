@@ -46,6 +46,7 @@ fun AppRoot(
     val search by vm.search.collectAsState()
     val searching by vm.searching.collectAsState()
     val storage by vm.storage.collectAsState()
+    val localKernel by vm.localKernel.collectAsState()
     val transfer by vm.transfer.collectAsState()
     val termLines by vm.termLines.collectAsState()
     val termSession by vm.termSession.collectAsState()
@@ -244,6 +245,10 @@ fun AppRoot(
                 onSearchFiles = vm::searchFiles,
                 onClearSearch = vm::clearSearch,
                 storage = storage,
+                localKernel = localKernel,
+                onLoadLocalKernel = vm::loadLocalKernelManifest,
+                onInstallLocalKernel = vm::installLocalKernel,
+                onRemoveLocalKernel = vm::removeLocalKernel,
                 onLoadStorage = vm::loadStorage,
                 onClearStorage = vm::clearStorage,
             )

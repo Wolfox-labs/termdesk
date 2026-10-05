@@ -14,6 +14,7 @@ import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.KernelInfo
+import dev.termdesk.app.data.LocalKernelState
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.FilePreview
 import dev.termdesk.app.data.SearchResults
@@ -96,6 +97,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     ) = client.applyCodexProvider(providerId, model, apiKey, reasoningEffort, contextWindow)
 
     fun restoreCodexBackup(name: String?) = client.restoreCodexBackup(name)
+
+    // ---- local kernel (the sandbox that runs on this phone) ----
+
+    /** Install state of the phone-side kernel: download, unpack, run, or why not. */
+    val localKernel: StateFlow<LocalKernelState> = client.localKernel
+
+    fun refreshLocalKernel() = client.refreshLocalKernel()
+    fun loadLocalKernelManifest() = client.loadLocalKernelManifest()
+    fun installLocalKernel() = client.installLocalKernel()
+    fun removeLocalKernel() = client.removeLocalKernel()
 
     // ---- kernels (the PC kernel table) ----
     //

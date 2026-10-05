@@ -192,6 +192,16 @@ object Storage {
         return Measurement(total, complete)
     }
 
+    /**
+     * Size of the sandbox tree, with the budget a tree that big needs.
+     *
+     * Calling measure() with the small-area defaults bounded the walk at 1.5 s
+     * and then reported 646 MB for a tree that is larger - a lower bound served
+     * as a fact, which is the same mistake the storage screen already fixed.
+     */
+    fun measureSandbox(file: File): Measurement =
+        measure(file, BIG_BUDGET_MS, BIG_MAX_ENTRIES)
+
     /** Convenience for callers that only want a number. */
     fun size(file: File): Long = measure(file).bytes
 

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +56,8 @@ import androidx.compose.ui.unit.dp
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.KernelInfo
+import dev.termdesk.app.data.LocalKernelState
+import dev.termdesk.app.data.LocalKernelStage
 import dev.termdesk.app.data.Storage
 import dev.termdesk.app.data.StorageEntry
 import dev.termdesk.app.data.StorageUse
@@ -81,6 +84,10 @@ fun SettingsSection(
     storage: StorageUse?,
     onLoadStorage: () -> Unit,
     onClearStorage: (StorageEntry) -> Unit,
+    localKernel: LocalKernelState,
+    onLoadLocalKernel: () -> Unit,
+    onInstallLocalKernel: () -> Unit,
+    onRemoveLocalKernel: () -> Unit,
     onLoad: () -> Unit,
     onApply: (String, String, String?, String?, Long?) -> Unit,
     onRestore: (String?) -> Unit,
@@ -88,6 +95,7 @@ fun SettingsSection(
     LaunchedEffect(Unit) {
         onLoad()
         onLoadStorage()
+        onLoadLocalKernel()
     }
 
     var kernelOpen by remember { mutableStateOf(false) }
@@ -298,6 +306,74 @@ fun SettingsSection(
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            }
+        }
+
+        // --- local kernel (a Linux userland that runs on THIS phone) ----------
+        Card {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("本地内核", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    localKernelStageLabel(localKernel),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = when (localKernel.stage) {
+                        LocalKernelStage.READY -> MaterialTheme.colorScheme.primary
+                        LocalKernelStage.FAILED -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                localKernel.note.ifBlank { "装了以后这台手机自己也有 Linux 环境（bash / apt / python / node / git）" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (localKernel.installedBytes > 0) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "占用 ${Storage.format(localKernel.installedBytes)}" +
+                        (localKernel.installedVersion?.let { " · 版本 $it" } ?: ""),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (localKernel.busy) {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { localKernel.progress.coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    onClick = onInstallLocalKernel,
+                    enabled = !localKernel.busy,
+                ) {
+                    Text(
+                        when {
+                            localKernel.installed -> "重装"
+                            localKernel.stage == LocalKernelStage.FAILED -> "重试"
+                            else -> "安装"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                if (localKernel.installedBytes > 0) {
+                    TextButton(onClick = onRemoveLocalKernel, enabled = !localKernel.busy) {
+                        Text("删除", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                if (localKernel.manifest != null && !localKernel.busy) {
+                    Text(
+                        "载荷 ${Storage.format(localKernel.manifest!!.sizeBytes)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
 
@@ -727,4 +803,16 @@ private fun formatTokens(n: Long): String = when {
     n >= 1_048_576 -> "${n / 1_048_576}M tokens"
     n >= 1024 -> "${n / 1024}K tokens"
     else -> "$n tokens"
+}
+
+/** One word for where the local kernel install is. */
+private fun localKernelStageLabel(state: LocalKernelState): String = when (state.stage) {
+    LocalKernelStage.READY -> "已安装"
+    LocalKernelStage.ABSENT -> "未安装"
+    LocalKernelStage.DOWNLOADING -> "下载中"
+    LocalKernelStage.VERIFYING -> "校验中"
+    LocalKernelStage.EXTRACTING -> "解包中"
+    LocalKernelStage.CHECKING -> "检查中"
+    LocalKernelStage.FAILED -> "有错误"
+    LocalKernelStage.UNKNOWN -> "未知"
 }
