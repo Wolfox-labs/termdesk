@@ -147,6 +147,34 @@ export function notificationToChatEvents(method, params) {
   }
 }
 
+/**
+ * Is this server request an approval question?
+ *
+ * Method names differ between Codex builds (execCommandApproval,
+ * applyPatchApproval, item/commandExecution/requestApproval, ...), so the test
+ * is on the shape of the name rather than on a list that goes stale.
+ */
+export function isApprovalMethod(method) {
+  return typeof method === 'string' && /approval/i.test(method);
+}
+
+/**
+ * Our option id -> the decision Codex accepts.
+ *
+ * Codex's ReviewDecision vocabulary is approved / approved_for_session / denied.
+ * `abort` exists too and is deliberately not offered: "deny this one" and "stop
+ * everything" are different answers, and the phone only asks the first.
+ *
+ * NOT YET OBSERVED IN A LIVE APPROVAL — this machine's Codex runs with a
+ * permissive sandbox, so no approval has ever been raised here. The mapping lives
+ * in one place so the first real approval is a one-line correction.
+ */
+export function decisionFor(optionId) {
+  if (optionId === 'allow_always') return { decision: 'approved_for_session' };
+  if (optionId === 'allow_once') return { decision: 'approved' };
+  return { decision: 'denied' };
+}
+
 /** Seconds-or-ms epoch from the kernel -> ISO string (Thread timestamps are seconds). */
 function toIso(value) {
   if (typeof value !== 'number' || value <= 0) return null;
@@ -272,6 +300,11 @@ export class CodexAppServer extends EventEmitter {
      * thread, so the adapter remembers the active turn for it.
      */
     this.activeTurns = new Map();
+    /**
+     * Set by the chat manager: `(method, params) => Promise<result>`.
+     * Without it every server request is refused, which is the old behaviour.
+     */
+    this.approvalHandler = null;
   }
 
   /** Spawn once; concurrent callers share the same handshake. */
@@ -357,11 +390,32 @@ export class CodexAppServer extends EventEmitter {
   }
 
   /**
-   * We do not implement interactive approvals. Surface the request to the phone
-   * and answer with an explicit refusal, so the turn fails visibly instead of
-   * hanging. The PC's own Codex config (sandbox/approval policy) still applies.
+   * Server -> client requests: approvals first, then everything else.
+   *
+   * An approval is the kernel asking whether it may run something, and that
+   * question belongs to the person holding the phone. It is handed to
+   * `approvalHandler` (set by the chat manager, which turns it into a
+   * `chat.approval` frame) and the answer is translated back into Codex's own
+   * vocabulary.
+   *
+   * Anything else is still refused explicitly: a server request that is never
+   * answered hangs the turn forever, which is worse than a visible failure.
    */
   answerServerRequest(message) {
+    if (this.approvalHandler && isApprovalMethod(message.method)) {
+      Promise.resolve()
+        .then(() => this.approvalHandler(message.method, message.params ?? {}))
+        .then((decision) => this.send({ jsonrpc: '2.0', id: message.id, result: decision }))
+        .catch((err) => {
+          this.emit('serverRequest', message.method, message.params ?? {});
+          this.send({
+            jsonrpc: '2.0',
+            id: message.id,
+            error: { code: -32601, message: `termdesk could not answer ${message.method}: ${String(err?.message ?? err)}` },
+          });
+        });
+      return;
+    }
     this.emit('serverRequest', message.method, message.params ?? {});
     this.send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `termdesk does not implement ${message.method}` } });
   }

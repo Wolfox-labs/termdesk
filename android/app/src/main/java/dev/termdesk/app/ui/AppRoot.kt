@@ -57,6 +57,7 @@ fun AppRoot(
     val activeChat by vm.activeChat.collectAsState()
     val chatEvents by vm.chatEvents.collectAsState()
     val chatSending by vm.chatSending.collectAsState()
+    val approvals by vm.approvals.collectAsState()
     val workspaces by vm.workspaces.collectAsState()
     val sessions by vm.sessions.collectAsState()
     val sessionDetail by vm.sessionDetail.collectAsState()
@@ -206,6 +207,8 @@ fun AppRoot(
                 activeChat = activeChat,
                 chatEvents = chatEvents,
                 chatSending = chatSending,
+                approvals = approvals,
+                onRespondApproval = vm::respondApproval,
                 workspaces = workspaces,
                 sessions = sessions,
                 recordedSession = sessionDetail,

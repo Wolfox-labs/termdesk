@@ -282,13 +282,13 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 | C→S | `ai.engines` · `ai.submit` · `ai.tasks` · `ai.task` · `ai.cancel` · `ai.reset`（**deprecated**，一次性任务兼容面） |
 | C→S | `codex.get` · `codex.apply` · `codex.restore` |
 | C→S | `sessions.list` · `sessions.read`（磁盘上的历史会话，只读） |
-| C→S | `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` · `chat.config` |
+| C→S | `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` · `chat.config` · `chat.approve` |
 | S→C | `auth.ok` · `auth.fail` · `hello` · `status` · `procs` · `services` |
 | S→C | `fs.listing` · `fs.file` · `fs.written` · `fs.roots` |
 | S→C | `term.opened` · `term.output` · `term.exit` · `term.list` |
 | S→C | `ai.engines` · `ai.tasks` · `ai.task` · `ai.started` · `ai.event` · `ai.finished`（**deprecated**） |
 | S→C | `codex.config` · `sessions` · `session` |
-| S→C | `chats` · `chat` · `chat.event` · `chat.status` · `chat.turn` · `chat.sent` · `chat.closed` |
+| S→C | `chats` · `chat` · `chat.event` · `chat.status` · `chat.turn` · `chat.sent` · `chat.closed` · `chat.approval` |
 | S→C | `action.result` · `error` · `pong` |
 
 **统一对话协议要点**（`chat.*`）：
@@ -306,7 +306,36 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 `ai.finished` 永远收不到且无任何报错。现引擎/对话事件统一用 `event` / `kind` 字段，
 并有"每个帧都使用已声明的协议类型"的回归断言。
 
-### 5.3.1 只在本机可访问的 JSON 接口
+### 5.3.1 审批：所有"能否执行"都走同一条路
+
+两个内核都在问同一个问题，过去各有半套答案：Codex 的 approval **一律显式拒绝**（回合可见地失败），
+ACP 的 `session/request_permission` **按固定策略自动放行**并事后留痕。持手机的人才是该决定的那个，
+所以两者现在都收敛到 `src/approvals.js` 的 `ApprovalBroker`：
+
+| 方向 | 帧 | 含义 |
+|---|---|---|
+| S→C | `chat.approval` | 一条待答请求：`requestId` / `chatId` / `engine` / `title` / `detail` / `kind` / `options[]` / `expiresAt`；请求结束时再发一条带 `state:'resolved'` 与 `optionId` 的同名帧 |
+| C→S | `chat.approve` | `{ requestId, optionId }`，`optionId` ∈ `allow_once` / `allow_always` / `deny` |
+
+三条规则（都有测试）：
+
+1. **绝不挂起**：每个请求都有期限，超时按 `fallback` 结算并记录 `by:'timeout'`。手机在口袋里睡着，
+   不能把一轮对话永久冻住。
+2. **不静默猜测**：完全没有客户端连着时立刻按 `fallback` 结算（`by:'offline'`），而不是等一个
+   可能永远不回来的客户端。
+3. **一定留痕**：任何裁决（含超时与离线）都会写成会话里的一行 `engine_note`。
+
+另外两条安全性质：请求的 `fallback` **永远不会退化成内核根本没提供的"允许"**（无法表达时一律按拒绝／
+取消处理）；已经结束的 `requestId`、或该请求没提供的 `optionId`，都会被拒绝，陈旧的一次点击
+不可能决定另一个问题。
+
+内核侧映射：ACP 直接复用内核自己的 `optionId`（`allow_once` / `allow_always` / `reject_*`），
+`reject_*` 与 `cancel` 这类不在我们词汇里的选项不提供给手机，拒绝时给内核回
+`{ outcome: 'cancelled' }`；Codex 侧把选项翻成它的 `ReviewDecision`
+（`approved` / `approved_for_session` / `denied`，见 `kernels/codex.js` 的 `decisionFor`，
+**尚未在真实 approval 上实测过**，本机 Codex 沙盒宽松，从未触发过审批）。
+
+### 5.3.2 只在本机可访问的 JSON 接口
 
 桌面窗口是**同一个代理的另一个客户端**，它不重新推导任何状态（哪些内核可选、公网地址是什么），
 而是读代理自己的回答。三个接口都只允许回环地址访问，因为它们描述这台电脑本身（配对数据里还带着令牌）：
@@ -319,7 +348,7 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 
 `qr` 是 `{ size, rows: ['0101…'] }` 的布尔网阵：桌面版用 Compose 画方块，不需要引入 SVG 渲染。
 
-### 5.3.2 桌面版窗口
+### 5.3.3 桌面版窗口
 
 见 README《桌面版》。要点：Compose Desktop 原生窗口（非 web），主题直接编译手机版的
 `Theme.kt` / `Monokai.kt`（`desktop/build.gradle.kts` 的 `kotlin.srcDir` 指向 `android/`，

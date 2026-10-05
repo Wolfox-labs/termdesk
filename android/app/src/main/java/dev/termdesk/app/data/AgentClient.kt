@@ -176,6 +176,16 @@ class AgentClient(
     /** Rebuilt from the frame stream; see [applyChatEvent]. */
     private var chatEventIndex = LinkedHashMap<Int, ChatEvent>()
 
+    /**
+     * Engine questions waiting for an answer on this phone.
+     *
+     * Kept with the connection state rather than inside a screen: a question that
+     * arrives while another section is open must not be lost, and a reconnect
+     * must not leave a stale dialog behind.
+     */
+    private val _approvals = MutableStateFlow<List<ChatApproval>>(emptyList())
+    val approvals: StateFlow<List<ChatApproval>> = _approvals.asStateFlow()
+
     private val _chatSending = MutableStateFlow(false)
     val chatSending: StateFlow<Boolean> = _chatSending.asStateFlow()
 
@@ -547,6 +557,24 @@ class AgentClient(
     }
 
     /** Send one user message. The answer streams back as `chat.event` frames. */
+    /**
+     * Answer a pending question.
+     *
+     * The dialog closes immediately: the engine is blocked on this answer, and
+     * leaving it on screen during the round-trip would invite a second tap on a
+     * question that is already decided. If the answer never arrives the agent
+     * settles it on its own and the resolved frame puts things right.
+     */
+    fun respondApproval(requestId: String, optionId: String) {
+        _approvals.value = _approvals.value.filterNot { it.requestId == requestId }
+        sendFrame(
+            JSONObject()
+                .put("type", "chat.approve")
+                .put("requestId", requestId)
+                .put("optionId", optionId),
+        )
+    }
+
     fun sendChatMessage(chatId: String, text: String, model: String? = null, effort: String? = null) {
         _chatSending.value = true
         val frame = JSONObject().put("type", "chat.send").put("chatId", chatId).put("text", text)
@@ -1347,7 +1375,14 @@ class AgentClient(
                     _sessionDetail.value = parseSessionDetail(frame)
                 }
                 // ---- live chat frames ----
-                "chats" -> _chats.value = parseChatList(frame.optJSONArray("chats"))
+                "chats" -> {
+                    _chats.value = parseChatList(frame.optJSONArray("chats"))
+                    // The agent's pending list is authoritative, so a question it
+                    // already settled (a timeout, or while this phone was away)
+                    // disappears instead of leaving a stale dialog behind.
+                    frame.optJSONArray("approvals")?.let { _approvals.value = parseApprovals(it) }
+                }
+                "chat.approval" -> applyApproval(frame)
                 "chat" -> {
                     _chatSending.value = false
                     val info = parseChatInfo(frame)
@@ -1398,6 +1433,7 @@ class AgentClient(
                 "chat.closed" -> {
                     val chatId = frame.optString("chatId")
                     _chats.value = _chats.value.filterNot { it.id == chatId }
+                    _approvals.value = _approvals.value.filterNot { it.chatId == chatId }
                     if (_activeChat.value?.id == chatId) {
                         _activeChat.value = null
                         clearChatTranscript()
@@ -1423,6 +1459,60 @@ class AgentClient(
     }
 
     // ---- live chat parsing and reduction ----
+
+    private fun parseApprovals(arr: JSONArray?): List<ChatApproval> {
+        if (arr == null) return emptyList()
+        return buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                parseApproval(o)?.let { add(it) }
+            }
+        }
+    }
+
+    private fun parseApproval(o: JSONObject): ChatApproval? {
+        val requestId = o.optString("requestId").takeIf { it.isNotBlank() } ?: return null
+        val options = o.optJSONArray("options")?.let { arr ->
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val item = arr.optJSONObject(i) ?: continue
+                    val id = item.optString("id").takeIf { it.isNotBlank() } ?: continue
+                    add(
+                        ChatApprovalOption(
+                            id = id,
+                            label = item.optString("label").takeIf { it.isNotBlank() } ?: id,
+                            style = item.optString("style"),
+                        ),
+                    )
+                }
+            }
+        } ?: emptyList()
+        if (options.isEmpty()) return null
+        return ChatApproval(
+            requestId = requestId,
+            chatId = o.optString("chatId").takeIf { it.isNotBlank() },
+            engine = o.optString("engine"),
+            title = o.optString("title").takeIf { it.isNotBlank() } ?: "内核请求权限",
+            detail = o.optString("detail"),
+            kind = o.optString("kind"),
+            options = options,
+            fallback = o.optString("fallback").takeIf { it.isNotBlank() } ?: "deny",
+            expiresAt = o.optLong("expiresAt").takeIf { it > 0 } ?: (System.currentTimeMillis() + 5 * 60_000),
+        )
+    }
+
+    /**
+     * Fold one approval frame into the pending list.
+     *
+     * A plain frame adds or refreshes the question; a `state: "resolved"` frame
+     * removes it, so a question the agent settled by itself (a timeout, or this
+     * phone being offline when it was asked) closes without the user touching it.
+     */
+    private fun applyApproval(frame: JSONObject) {
+        val request = parseApproval(frame) ?: return
+        val rest = _approvals.value.filterNot { it.requestId == request.requestId }
+        _approvals.value = if (frame.optString("state") == "resolved") rest else rest + request
+    }
 
     private fun parseChatList(arr: JSONArray?): List<ChatInfo> {
         if (arr == null) return emptyList()

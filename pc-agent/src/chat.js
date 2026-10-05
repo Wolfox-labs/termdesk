@@ -69,8 +69,28 @@ import crypto from 'node:crypto';
 
 import { CodexAppServer, notificationToChatEvents, turnToChatEvents } from './kernels/codex.js';
 import { AcpKernel, acpUpdateToChatEvents, acpSessionToSessionInfo } from './kernels/acp.js';
+import { decisionFor } from './kernels/codex.js';
 import { chatEngineIds, isAcpKernel, kernelTier, spawnSpec } from './kernels/registry.js';
+import { ApprovalBroker, OPTIONS, describe as describeApproval } from './approvals.js';
 import { dshEventToChatEvent } from './sessions.js';
+
+/** The only option ids an engine's answer may be translated into. */
+const KNOWN_OPTIONS = [OPTIONS.ALLOW_ONCE, OPTIONS.ALLOW_ALWAYS, OPTIONS.DENY];
+
+/** One line describing what Codex is asking for. */
+function describeCodexRequest(params) {
+  const command = params?.command ?? params?.commandLine?.[0] ?? null;
+  if (typeof command === 'string' && command.trim()) {
+    const args = Array.isArray(params?.commandLine) ? params.commandLine.slice(1).join(' ') : '';
+    return args ? `${command} ${args}` : command;
+  }
+  const changes = params?.changes ?? params?.fileChanges ?? null;
+  if (Array.isArray(changes) && changes.length > 0) {
+    return changes.map((c) => c?.path ?? c?.file ?? '').filter(Boolean).join(', ');
+  }
+  if (typeof params?.path === 'string') return params.path;
+  return '（内核没有说明具体内容）';
+}
 
 const MAX_CHATS = 8;
 const MAX_EVENTS_PER_CHAT = 1200;
@@ -279,16 +299,26 @@ export class ChatManager {
     this.acp = new Map();
     /** acp session id -> Chat, for routing session/update notifications. */
     this.acpSessions = new Map();
+    /**
+     * Every "may I run this?" question from any engine goes through here, so the
+     * phone answers in one place and every decision lands in the transcript.
+     */
+    this.approvals = new ApprovalBroker();
+    this.approvals.on('settled', (info) => this.noteApproval(info));
   }
 
   /** Route chat events to the currently connected client. */
   attach(onEvent) {
     this.onEvent = onEvent;
+    // The broker sniffs for a client: with nobody attached it settles requests
+    // immediately instead of waiting for a phone that may never come back.
+    this.approvals.attach(onEvent);
   }
 
   /** Stop routing to a socket that went away; live chats survive the disconnect. */
   detach() {
     this.onEvent = null;
+    this.approvals.detach();
   }
 
   emit(payload) {
@@ -558,6 +588,8 @@ export class ChatManager {
     if (!this.codex) {
       const server = new CodexAppServer({ log: (line) => console.log(line) });
       server.on('notification', (method, params) => this.handleCodexNotification(method, params));
+      // Codex's own approval requests become questions on the phone.
+      server.approvalHandler = (method, params) => this.answerCodexApproval(method, params);
       server.on('serverRequest', (method) => {
         console.error(`[codex] 引擎请求未实现，已拒绝：${method}`);
       });
@@ -636,6 +668,93 @@ export class ChatManager {
     this.chats.set(chat.id, chat);
     this.codexThreads.set(id, chat);
     return { ok: true, chat: chat.detail() };
+  }
+
+  // --- approvals -----------------------------------------------------------
+
+  /**
+   * One Codex approval request -> one question on the phone.
+   *
+   * The reason is taken from the request itself (the command, or the patch), so
+   * the phone shows what will actually run rather than "the agent wants
+   * permission".
+   */
+  async answerCodexApproval(method, params) {
+    const chat = this.findChatByThread(params?.threadId) ?? this.newestCodexChat();
+    const detail = describeCodexRequest(params);
+    const optionId = await this.approvals.request({
+      chatId: chat?.id ?? null,
+      engine: 'codex',
+      title: 'Codex 想要执行',
+      detail,
+      kind: /patch|filechange|file/i.test(method) ? 'file' : 'command',
+      fallback: OPTIONS.DENY,
+    }).catch(() => OPTIONS.DENY);
+    return decisionFor(optionId);
+  }
+
+  /**
+   * One ACP permission request -> one question on the phone.
+   *
+   * The kernel's own options are reused as the answer vocabulary when they match
+   * ours, so "always allow" means what the kernel means by it.
+   */
+  async handleAcpPermission(engineId, info) {
+    const chat = info.sessionId ? this.acpSessions.get(info.sessionId) : null;
+    const options = Array.isArray(info.options) ? info.options : [];
+    const ids = options
+      .map((o) => o?.optionId ?? o?.id)
+      .filter((id) => KNOWN_OPTIONS.includes(id));
+    // A kernel that offers something we do not speak (a "cancel" kind, say)
+    // still gets an answer: the vocabulary is ours, and anything unmapped is
+    // simply not offered.
+    const optionId = await this.approvals.request({
+      chatId: chat?.id ?? null,
+      engine: engineId,
+      title: info.toolCall?.title ? `内核想要执行 ${info.toolCall.title}` : '内核请求权限',
+      // The kind rides along as its own field, so repeating it here would only
+      // make the sentence longer without saying anything new.
+      detail: info.toolCall?.title ? '' : (info.toolCall?.kind ?? ''),
+      kind: info.toolCall?.kind === 'edit' || info.toolCall?.kind === 'write' ? 'file' : 'tool',
+      ids: ids.length > 0 ? ids : null,
+      fallback: KNOWN_OPTIONS.includes(info.defaultOptionId) ? info.defaultOptionId : OPTIONS.DENY,
+    }).catch(() => OPTIONS.DENY);
+    info.respond(optionId === OPTIONS.DENY ? null : optionId);
+  }
+
+  /**
+   * The phone's answer.
+   *
+   * Rejected rather than trusted when the request is unknown or already settled:
+   * an answer that is not currently pending must not be able to decide
+   * something else.
+   */
+  resolveApproval({ requestId, optionId }) {
+    if (!KNOWN_OPTIONS.includes(optionId)) {
+      return { ok: false, code: 'bad_option', message: `不认识的选项：${optionId}` };
+    }
+    return this.approvals.resolve({ requestId, optionId });
+  }
+
+  /** Write the decision into the conversation it belongs to. */
+  noteApproval({ request, optionId, by, note }) {
+    if (!note) return;
+    const chat = request.chatId ? this.chats.get(request.chatId) : null;
+    if (!chat) return;
+    this.pushAndEmit(chat, { kind: 'engine_note', role: 'engine', text: note, name: 'permission' });
+  }
+
+  findChatByThread(threadId) {
+    if (!threadId) return null;
+    return this.codexThreads.get(threadId) ?? null;
+  }
+
+  /** Fallback for a Codex request that does not name its thread. */
+  newestCodexChat() {
+    const list = [...this.chats.values()]
+      .filter((c) => c.engine === 'codex')
+      .sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+    return list[0] ?? null;
   }
 
   /** Route one app-server notification into the right chat transcript. */
@@ -901,26 +1020,6 @@ export class ChatManager {
     }
   }
 
-  /**
-   * Put the kernel's permission decision in the transcript.
-   *
-   * The decision itself is made in the adapter so the turn can never hang; this
-   * only makes it auditable, because "what was the agent allowed to do on my
-   * machine" must never be invisible.
-   */
-  handleAcpPermission(engineId, info) {
-    const chat = info.sessionId ? this.acpSessions.get(info.sessionId) : null;
-    if (!chat) return;
-    const tool = info.toolCall?.title ?? info.toolCall?.kind ?? '工具调用';
-    const verdict = info.option ? `已允许（${info.option.name ?? info.option.kind}）` : '已拒绝';
-    this.pushAndEmit(chat, {
-      kind: 'engine_note',
-      role: 'engine',
-      text: `内核请求权限：${tool} → ${verdict}`,
-      name: 'permission',
-    });
-  }
-
   /** Close out an ACP turn exactly once, mirroring the Codex lifecycle. */
   finishAcpTurn(chat, stopReason) {
     if (chat.status === 'stopped') return;
@@ -1036,6 +1135,9 @@ export class ChatManager {
       // ACP cancel is a notification, so there is nothing to await: the turn is
       // closed out here and the prompt response that follows is ignored
       // (finishAcpTurn returns early once status is 'stopped').
+      // Anything the conversation was still asking for is settled as denied,
+      // because the kernel is waiting on those answers.
+      this.approvals.cancelForChat(chat.id);
       const kernel = this.acp.get(chat.engine);
       if (kernel && chat.sessionId) kernel.cancel(chat.sessionId);
       chat.status = 'stopped';
@@ -1070,6 +1172,7 @@ export class ChatManager {
     if (chat.status === 'running') {
       return { ok: false, code: 'busy', message: '正在回复中，请先停止' };
     }
+    this.approvals.cancelForChat(id);
     this.dispose(chat, 'closed');
     this.chats.delete(id);
     this.emit({ event: 'chat.closed', chatId: id });
@@ -1077,6 +1180,7 @@ export class ChatManager {
   }
 
   disposeAll() {
+    this.approvals.disposeAll();
     for (const chat of [...this.chats.values()]) this.dispose(chat, 'shutdown');
     try { this.codex?.dispose(); } catch { /* already gone */ }
     this.codex = null;

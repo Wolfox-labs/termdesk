@@ -303,6 +303,51 @@ const server = http.createServer((req, res) => {
   }
 
   /**
+   * DEVELOPMENT ONLY: raise a synthetic approval question.
+   *
+   * The phone's approval dialog can otherwise only be reached by making an engine
+   * want to run something, which costs a real model call. This hook lets the
+   * whole path be exercised for free — broker, frame, phone, answer, transcript —
+   * against the real code, and it is the only reason it exists.
+   *
+   * Off unless TERMDESK_DEBUG_APPROVAL=1, loopback-only like the other JSON
+   * endpoints, and it never answers a question that a real kernel asked.
+   */
+  if (url.pathname === '/debug/approval' && process.env.TERMDESK_DEBUG_APPROVAL === '1') {
+    if (!isLoopback(req)) {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, code: 'loopback_only' }));
+      return;
+    }
+    (async () => {
+      const engine = url.searchParams.get('engine') || 'opencode';
+      const created = chats.create({ engine, cwd: os.homedir(), title: '审批测试' });
+      if (!created.ok) {
+        res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, message: created.message }));
+        return;
+      }
+      const chatId = created.chat.id;
+      const optionId = await chats.approvals.request({
+        chatId,
+        engine,
+        title: '内核想要执行 npm test',
+        detail: '',
+        kind: 'command',
+        fallback: 'deny',
+      });
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true, chatId, optionId }));
+    })().catch((err) => {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, message: String(err?.message ?? err) }));
+      }
+    });
+    return;
+  }
+
+  /**
    * Machine-readable state for the desktop window.
    *
    * Loopback only, like the pairing page: these describe this computer, so the
@@ -568,6 +613,7 @@ wss.on('connection', (socket, req) => {
           'chat.status': 'CHAT_STATUS',
           'chat.turn': 'CHAT_TURN',
           'chat.closed': 'CHAT_CLOSED',
+          'chat.approval': 'CHAT_APPROVAL',
         }[event]] ?? S2C.CHAT_EVENT;
         socket.send(encodeFrame(type, rest));
       });

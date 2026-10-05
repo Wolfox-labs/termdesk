@@ -51,6 +51,7 @@ export const C2S = {
   CHAT_READ: 'chat.read',
   CHAT_CANCEL: 'chat.cancel',
   CHAT_CLOSE: 'chat.close',
+  CHAT_APPROVE: 'chat.approve',
   PING: 'ping',
 };
 
@@ -88,6 +89,7 @@ export const S2C = {
   CHAT_TURN: 'chat.turn',
   CHAT_SENT: 'chat.sent',
   CHAT_CLOSED: 'chat.closed',
+  CHAT_APPROVAL: 'chat.approval',
   ACTION_RESULT: 'action.result',
   ERROR: 'error',
   PONG: 'pong',

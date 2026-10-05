@@ -45,6 +45,9 @@ import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -71,6 +74,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.EngineInfo
@@ -79,6 +83,7 @@ import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
 import dev.termdesk.app.data.WorkspaceInfo
 import dev.termdesk.app.ui.theme.Semantic
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -103,6 +108,8 @@ fun ChatSection(
     activeChat: ChatInfo?,
     events: List<ChatEvent>,
     sending: Boolean,
+    approvals: List<ChatApproval>,
+    onRespondApproval: (String, String) -> Unit,
     workspaces: List<WorkspaceInfo>,
     sessions: List<SessionInfo>,
     defaultCwd: String,
@@ -251,6 +258,94 @@ fun ChatSection(
             }
         }
     }
+
+    // A pending question is the most important thing on this screen — the kernel
+    // is blocked until it is answered — so it is drawn over everything else
+    // rather than buried somewhere in the transcript.
+    val pendingApproval = approvals.firstOrNull { it.chatId == null || it.chatId == activeChat?.id }
+    if (pendingApproval != null && open) {
+        ApprovalDialog(approval = pendingApproval, onAnswer = onRespondApproval)
+    }
+}
+
+/**
+ * The engine is blocked until this is answered.
+ *
+ * The countdown is real, not decorative: the agent gives the question a deadline
+ * and settles it on its own when it passes, which is what makes a remote
+ * approval safe — a phone in a pocket must not freeze a conversation forever.
+ * Dismissing the dialog leaves the question pending, so it comes back instead of
+ * silently deciding anything.
+ */
+@Composable
+private fun ApprovalDialog(approval: ChatApproval, onAnswer: (String, String) -> Unit) {
+    var now by remember(approval.requestId) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(approval.requestId) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+    val seconds = (approval.remainingMs(now) / 1000).toInt()
+
+    AlertDialog(
+        onDismissRequest = { /* stays pending; it will be asked again */ },
+        title = { Text(approval.title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (approval.detail.isNotBlank()) {
+                    Text(
+                        approval.detail,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+                            .padding(10.dp),
+                    )
+                }
+                Text(
+                    buildString {
+                        append(approvalEngineLabel(approval.engine))
+                        if (seconds > 0) append(" · ${seconds} 秒后按「${approval.fallbackText}」处理")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                approval.options.forEach { option ->
+                    Button(
+                        onClick = { onAnswer(approval.requestId, option.id) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = when (option.style) {
+                                "danger" -> MaterialTheme.colorScheme.error
+                                "primary" -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.surface
+                            },
+                            contentColor = when (option.style) {
+                                "danger" -> Color.White
+                                "primary" -> MaterialTheme.colorScheme.onPrimary
+                                else -> MaterialTheme.colorScheme.onSurface
+                            },
+                        ),
+                    ) {
+                        Text(option.label)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+    )
+}
+
+/** The kernel's name as the settings list spells it. */
+private fun approvalEngineLabel(engine: String?): String = when (engine) {
+    "codex" -> "Codex"
+    "dsh" -> "DeepSeek Harness"
+    "opencode" -> "OpenCode"
+    "mimo" -> "MiMo Code"
+    else -> engine?.takeIf { it.isNotBlank() } ?: "内核"
 }
 
 /**

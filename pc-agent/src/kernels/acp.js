@@ -36,6 +36,14 @@ const PROTOCOL_VERSION = 1;
 const REQUEST_TIMEOUT_MS = 60_000;
 /** A turn may legitimately think for a long time; the answer streams meanwhile. */
 const PROMPT_TIMEOUT_MS = 30 * 60_000;
+/**
+ * How long a permission question may stay unanswered.
+ *
+ * The kernel blocks the turn while it waits, so there is a deadline even when a
+ * phone is reachable: a question left on a phone in a pocket must not hold a
+ * turn open forever. On expiry the kernel's own policy default is used.
+ */
+const PERMISSION_TIMEOUT_MS = 5 * 60_000;
 const MAX_TEXT = 4000;
 
 /** Seconds-or-ms epoch -> ISO, and ISO -> ISO. Kernels disagree on the unit. */
@@ -327,17 +335,40 @@ export class AcpKernel extends EventEmitter {
     const method = message.method;
     if (method === 'session/request_permission') {
       const params = message.params ?? {};
-      const option = choosePermissionOption(params.options, this.approvalPolicy);
+      const options = Array.isArray(params.options) ? params.options : [];
+      const defaultOption = choosePermissionOption(options, this.approvalPolicy);
+      const defaultOptionId = defaultOption ? (defaultOption.optionId ?? defaultOption.id) : null;
+
+      // Nothing may be sent to the kernel until the question is answered, and it
+      // must be answered exactly once — a second reply to the same request id
+      // would be a protocol error.
+      let answered = false;
+      const respond = (optionId) => {
+        if (answered) return false;
+        answered = true;
+        clearTimeout(timer);
+        const chosen = options.find((o) => (o.optionId ?? o.id) === optionId) ?? null;
+        this.send({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: chosen
+            ? { outcome: { outcome: 'selected', optionId: chosen.optionId ?? chosen.id } }
+            : { outcome: { outcome: 'cancelled' } },
+        });
+        return true;
+      };
+      const timer = setTimeout(() => respond(defaultOptionId), PERMISSION_TIMEOUT_MS);
+
+      // The decision itself belongs to the caller (the chat manager asks the
+      // phone). This only guarantees the kernel is never left waiting forever.
       this.emit('permission', {
         sessionId: params.sessionId ?? null,
         toolCall: params.toolCall ?? null,
-        option,
+        options,
+        defaultOptionId,
+        respond,
         policy: this.approvalPolicy,
       });
-      const result = option
-        ? { outcome: { outcome: 'selected', optionId: option.optionId ?? option.id } }
-        : { outcome: { outcome: 'cancelled' } };
-      this.send({ jsonrpc: '2.0', id: message.id, result });
       return;
     }
     // fs/*, terminal/* and anything unknown: we declared no support, so say so

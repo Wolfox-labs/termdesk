@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import android.net.Uri
+import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.CodexConfig
@@ -134,6 +135,8 @@ fun AppShell(
     activeChat: ChatInfo?,
     chatEvents: List<ChatEvent>,
     chatSending: Boolean,
+    approvals: List<ChatApproval>,
+    onRespondApproval: (String, String) -> Unit,
     workspaces: List<WorkspaceInfo>,
     sessions: List<SessionInfo>,
     recordedSession: SessionDetail?,
@@ -258,6 +261,8 @@ fun AppShell(
                     activeChat = activeChat,
                     chatEvents = chatEvents,
                     chatSending = chatSending,
+                    approvals = approvals,
+                    onRespondApproval = onRespondApproval,
                     workspaces = workspaces,
                     sessions = sessions,
                     recordedSession = recordedSession,
@@ -504,6 +509,8 @@ private fun SectionBody(
     activeChat: ChatInfo?,
     chatEvents: List<ChatEvent>,
     chatSending: Boolean,
+    approvals: List<ChatApproval>,
+    onRespondApproval: (String, String) -> Unit,
     workspaces: List<WorkspaceInfo>,
     sessions: List<SessionInfo>,
     recordedSession: SessionDetail?,
@@ -580,6 +587,8 @@ private fun SectionBody(
             activeChat = activeChat,
             events = chatEvents,
             sending = chatSending,
+            approvals = approvals,
+            onRespondApproval = onRespondApproval,
             workspaces = workspaces,
             sessions = sessions,
             defaultCwd = defaultCwd,

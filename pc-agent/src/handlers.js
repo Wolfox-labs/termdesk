@@ -605,7 +605,7 @@ export function createFrameHandler(ctx) {
       // The one-shot `ai.*` tasks above are the deprecated legacy surface.
 
       case C2S.CHAT_LIST:
-        send(S2C.CHATS, { chats: chats.list() });
+        send(S2C.CHATS, { chats: chats.list(), approvals: chats.approvals.pending() });
         break;
 
       case C2S.CHAT_CREATE: {
@@ -618,7 +618,7 @@ export function createFrameHandler(ctx) {
         });
         if (result.ok) {
           send(S2C.CHAT, result.chat);
-          send(S2C.CHATS, { chats: chats.list() });
+          send(S2C.CHATS, { chats: chats.list(), approvals: chats.approvals.pending() });
         } else {
           send(S2C.ACTION_RESULT, {
             action: 'chat.create',
@@ -636,7 +636,7 @@ export function createFrameHandler(ctx) {
           const result = await chats.resume({ engine: frame.engine, id: frame.sessionId, sessionPath: frame.path });
           if (result.ok) {
             send(S2C.CHAT, result.chat);
-            send(S2C.CHATS, { chats: chats.list() });
+            send(S2C.CHATS, { chats: chats.list(), approvals: chats.approvals.pending() });
           } else {
             send(S2C.ACTION_RESULT, { action: 'chat.resume', target: frame.sessionId, ok: false, code: result.code, message: result.message });
           }
@@ -654,7 +654,7 @@ export function createFrameHandler(ctx) {
         });
         if (result.ok) {
           send(S2C.CHAT, result.chat);
-          send(S2C.CHATS, { chats: chats.list() });
+          send(S2C.CHATS, { chats: chats.list(), approvals: chats.approvals.pending() });
         } else {
           send(S2C.ACTION_RESULT, {
             action: 'chat.config',
@@ -723,6 +723,24 @@ export function createFrameHandler(ctx) {
           message: result.ok ? '已关闭会话' : result.message,
         });
         if (result.ok) send(S2C.CHATS, { chats: chats.list() });
+        break;
+      }
+
+      case C2S.CHAT_APPROVE: {
+        // The phone answering a "may I run this?" question. An unknown or
+        // already-settled request is refused, so a stale tap cannot decide
+        // something else that happens to be pending.
+        const result = chats.resolveApproval({
+          requestId: frame.requestId,
+          optionId: frame.optionId,
+        });
+        send(S2C.ACTION_RESULT, {
+          action: 'chat.approve',
+          target: frame.requestId ?? '',
+          ok: result.ok,
+          code: result.ok ? 'approved' : result.code,
+          message: result.message ?? null,
+        });
         break;
       }
 

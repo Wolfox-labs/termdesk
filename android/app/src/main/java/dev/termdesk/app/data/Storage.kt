@@ -30,25 +30,35 @@ data class StorageUse(
 object Storage {
 
     /**
-     * The Termux payload an earlier local-kernel experiment unpacked into the
-     * app's private files directory. No current code reads `usr/`, `home/` or the
-     * install marker, so it is dead weight — but it is the user's data, so it is
-     * reported and removed only on request.
+     * The local kernel's userland, unpacked into the app's private files.
+     *
+     * This is NOT leftover data: it is a complete Termux bootstrap rebuilt under
+     * this app's own package name, so the hard-coded `/data/data/.../files/usr`
+     * prefix points at TermDesk instead of Termux. It carries bash, apt/dpkg,
+     * python3, node and git (8302 archive entries, 1431 of them symlinks).
+     *
+     * Stated plainly because it was mislabelled before: nothing reads it yet —
+     * the client-side install and launch flow is still to be written — but it is
+     * the sandbox itself, and deleting it means re-downloading ~54 MB and
+     * re-extracting, not just clearing a cache.
      */
-    private val ORPHANED = listOf("usr", "home", "profileInstalled")
+    private val LOCAL_KERNEL = listOf("usr", "home", "profileInstalled")
+
+    /** The label the storage screen shows for it; also how removal finds it. */
+    private const val LOCAL_KERNEL_LABEL = "本地内核沙盒（Termux）"
 
     fun inspect(context: Context): StorageUse {
         val files = context.filesDir
         val entries = mutableListOf<StorageEntry>()
 
-        val orphanBytes = ORPHANED.sumOf { size(File(files, it)) }
-        if (orphanBytes > 0) {
+        val sandboxBytes = LOCAL_KERNEL.sumOf { size(File(files, it)) }
+        if (sandboxBytes > 0) {
             entries += StorageEntry(
-                label = "遗留的本地内核载荷",
+                label = LOCAL_KERNEL_LABEL,
                 path = files.absolutePath,
-                bytes = orphanBytes,
+                bytes = sandboxBytes,
                 removable = true,
-                note = "早前实验解压的 Termux 沙盒，当前版本不再使用",
+                note = "本地内核的 Linux 环境（bash / apt / python3 / node / git）。删除后需要重新安装，不只是清缓存",
             )
         }
 
@@ -83,8 +93,8 @@ object Storage {
     fun clear(entry: StorageEntry): Long {
         val target = File(entry.path)
         val freed = size(target)
-        if (entry.label == "遗留的本地内核载荷") {
-            ORPHANED.forEach { deleteRecursively(File(target, it)) }
+        if (entry.label == LOCAL_KERNEL_LABEL) {
+            LOCAL_KERNEL.forEach { deleteRecursively(File(target, it)) }
         } else {
             deleteRecursively(target)
         }

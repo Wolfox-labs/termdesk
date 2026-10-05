@@ -39,6 +39,41 @@ data class ChatInfo(
 }
 
 /**
+ * A question from the engine, waiting for the person holding the phone.
+ *
+ * Both kernels ask the same thing in their own words — Codex before a command or
+ * a patch, ACP before a tool call — and the agent turns either one into this, so
+ * the phone has one dialog instead of one per kernel. The options are the
+ * agent's own vocabulary, which means a label here is exactly what the answer
+ * will mean to the kernel.
+ */
+data class ChatApproval(
+    val requestId: String,
+    val chatId: String?,
+    val engine: String,
+    val title: String,
+    val detail: String,
+    val kind: String,
+    val options: List<ChatApprovalOption>,
+    /** What the agent settles on if nobody answers. */
+    val fallback: String,
+    /** When it does that, in epoch milliseconds. */
+    val expiresAt: Long,
+) {
+    fun remainingMs(now: Long = System.currentTimeMillis()): Long = (expiresAt - now).coerceAtLeast(0)
+
+    val fallbackText: String
+        get() = when (fallback) {
+            "allow_once" -> "允许一次"
+            "allow_always" -> "总是允许"
+            else -> "拒绝"
+        }
+}
+
+/** One answer the kernel will accept. */
+data class ChatApprovalOption(val id: String, val label: String, val style: String)
+
+/**
  * One line of a conversation, shown exactly as the runtime produced it.
  *
  * The app never rewrites, summarises, or reorders this stream. The kinds mirror

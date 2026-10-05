@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import dev.termdesk.app.data.DeviceCredentials
 import dev.termdesk.app.data.AgentClient
 import dev.termdesk.app.data.ActionResult
+import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.CodexConfig
@@ -141,6 +142,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val activeChat: StateFlow<ChatInfo?> = client.activeChat
     val chatEvents: StateFlow<List<ChatEvent>> = client.chatEvents
     val chatSending: StateFlow<Boolean> = client.chatSending
+
+    /**
+     * Engine questions waiting for an answer (see [ChatApproval]).
+     *
+     * The kernel is blocked while one is pending, so this is connection state,
+     * not screen state: the dialog follows the conversation it belongs to.
+     */
+    val approvals: StateFlow<List<ChatApproval>> = client.approvals
+
+    fun respondApproval(requestId: String, optionId: String) = client.respondApproval(requestId, optionId)
 
     fun loadChats() = client.loadChats()
 
