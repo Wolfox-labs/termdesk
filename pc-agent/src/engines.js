@@ -32,6 +32,9 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
+import { AcpKernel } from './kernels/acp.js';
+import { listKernels, spawnSpec } from './kernels/registry.js';
+
 const MAX_TASKS = 60;
 const MAX_EVENTS_PER_TASK = 400;
 const TASK_TIMEOUT_MS = 30 * 60 * 1000;
@@ -70,7 +73,17 @@ export function findDsh() {
   );
 }
 
+/**
+ * Engines the DEPRECATED one-shot task surface can run.
+ *
+ * Kept at the two it was built for: the product path is chat.js, which accepts
+ * every selectable kernel (see kernels/registry.js).
+ */
 export const ENGINES = ['codex', 'dsh'];
+
+/** ACP capability probes, cached so a picker refresh is not a process storm. */
+const ACP_PROBE_TTL_MS = 10 * 60_000;
+const ACP_PROBE_CACHE = new Map();
 
 /**
  * Build the `codex exec` argv for one turn.
@@ -513,88 +526,79 @@ export class EngineManager {
    * spawn). `TERMDESK_KERNELS_PROBE=1` additionally runs the ACP handshakes and
    * reports the declared capabilities.
    */
+  /**
+   * Kernel discovery: what this PC can actually talk to.
+   *
+   * The table itself lives in kernels/registry.js, so the phone's picker, the
+   * chat pipeline and this probe cannot disagree about which kernels exist or
+   * what tier each one is on. This method only adds the optional deep probe.
+   *
+   * Discovery is cheap by default (path lookups, no process spawn). With
+   * TERMDESK_KERNELS_PROBE=1 each installed ACP kernel is asked for its
+   * declared capabilities — a protocol handshake, never a model call — and the
+   * answer is cached for ten minutes so a picker refresh cannot spawn a kernel
+   * fleet.
+   */
   async probeEngines() {
-    const codex = findCodex();
-    const dsh = findDsh();
-    const list = [
-      {
-        id: 'codex',
-        label: 'Codex',
-        tier: 'native',
-        transport: 'app-server',
-        available: fs.existsSync(codex) || codex === 'codex',
-        path: codex,
-        detail: '官方 app-server：列表/读取/恢复/fork/打断全部由内核提供',
-        multiTurn: true,
-        progress: true,
-        resume: true,
-      },
-      {
-        id: 'dsh',
-        label: 'DeepSeek Harness',
-        tier: 'native',
-        transport: 'sdk',
-        available: fs.existsSync(dsh),
-        path: dsh,
-        // The chat path uses the sdk profile, which has no session resume; the
-        // acp profile can list/resume but has no transcript replay.
-        detail: '当前走 sdk 协议（原生延续，不支持恢复历史会话）',
-        multiTurn: true,
-        progress: true,
-        resume: false,
-      },
-    ];
+    const list = listKernels();
+    if (process.env.TERMDESK_KERNELS_PROBE !== '1') return list;
 
-    // Kernels that expose ACP but are not wired into the chat pipeline yet.
-    const acpHints = [
-      { id: 'opencode', label: 'OpenCode', candidates: [process.env.TERMDESK_OPENCODE, 'D:\\OpenCode\\opencode-cli.exe', 'opencode'] },
-      { id: 'mimo', label: 'MiMo Code', candidates: [process.env.TERMDESK_MIMO, path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'mimo.cmd'), 'mimo'] },
-      { id: 'qoder', label: 'QoderWork', tier: 'shim', candidates: [path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'QoderWork CN', 'resources', 'bin', 'qoderclicn.exe')] },
-      { id: 'command-code', label: 'Command Code', tier: 'shim', candidates: [path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'command-code.ps1'), 'command-code'] },
-    ];
-    for (const hint of acpHints) {
-      const found = hint.candidates.find((c) => c && fs.existsSync(c)) ?? null;
-      const tier = hint.tier ?? 'acp';
-      list.push({
-        id: hint.id,
-        label: hint.label,
-        tier,
-        transport: tier === 'acp' ? 'acp' : 'cli',
-        available: Boolean(found),
-        path: found,
-        detail: !found
-          ? '未在本机找到'
-          : tier === 'acp'
-            ? '已发现 ACP 服务端；TermDesk 适配器尚未接入（选择后暂不可用）'
-            : 'CLI 形状，需要 shim 适配（选择后暂不可用）',
-        multiTurn: tier === 'acp',
-        progress: tier === 'acp',
-        resume: tier === 'acp',
-      });
-    }
-
-    if (process.env.TERMDESK_KERNELS_PROBE === '1') {
-      for (const entry of list) {
-        if (!entry.available || entry.tier !== 'acp') continue;
-        entry.detail = await this.probeAcpKernel(entry).catch((err) => `ACP 握手失败：${String(err?.message ?? err).slice(0, 80)}`);
+    const now = Date.now();
+    const out = [];
+    for (const entry of list) {
+      if (entry.tier !== 'acp' || !entry.available) {
+        out.push(entry);
+        continue;
+      }
+      const cached = ACP_PROBE_CACHE.get(entry.id);
+      if (cached && now - cached.at < ACP_PROBE_TTL_MS) {
+        out.push({ ...entry, detail: cached.detail, acp: cached.acp });
+        continue;
+      }
+      try {
+        const probe = await this.probeAcpKernel(entry);
+        ACP_PROBE_CACHE.set(entry.id, { at: now, detail: probe.detail, acp: probe.caps });
+        out.push({ ...entry, detail: probe.detail, acp: probe.caps });
+      } catch (err) {
+        out.push({ ...entry, detail: `ACP 握手失败：${String(err?.message ?? err).slice(0, 80)}` });
       }
     }
-    return list;
+    return out;
   }
 
-  /** One ACP `initialize` handshake, reported as a human-readable capability line. */
+  /**
+   * One ACP handshake through the SAME adapter the chat pipeline uses, so the
+   * picker can never advertise a capability the chat path does not have.
+   */
   async probeAcpKernel(entry) {
-    const { probeAcpServer } = await import('./kernels/acp-probe.js');
-    const caps = await probeAcpServer(entry);
-    entry.acp = caps;
-    const bits = [];
-    if (caps.loadSession) bits.push('可回放历史');
-    if (caps.sessionList) bits.push('可列会话');
-    if (caps.sessionResume) bits.push('可恢复');
-    if (caps.fork) bits.push('可fork');
-    if (caps.promptOk) bits.push('可发消息');
-    for (const key of ['loadSession', 'sessionList', 'sessionResume', 'fork', 'promptOk']) delete caps[key];
-    return `ACP：${bits.join('/') || '仅握手'}`;
+    const spec = spawnSpec(entry.id);
+    if (!spec) throw new Error('找不到可执行文件');
+    const kernel = new AcpKernel({
+      id: entry.id,
+      label: entry.label,
+      bin: spec.bin,
+      args: spec.args,
+      log: () => {},
+    });
+    try {
+      await kernel.ensureStarted();
+      const caps = kernel.sessionSupport();
+      const name = kernel.agentInfo?.name ?? entry.label;
+      const version = kernel.agentInfo?.version ?? '';
+      const bits = [];
+      if (caps.loadSession) bits.push('可回放历史');
+      if (caps.list) bits.push('可列会话');
+      if (caps.resume) bits.push('可恢复');
+      if (caps.fork) bits.push('可 fork');
+      if (caps.close) bits.push('可关闭');
+      if (caps.image) bits.push('支持图片');
+      return {
+        caps,
+        detail: `ACP \u00b7 ${name} ${version}：${bits.join(' / ') || '仅握手'}`,
+      };
+    } finally {
+      kernel.dispose();
+    }
   }
 
   disposeAll() {

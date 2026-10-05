@@ -31,6 +31,7 @@ import {
   PROVIDER_TEMPLATES,
 } from './codexconfig.js';
 import { listSessions, readSession, sessionRoots } from './sessions.js';
+import { chatEngineIds, isAcpKernel } from './kernels/registry.js';
 import { threadSummaryToSession, threadToSessionDetail, discoverThreadIdsFromDisk } from './kernels/codex.js';
 
 const STATUS_INTERVAL_MS = 2000;
@@ -493,6 +494,20 @@ export function createFrameHandler(ctx) {
           const wantDsh = !frame.engine || frame.engine === 'dsh';
           const all = [];
           let codexSource = null;
+          // ACP kernels keep their own index; asking the kernel is the only way
+          // the list can contain exactly the sessions that can be opened again.
+          const acpWanted = frame.engine
+            ? (isAcpKernel(frame.engine) ? [frame.engine] : [])
+            : chatEngineIds().filter((id) => isAcpKernel(id));
+          const acpSources = {};
+          for (const engineId of acpWanted) {
+            try {
+              all.push(...(await chats.listAcpSessions(engineId)));
+              acpSources[engineId] = 'kernel';
+            } catch (err) {
+              acpSources[engineId] = `unavailable: ${String(err?.message ?? err).slice(0, 120)}`;
+            }
+          }
           if (wantDsh) all.push(...(await listSessions({ engine: 'dsh' })));
           if (wantCodex) {
             try {
@@ -532,6 +547,9 @@ export function createFrameHandler(ctx) {
             // Tells the client where the Codex index came from: the kernel's own
             // session API, or the on-disk fallback when Codex is unreachable.
             codexSource,
+            // Per-ACP-kernel index source, so a kernel that is installed but
+            // unreachable is reported instead of silently missing.
+            acpSources,
           });
         } catch (err) {
           send(S2C.ERROR, { code: 'sessions_failed', message: String(err?.message ?? err) });
@@ -550,6 +568,9 @@ export function createFrameHandler(ctx) {
             } catch { detail = null; }
             // No on-disk fallback for Codex any more: the kernel can read any
             // thread id, and a second reader would only drift from it.
+          } else if (isAcpKernel(frame.engine)) {
+            // The kernel replays its own transcript; TermDesk parses nothing.
+            detail = await chats.readAcpSession(frame.engine, frame.sessionId);
           } else {
             detail = await readSession({
               engine: frame.engine,

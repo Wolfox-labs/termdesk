@@ -28,7 +28,7 @@ import { TerminalManager } from './terminal.js';
 import { EngineManager } from './engines.js';
 import { ChatManager } from './chat.js';
 import { loadRelayConfig, startRelayConnector } from './relay-client.js';
-import { Tunnel, findCloudflared } from './tunnel.js';
+import { Tunnel, findCloudflared, findTunnelConfig, verifyPublic } from './tunnel.js';
 import { pairPage, pairPayload, qrTerminal } from './pair.js';
 import { createFrameHandler, pushStatusFrame } from './handlers.js';
 
@@ -167,6 +167,24 @@ function findClientApk() {
   return newest;
 }
 
+/**
+ * Addresses worth showing a phone, best first.
+ *
+ * Home/office ranges come first, then Tailscale/CGNAT, then whatever is left
+ * (virtual switches and VPN adapters are usually noise from a phone's point of
+ * view). Capped so the header stays a header.
+ */
+function lanAddresses(limit = 4) {
+  const score = (addr) => {
+    if (/^192\.168\./.test(addr)) return 0;
+    if (/^10\./.test(addr)) return 1;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(addr)) return 2;
+    if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(addr)) return 3;
+    return 4;
+  };
+  return localAddresses().sort((a, b) => score(a) - score(b)).slice(0, limit);
+}
+
 /** Every non-internal IPv4 address, so we can print usable URLs. */
 function localAddresses() {
   const out = [];
@@ -176,6 +194,49 @@ function localAddresses() {
     }
   }
   return out;
+}
+
+/**
+ * Startup report helpers.
+ *
+ * A manual launch should answer the only three questions that matter before the
+ * phone is picked up: is the agent listening, what can this PC actually drive,
+ * and what address does the phone use. All of it is printed here instead of
+ * being discovered later on a phone screen.
+ */
+
+/** Where the agent is listening, and how to pair. */
+function printHeader({ args, token, apk, relay }) {
+  const line = (label, value) => console.log('  ' + label.padEnd(7) + value);
+  console.log('');
+  console.log('  TermDesk PC — 手机远程指挥这台电脑上的 agent 内核');
+  console.log('  ' + '-'.repeat(64));
+  line('本机', os.hostname() + '   监听 ' + args.host + ':' + args.port);
+  line('shell', SHELL_ENABLED ? '已开启（手机可执行任意命令、读写文件）' : '已关闭（加 --enable-shell 打开）');
+  line('目录', allowedRoots().join('   '));
+  // One machine can carry a dozen IPv4s (WSL, VPNs, virtual switches). Only the
+  // first few LAN-shaped ones are worth printing; the phone only needs one.
+  for (const addr of lanAddresses()) line('局域网', 'ws://' + addr + ':' + args.port);
+  line('配对页', 'http://127.0.0.1:' + args.port + '/pair   在这台电脑上打开，用手机扫码');
+  if (apk) line('安装页', 'http://127.0.0.1:' + args.port + '/app    手机还没装 App 时打开它');
+  line('令牌', token.slice(0, 6) + '…   完整内容在 ' + tokenPath() + '（等于这台电脑的钥匙，不要外发）');
+  line('中转', relay
+    ? '已启用 VPS 中转'
+    : '未启用（内网或 Cloudflare 隧道即可；需要时设 TERMDESK_RELAY=1）');
+  console.log('');
+}
+
+/** The kernel table: what can be driven today, and honestly why not the rest. */
+async function printKernels(engines) {
+  const list = await engines.probeEngines();
+  console.log('  内核');
+  for (const kernel of list) {
+    const mark = kernel.selectable ? '✔' : (kernel.available ? '○' : '·');
+    console.log('   ' + mark + ' ' + String(kernel.label).padEnd(18) + String(kernel.tier).padEnd(12) + kernel.detail);
+  }
+  const usable = list.filter((kernel) => kernel.selectable).map((kernel) => kernel.label);
+  console.log('   手机上可选：' + (usable.join(' / ') || '（无）'));
+  console.log('');
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -481,45 +542,85 @@ wss.on('connection', (socket, req) => {
   });
 });
 
+/**
+ * A startup failure has to be actionable, not a stack trace.
+ *
+ * The realistic conflict is another TermDesk on this port: this machine's own
+ * scheduled task starts an instance at logon, and a second one started by hand
+ * would otherwise die with a bare EADDRINUSE. Say what is holding the port and
+ * how to free it.
+ */
+function explainListenFailure(err) {
+  if (err?.code === 'EADDRINUSE') {
+    console.error('');
+    console.error(`  端口 ${args.port} 已被占用，无法启动。`);
+    console.error('  最常见的原因：这台电脑上已经有一个 TermDesk 在跑');
+    console.error('  （计划任务 "TermDesk Agent" 会在登录时自启一个只监听本机 127.0.0.1 的旧实例）。');
+    console.error('');
+    console.error('  先停掉它，再启动本次的实例：');
+    console.error('    Stop-ScheduledTask -TaskName "TermDesk Agent"');
+    console.error('');
+    console.error(`  或者换个端口：TermDesk.bat --port 7421   （注意 Cloudflare ingress 指向的是 ${args.port}）`);
+    console.error('');
+    return;
+  }
+  if (err?.code === 'EACCES') {
+    console.error(`  没有权限监听 ${args.host}:${args.port}（换端口，或不要绑定 0.0.0.0）`);
+    return;
+  }
+  console.error(`  服务启动失败：${err?.message ?? err}`);
+}
+
+const onListenError = (err) => {
+  explainListenFailure(err);
+  process.exit(1);
+};
+// Both registrations are needed: the HTTP server reports EADDRINUSE, and the
+// WebSocketServer built from it re-emits the same error — that second one,
+// unhandled, is a crash before any message can be printed.
+server.on('error', onListenError);
+wss.on('error', onListenError);
+
 let relayConnector = null;
-server.listen(args.port, args.host, () => {
-  const relayConfig = loadRelayConfig();
+server.listen(args.port, args.host, async () => {
+  // Opt-in on purpose. The relay is a second, older path to the same agent and
+  // it depends on a local proxy being up; with a working Cloudflare tunnel it
+  // only added a reconnect loop nobody could explain. TERMDESK_RELAY=1 turns it
+  // back on.
+  const relayConfig = process.env.TERMDESK_RELAY === '1' ? loadRelayConfig() : null;
   if (relayConfig) relayConnector = startRelayConnector({ config: relayConfig, port: args.port, token, accessKey: ACCESS_KEY });
-  console.log('TermDesk PC agent listening');
-  console.log(`  health : http://127.0.0.1:${args.port}/healthz`);
-  for (const addr of localAddresses()) {
-    console.log(`  ws     : ws://${addr}:${args.port}`);
-  }
-  console.log(`  token  : ${token.slice(0, 6)}…  (full token at ${tokenPath()})`);
-  console.log(`  shell  : ${SHELL_ENABLED ? 'ENABLED (arbitrary commands allowed)' : 'disabled (start with --enable-shell)'}`);
-  console.log(`  roots  : ${allowedRoots().join('  ')}`);
-  console.log(`  pair   : http://127.0.0.1:${args.port}/pair   (扫码配对，仅本机可访问)`);
-  const apk = findClientApk();
-  if (apk) {
-    console.log(`  app    : http://127.0.0.1:${args.port}/app       (手机装/升级 App)`);
-  }
+  printHeader({ args, token, apk: findClientApk(), relay: Boolean(relayConfig) });
+  // Printed before the tunnel on purpose: the kernel list is useful immediately,
+  // while cloudflared may still be negotiating its connections.
+  await printKernels(engines).catch(() => {});
 
   // A public address is the point of the tunnel: with it the phone works on
   // mobile data, on a friend's Wi-Fi, anywhere — no Tailscale and no port
   // forwarding. Starting it is explicit (--tunnel) so the machine is not put on
   // the internet merely by running the agent.
   if (args.tunnel) {
-    console.log('  tunnel : starting cloudflared…');
-    tunnel.start({ port: args.port })
-      .then(async (status) => {
-        console.log(`  tunnel : ${status.url}  (${status.mode === 'named' ? '固定域名' : '临时地址'})`);
-        console.log(`  public : wss://${status.url.replace(/^https:\/\//, '')}`);
-        const terminal = await qrTerminal(pairPayload({
-          wsUrl: `wss://${status.url.replace(/^https:\/\//, '')}`,
-          token,
-          name: os.hostname(),
-        }));
-        console.log(terminal);
-      })
-      .catch((err) => {
-        console.error(`  tunnel : failed — ${err?.message ?? err}`);
-        console.error(`  tunnel : ${findCloudflared() ? '检查网络' : '把 cloudflared 放进 tools/ 或设置 TERMDESK_CLOUDFLARED'}`);
-      });
+    const configFile = findTunnelConfig();
+    console.log('  公网   正在启动 cloudflared…' + (configFile ? '（使用已有配置 ' + configFile + '）' : '（临时地址模式）'));
+    try {
+      const status = await tunnel.start({ port: args.port });
+      const wsUrl = 'wss://' + status.url.replace(/^https:\/\//, '');
+      console.log('  公网   ' + status.url + '   ' + (status.stable ? '固定域名' : '临时地址（重启会变）'));
+      // Registration is not proof: DNS route + ingress rule + proxy must all be
+      // right. One public request settles it before any QR code is printed.
+      const verdict = await verifyPublic({ url: status.url });
+      console.log(verdict.ok
+        ? '  自检   公网地址已验证可以访问'
+        : '  自检   公网地址暂时不可用：' + (verdict.error ?? verdict.status));
+      console.log('');
+      console.log('  手机扫码配对（也可在 App 里手动填上面的 wss 地址 + 令牌）');
+      console.log(await qrTerminal(pairPayload({ wsUrl, token, name: os.hostname() })));
+    } catch (err) {
+      console.error('  公网   启动失败：' + (err?.message ?? err));
+      console.error('  公网   ' + (findCloudflared() ? '检查网络后重试' : '把 cloudflared 放进 tools/ 或设置 TERMDESK_CLOUDFLARED'));
+    }
+  } else {
+    console.log('  公网   未启动（加 --tunnel，或直接双击 TermDesk.bat）');
+    console.log('');
   }
 });
 

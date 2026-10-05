@@ -42,11 +42,27 @@
 
 | 内核 | 机制 | 会话延续 | 进度事件 |
 |---|---|---|---|
+| `engine=codex` | 官方 `codex app-server`（stdio JSON-RPC）：thread 列表/读取/恢复/打断都由内核提供 | ✅ 原生 thread | ✅ 通知流 |
+| `engine=opencode` / `mimo` | 共享的 **ACP 适配器**（`kernels/acp.js`）：`session/new` / `list` / `load` / `prompt` | ✅ 内核自己的 session | ✅ `session/update` 流 |
 | `engine=dsh`（默认） | 每对话一个常驻 `dsh --profile sdk` 运行时（stdio JSON-RPC） | ✅ 同 sessionId 真延续 | ✅ 流式 |
-| `engine=codex` | 每轮 `codex exec --json`，追问走 `codex exec resume <thread_id>` | ✅ Codex 原生 thread | ✅ JSONL 事件 |
 
-`chat.create` 可带 `engine` / `provider` / `model`；chat 列表与详情均带 `engine`。
-对话事件映射到同一套种类（`message` / `reasoning` / `tool` / `turn` 等），手机一套渲染。
+**内核的 tier 决定了手机能不能选它**（事实来源：`pc-agent/src/kernels/registry.js`）：
+
+| tier | 含义 | 例子 |
+|---|---|---|
+| `native` | 为单个产品写的适配器 | Codex、DSH |
+| `acp` | 共享 ACP 适配器驱动，**加一条数据就能接一个新内核** | OpenCode、MiMo Code |
+| `shim` | Claude Code 形状的 CLI，契约已记录、尚缺实测 | QoderWork CN、Command Code |
+| `unsupported` | 已安装但没有可编程接口 | Antigravity、豆包 |
+
+`chat.create` 可带 `engine` / `provider` / `model`；chat 列表与详情均带 `engine`；
+`chat.config` 可在会话内改模型与思考强度。对话事件映射到同一套种类
+（`message` / `reasoning` / `tool` / `turn` 等），手机一套渲染。
+
+**为什么用 ACP**：会话列表、历史回放和继续对话都由内核自己提供，所以"打开历史"
+和"新建对话"是同一条路径、同一个 session id——TermDesk 不再自己重建会话管理。
+本地内核只要按同样方式暴露（ACP，或 `TERMDESK_ACP_KERNELS` 环境变量登记），
+就自动出现在手机的选单里。
 
 `chat.js` 为每个 dsh 对话维持一个常驻 SDK 运行时进程，因此跟进追问是**真的续上
 同一会话**，而不是把历史拼进新进程的提示词里；codex 对话则把 `thread_id` 交给
@@ -68,16 +84,32 @@ termdesk/
 │  ├─ src/transfer.js         HTTP 流式上传下载
 │  ├─ src/terminal.js         持久 shell 会话
 │  ├─ src/engines.js          codex/dsh 运行助手 + 已废弃的 ai.* 任务面
-│  ├─ src/chat.js             统一对话管线（engine=codex|dsh）
-│  ├─ src/sessions.js         磁盘历史会话（只读，双引擎）
+│  ├─ src/chat.js             统一对话管线（每条内核一条适配路径）
+│  ├─ src/sessions.js         磁盘历史会话（只读，DSH）
 │  ├─ src/codexconfig.js      Codex provider 配置读写与回滚
-│  └─ tools/                  自检与诊断脚本（probes/ 为历史对照实验）
+│  ├─ src/kernels/registry.js 内核注册表：唯一的事实来源（tier / 路径 / 规格）
+│  ├─ src/kernels/acp.js      ACP 适配器：一个适配器点亮所有 ACP 内核
+│  ├─ src/kernels/codex.js    Codex app-server 适配器
+│  ├─ src/tunnel.js           cloudflared（命名隧道 / 配置文件 / 临时地址）
+│  └─ tools/                  自检与诊断脚本
 ├─ android/                 手机端 App（Kotlin + Jetpack Compose）
+├─ TermDesk.bat             手工启动（见下）
 ├─ REQUIREMENTS.md          需求与功能单 / 交接说明
 └─ tools/                   cloudflared 二进制（不纳入版本控制）
 ```
 
 ## 运行电脑端代理
+
+**手工启动（推荐）**：双击仓库根目录的 `TermDesk.bat`。它等价于
+
+```bash
+node pc-agent/src/server.js --host 0.0.0.0 --enable-shell --tunnel
+```
+
+启动报告按顺序打印：**头部**（监听地址 / shell 状态 / 局域网地址 / 配对页与安装页）、
+**内核表**（每个内核一行，带 tier 与真实原因；`TERMDESK_KERNELS_PROBE=1` 时还会做一次
+ACP 握手，写出内核自己声明的能力）、**公网**（地址 + 形态 + 一次公网 `/healthz`
+自检，通过后才打印配对二维码）。
 
 ```bash
 cd pc-agent
@@ -107,9 +139,16 @@ Cloudflare 地址上（PC 主动出站，不需要公网 IP、端口映射或 VP
 打印同一张码（块字符版），没有浏览器时可用。
 
 - 配对页面只监听本机（`127.0.0.1`），因为它包含令牌，不能经隧道暴露。
-- 临时隧道地址每次重启都会变。要固定地址，把带有固定域名的隧道写进
-  `~/.termdesk/cloudflared.json`：`{"token": "<tunnel token>", "hostname": "term.example.com"}`，
-  代理检测到 token 就改用命名隧道。
+- **固定地址**：如果本机已有 cloudflared 配置（`~/.cloudflared/<name>-config.yml`，
+  即 `cloudflared tunnel create` 生成的那份），代理会直接使用它，地址就是配置里
+  指向本端口的那个 hostname。本机当前配置把 `term.wolfoxlabs.xyz` 指向
+  `127.0.0.1:7420`，所以手机端固定用 `wss://term.wolfoxlabs.xyz`。
+  优先级：`TERMDESK_TUNNEL_CONFIG` → `~/.cloudflared/termdesk-config.yml` →
+  目录里其它带 hostname 的配置 → `~/.termdesk/cloudflared.json` 的 token →
+  临时 `*.trycloudflare.com`。hostname 按 **service 端口** 挑选（同一份配置里
+  `dsh.wolfoxlabs.xyz` 指向 3080，不会被误选）。
+- **不需要 VPS 中转**：电脑主动出站连 Cloudflare，到手机只走 443。VPS 中转
+  （`~/.termdesk/relay.json`）已改为默认关闭，需要时设 `TERMDESK_RELAY=1`。
 - 地址与令牌都进了手机的系统钥匙串/偏好；扫码即完成配对，App 之后自动重连。
 
 配对令牌存在 `~/.termdesk/token`（首次运行自动生成，权限 600）。
@@ -139,9 +178,15 @@ node tools/p3-e2e.js            # P3 真实链路
 node tools/sessions-test.js     # 会话解析（双引擎）
 node tools/sessions-live.js     # 会话真实读取
 node tools/chat-engine-test.js  # 统一对话管线静态检查（不调真实 LLM）
+node tools/acp-map-test.js      # ACP 事件映射 / 权限策略（纯函数）
+node tools/acp-live-test.js     # ACP 真实握手：initialize / session list / new / load
+node tools/kernel-registry-test.js # 内核 tier 诚实性与 spawn 规格
+node tools/tunnel-config-test.js   # 隧道选择：按端口挑 hostname
 node tools/engines-test.js      # Codex / DSH 一次性任务（ai.*，deprecated）
 node tools/chat-e2e.js          # 对话：流式、去重、会话延续（dsh 内核）
 ```
+
+以上都不调用真实模型：`acp-live-test` 只做协议握手与`session/*` 元数据调用。
 
 公网通道的验证（需要隧道在跑）：
 
@@ -232,6 +277,12 @@ DSH 的 `/api` 有一道 Host/Origin 信任围栏：只接受 loopback、绑定�
 携带同一令牌：整文件走 JSON base64 会让体积膨胀三分之一并把整个文件读进内存。
 
 ## 已知取舍
+
+- **审批**：Codex 的 approval 目前显式拒绝并留痕；ACP 的
+  `session/request_permission` 由 `TERMDESK_ACP_APPROVE` 决定（默认 `allow_once`，
+  每次决策写进对话记录）。手机上还没有确认界面。
+- **shim 内核**（QoderWork CN / Command Code）已记录 CLI 契约但未实测，
+  所以保持"不可选"，而不是可选但会失败。
 
 - **终端无真实 PTY**：Windows 上没有原生模块就拿不到 PTY，终端是基于管道的
   JSON-lines 会话。全屏交互式程序（vim、top 的实时刷新）**不能正常工作**，

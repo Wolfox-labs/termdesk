@@ -68,6 +68,8 @@ import readline from 'node:readline';
 import crypto from 'node:crypto';
 
 import { CodexAppServer, notificationToChatEvents, turnToChatEvents } from './kernels/codex.js';
+import { AcpKernel, acpUpdateToChatEvents, acpSessionToSessionInfo } from './kernels/acp.js';
+import { chatEngineIds, isAcpKernel, kernelTier, spawnSpec } from './kernels/registry.js';
 import { dshEventToChatEvent } from './sessions.js';
 
 const MAX_CHATS = 8;
@@ -78,8 +80,16 @@ const INIT_TIMEOUT_MS = 120 * 1000;
 const PROMPT_TIMEOUT_MS = 30 * 60 * 1000;
 const REAP_INTERVAL_MS = 60 * 1000;
 
-/** Engines a chat conversation can run on. */
-export const CHAT_ENGINES = ['codex', 'dsh'];
+/**
+ * Engines a chat conversation can run on.
+ *
+ * No longer a hard-coded pair: the kernel registry decides, so a kernel becomes
+ * reachable from the phone the moment its tier allows it — 'native' (an adapter
+ * written for one product) or 'acp' (the shared Agent Client Protocol adapter).
+ * A kernel that is installed but whose tier is 'shim' or 'unsupported' is
+ * deliberately absent here; the picker explains why instead of offering it.
+ */
+export const CHAT_ENGINES = chatEngineIds();
 
 /** Resolve the DSH launcher entry script. Mirrors engines.js so tests can override both. */
 function findDsh() {
@@ -165,6 +175,12 @@ class Chat {
     this.runtimeStarted = false;
     /** Codex thread id (engine=codex only), kept separately for resume. */
     this.threadId = threadId;
+    /**
+     * True while this chat's ACP session is backed by a live kernel process.
+     * ACP chats hold no child of their own (one process serves every session on
+     * that kernel), so liveness has to be recorded explicitly.
+     */
+    this.kernelLive = false;
     this.events = [];
     this.seq = 0;
     this.lastError = null;
@@ -223,7 +239,7 @@ class Chat {
       eventCount: this.events.length,
       lastError: this.lastError,
       usage: this.usage,
-      live: Boolean(this.child && this.child.exitCode === null),
+      live: Boolean((this.child && this.child.exitCode === null) || this.kernelLive),
     };
   }
 
@@ -253,6 +269,16 @@ export class ChatManager {
     this.codex = null;
     /** native thread id -> Chat, for routing app-server notifications. */
     this.codexThreads = new Map();
+    /**
+     * One ACP agent process per kernel id, shared by every chat on it.
+     *
+     * ACP servers are multi-session, so one process serves the whole list and
+     * routing happens on the session id. That is what keeps the process count
+     * flat (a phone with five OpenCode conversations still has one child).
+     */
+    this.acp = new Map();
+    /** acp session id -> Chat, for routing session/update notifications. */
+    this.acpSessions = new Map();
   }
 
   /** Route chat events to the currently connected client. */
@@ -304,10 +330,15 @@ export class ChatManager {
   create({ cwd, provider, model, title, engine, effort }) {
     const eng = engine == null || engine === '' ? 'dsh' : String(engine);
     if (!CHAT_ENGINES.includes(eng)) {
+      const tier = kernelTier(eng);
       return {
         ok: false,
         code: 'bad_engine',
-        message: `不支持的引擎 "${engine}"（可选：${CHAT_ENGINES.join(' / ')}）`,
+        message: tier === 'shim'
+          ? `"${eng}" 需要 CLI shim 适配，尚未开放`
+          : tier === 'unsupported'
+            ? `"${eng}" 没有可编程接口，无法接入`
+            : `不支持的引擎 "${engine}"（可用：${CHAT_ENGINES.join(' / ')}）`,
       };
     }
     this.dropIdleChat();
@@ -350,6 +381,10 @@ export class ChatManager {
     if (existing) return { ok: true, chat: existing.detail() };
     if (engine === 'dsh') return { ok: false, code: 'resume_unsupported', message: '当前 DSH SDK 尚未提供经过验证的原生恢复入口；为避免丢失上下文，本版不伪造续聊' };
     if (engine === 'codex') return this.resumeCodex(id);
+    // ACP kernels own their session store, so "open history" is the same
+    // operation as "continue": the kernel replays it and the next message
+    // continues it. Nothing is reconstructed from display text.
+    if (isAcpKernel(engine)) return this.resumeAcp(engine, id);
     // Every resumable engine now goes through its own adapter; there is no
     // generic fallback that reconstructs a session out of display text.
     return { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
@@ -425,9 +460,8 @@ export class ChatManager {
       }
     }
 
-    if (chat.engine === 'codex') {
-      return this.sendCodex(chat, message, userSeq);
-    }
+    if (chat.engine === 'codex') return this.sendCodex(chat, message, userSeq);
+    if (isAcpKernel(chat.engine)) return this.sendAcp(chat, message, userSeq);
     return this.sendDsh(chat, message, userSeq);
   }
 
@@ -682,6 +716,309 @@ export class ChatManager {
     if (chat.codexTimer) { clearTimeout(chat.codexTimer); chat.codexTimer = null; }
   }
 
+  // --- ACP plumbing (engine tier 'acp') ------------------------------------
+
+  /**
+   * The shared ACP process for a kernel, started on first use.
+   *
+   * Notifications are routed by session id, and permissions are answered inside
+   * the adapter (an unanswered permission request blocks the turn forever). A
+   * permission decision is written into the transcript so the user can always
+   * see what the kernel was allowed to do on their machine.
+   */
+  acpKernel(engineId) {
+    let kernel = this.acp.get(engineId);
+    if (kernel) return kernel;
+    const spec = spawnSpec(engineId);
+    if (!spec) throw new Error(`找不到 ACP 内核 "${engineId}" 的可执行文件`);
+    kernel = new AcpKernel({ id: engineId, bin: spec.bin, args: spec.args, log: (line) => console.log(line) });
+    kernel.on('update', (sessionId, update) => this.handleAcpUpdate(engineId, sessionId, update));
+    kernel.on('permission', (info) => this.handleAcpPermission(engineId, info));
+    kernel.on('serverRequest', (method) => {
+      console.error(`[acp:${engineId}] 引擎请求未实现，已拒绝：${method}`);
+    });
+    kernel.on('exit', (code) => {
+      for (const chat of this.chats.values()) {
+        if (chat.engine !== engineId || chat.status !== 'running') continue;
+        chat.status = 'failed';
+        chat.lastError = `${engineId} 内核进程退出（${code}）`;
+        chat.push({ kind: 'error', role: 'engine', text: chat.lastError });
+        this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+        this.emit({ event: 'chat.status', chatId: chat.id, status: 'failed' });
+      }
+      this.acp.delete(engineId);
+    });
+    this.acp.set(engineId, kernel);
+    return kernel;
+  }
+
+  /** One ACP turn: attach (or open) the session, then prompt. */
+  async sendAcp(chat, message, userSeq) {
+    let kernel;
+    try {
+      kernel = this.acpKernel(chat.engine);
+      await kernel.ensureStarted();
+    } catch (err) {
+      return this.failAcp(chat, `无法启动 ${chat.engine} 内核：${String(err?.message ?? err)}`, userSeq, 'spawn_failed');
+    }
+
+    if (!chat.ready || !chat.nativeResume) {
+      try {
+        const sessionId = await kernel.newSession({ cwd: chat.cwd });
+        chat.sessionId = sessionId;
+        chat.nativeResume = true;
+        chat.ready = true;
+        this.acpSessions.set(sessionId, chat);
+      } catch (err) {
+        return this.failAcp(chat, `${chat.engine} 无法创建会话：${String(err?.message ?? err)}`, userSeq, 'session_failed');
+      }
+    }
+
+    chat.status = 'running';
+    chat.kernelLive = true;
+    this.emit({ event: 'chat.status', chatId: chat.id, status: 'running' });
+    this.emitEvent(chat, userSeq);
+
+    try {
+      const { stopReason } = await kernel.prompt(chat.sessionId, message);
+      this.finishAcpTurn(chat, stopReason);
+      return { ok: true, userSeq, messageId: null, sessionId: chat.sessionId };
+    } catch (err) {
+      // A rejected prompt is reported after the streamed partial answer, so the
+      // transcript keeps whatever the kernel already produced.
+      return this.failAcp(chat, `${chat.engine} 调用失败：${String(err?.message ?? err)}`, userSeq, 'prompt_failed');
+    }
+  }
+
+  failAcp(chat, message, userSeq, code) {
+    chat.status = 'failed';
+    chat.lastError = message;
+    chat.push({ kind: 'error', role: 'engine', text: message });
+    this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+    this.emit({ event: 'chat.status', chatId: chat.id, status: 'failed' });
+    return { ok: false, code, message, userSeq };
+  }
+
+  /**
+   * Open a past ACP session: the kernel replays its transcript as
+   * session/update notifications and the next message continues it. This is
+   * why history and live chat are one path — the same session id backs both.
+   */
+  async resumeAcp(engine, id) {
+    const adopted = [...this.chats.values()].find((c) => c.engine === engine && c.sessionId === id);
+    if (adopted) return { ok: true, chat: adopted.detail() };
+
+    let kernel;
+    try {
+      kernel = this.acpKernel(engine);
+      await kernel.ensureStarted();
+    } catch (err) {
+      return { ok: false, code: 'engine_unavailable', message: String(err?.message ?? err) };
+    }
+
+    // The working directory belongs to the session, so it is read from the
+    // kernel's own index rather than guessed.
+    let info = null;
+    try {
+      const listed = await kernel.listSessions();
+      info = listed.sessions.find((s) => (s.sessionId ?? s.id) === id) ?? null;
+    } catch { /* a kernel without session/list still allows load */ }
+
+    const cwd = info?.cwd ?? null;
+    if (cwd && (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory())) {
+      return { ok: false, code: 'missing_workspace', message: '原会话的工作目录不存在，不能静默切换到其他目录' };
+    }
+
+    this.dropIdleChat();
+    if (this.chats.size >= MAX_CHATS) return { ok: false, code: 'capacity', message: '运行中的会话已达上限' };
+
+    const chat = new Chat({
+      id: `c-${crypto.randomUUID()}`,
+      title: info?.title || (info?.cwd ? path.basename(info.cwd) : '历史对话'),
+      cwd: cwd ?? os.homedir(),
+      engine,
+      provider: null,
+      model: null,
+      nativeSessionId: id,
+    });
+    chat.titleSource = 'recorded';
+    chat.ready = true;
+    chat.kernelLive = true;
+    if (info?.updatedAt) {
+      const at = Date.parse(info.updatedAt);
+      if (!Number.isNaN(at)) chat.createdAt = at;
+    }
+    this.chats.set(chat.id, chat);
+    // Routing must be in place BEFORE loadSession: the replay arrives as
+    // notifications that precede the response.
+    this.acpSessions.set(id, chat);
+
+    try {
+      await kernel.loadSession(id, { cwd: chat.cwd });
+    } catch (err) {
+      this.acpSessions.delete(id);
+      this.chats.delete(chat.id);
+      return { ok: false, code: 'session_busy', message: `内核无法打开该会话：${String(err?.message ?? err)}` };
+    }
+    this.discardPreviews(chat, 'message');
+    this.discardPreviews(chat, 'reasoning');
+    chat.push({ kind: 'local', role: 'engine', text: '已恢复内核原生会话 · 后续消息延续原上下文' });
+    return { ok: true, chat: chat.detail() };
+  }
+
+  /** Route one session/update notification into the right transcript. */
+  handleAcpUpdate(engineId, sessionId, update) {
+    const chat = sessionId ? this.acpSessions.get(sessionId) : null;
+    if (!chat || chat.engine !== engineId) return;
+    if (chat.status === 'stopped') return;
+
+    for (const event of acpUpdateToChatEvents(update)) {
+      if (event.kind === 'message' && event.role === 'user') {
+        if (update.sessionUpdate === 'user_message_chunk') {
+          // Live turn: the phone already shows the optimistic line, so confirm
+          // it instead of appending a duplicate. Replay (load): there is no
+          // optimistic line, so the replayed chunk IS the record.
+          const pending = chat.pendingUserEcho;
+          if (pending && pending.text.trim() === event.text.trim()) {
+            chat.pendingUserEcho = null;
+            pending.optimistic = false;
+            this.emitEvent(chat, pending);
+          } else if (!pending) {
+            this.pushAndEmit(chat, { kind: 'message', role: 'user', text: event.text });
+          }
+        }
+        continue;
+      }
+      if (event.streaming) {
+        this.discardPreviews(chat, event.kind);
+        const record = chat.push(event);
+        chat.previews.push(record);
+        this.emitEvent(chat, record, { stream: true });
+        continue;
+      }
+      if (event.kind === 'message' || event.kind === 'reasoning') this.discardPreviews(chat, event.kind);
+      this.pushAndEmit(chat, event);
+    }
+  }
+
+  /**
+   * Put the kernel's permission decision in the transcript.
+   *
+   * The decision itself is made in the adapter so the turn can never hang; this
+   * only makes it auditable, because "what was the agent allowed to do on my
+   * machine" must never be invisible.
+   */
+  handleAcpPermission(engineId, info) {
+    const chat = info.sessionId ? this.acpSessions.get(info.sessionId) : null;
+    if (!chat) return;
+    const tool = info.toolCall?.title ?? info.toolCall?.kind ?? '工具调用';
+    const verdict = info.option ? `已允许（${info.option.name ?? info.option.kind}）` : '已拒绝';
+    this.pushAndEmit(chat, {
+      kind: 'engine_note',
+      role: 'engine',
+      text: `内核请求权限：${tool} → ${verdict}`,
+      name: 'permission',
+    });
+  }
+
+  /** Close out an ACP turn exactly once, mirroring the Codex lifecycle. */
+  finishAcpTurn(chat, stopReason) {
+    if (chat.status === 'stopped') return;
+    const cancelled = stopReason === 'cancelled';
+    const failed = stopReason === 'refusal';
+    this.discardPreviews(chat, 'message');
+    this.discardPreviews(chat, 'reasoning');
+    chat.status = failed ? 'failed' : 'idle';
+    chat.lastError = failed ? '内核拒绝了本轮请求' : null;
+    chat.push({
+      kind: 'turn', role: 'engine', text: '',
+      meta: { state: failed ? 'failed' : 'ended', reason: cancelled ? 'interrupted' : (stopReason ?? null) },
+    });
+    this.emit({ event: 'chat.turn', chatId: chat.id, state: failed ? 'failed' : 'ended' });
+    this.emit({ event: 'chat.status', chatId: chat.id, status: chat.status });
+  }
+
+  /**
+   * The kernel's own session index for one ACP engine, in the phone's
+   * SessionInfo shape. History and live chat share the identity, so an entry
+   * listed here is exactly one that resumeAcp can open.
+   */
+  async listAcpSessions(engineId, { cwd } = {}) {
+    const kernel = this.acpKernel(engineId);
+    await kernel.ensureStarted();
+    const { supported, sessions } = await kernel.listSessions({ cwd });
+    if (!supported) return [];
+    return sessions.map((s) => acpSessionToSessionInfo(engineId, s)).filter(Boolean);
+  }
+
+  /**
+   * Read one ACP session's transcript WITHOUT attaching a chat to it.
+   *
+   * History viewing and history opening are different intents: the phone shows
+   * a transcript read-only until the user chooses to continue it. Replaying the
+   * kernel's own transcript is the only way to show the truth, and the events
+   * are folded here exactly as they are folded live (chunks merge into the
+   * message they build), so a replayed answer looks like the original one.
+   */
+  async readAcpSession(engineId, id) {
+    const kernel = this.acpKernel(engineId);
+    await kernel.ensureStarted();
+
+    let info = null;
+    try {
+      const listed = await kernel.listSessions();
+      info = listed.sessions.find((s) => (s.sessionId ?? s.id) === id) ?? null;
+    } catch { /* a kernel without session/list can still load */ }
+
+    const events = [];
+    const push = (event) => {
+      events.push({
+        kind: event.kind,
+        role: event.role ?? null,
+        text: event.text ?? '',
+        at: new Date().toISOString(),
+        name: event.name ?? null,
+        state: event.meta?.state ?? null,
+        exitCode: event.meta?.exitCode ?? null,
+        tokens: null,
+      });
+    };
+    const listener = (sessionId, update) => {
+      if (sessionId !== id) return;
+      for (const event of acpUpdateToChatEvents(update)) {
+        // A replayed transcript is authoritative, so streamed chunks are folded
+        // into the message they are building instead of being kept as previews.
+        const last = events[events.length - 1];
+        if (event.streaming && last && last.kind === event.kind && last.role === event.role) {
+          last.text += event.text;
+          continue;
+        }
+        push(event);
+      }
+    };
+
+    kernel.on('update', listener);
+    try {
+      await kernel.loadSession(id, { cwd: info?.cwd });
+    } finally {
+      kernel.off('update', listener);
+    }
+
+    return {
+      meta: {
+        engine: engineId,
+        id,
+        cwd: info?.cwd ?? null,
+        createdAt: info?.createdAt ?? null,
+        title: info?.title ?? null,
+        filePath: null,
+      },
+      events,
+      totalEvents: events.length,
+      truncated: false,
+    };
+  }
+
   /**
    * Stop the in-flight turn.
    *
@@ -694,6 +1031,19 @@ export class ChatManager {
     const chat = this.chats.get(id);
     if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
     if (chat.status !== 'running') return { ok: false, code: 'not_running', message: '当前没有进行中的回复' };
+
+    if (isAcpKernel(chat.engine)) {
+      // ACP cancel is a notification, so there is nothing to await: the turn is
+      // closed out here and the prompt response that follows is ignored
+      // (finishAcpTurn returns early once status is 'stopped').
+      const kernel = this.acp.get(chat.engine);
+      if (kernel && chat.sessionId) kernel.cancel(chat.sessionId);
+      chat.status = 'stopped';
+      chat.push({ kind: 'error', role: 'engine', text: '已停止本轮回复' });
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'cancelled' });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'stopped' });
+      return { ok: true };
+    }
 
     if (chat.engine === 'codex') {
       // The kernel cancels its own turn; the thread stays resumable.
@@ -731,6 +1081,11 @@ export class ChatManager {
     try { this.codex?.dispose(); } catch { /* already gone */ }
     this.codex = null;
     this.codexThreads.clear();
+    for (const kernel of this.acp.values()) {
+      try { kernel.dispose(); } catch { /* already gone */ }
+    }
+    this.acp.clear();
+    this.acpSessions.clear();
     if (this.reaper) {
       clearInterval(this.reaper);
       this.reaper = null;

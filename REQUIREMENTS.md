@@ -277,12 +277,12 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 |---|---|
 | C→S | `auth` · `status.get` · `status.subscribe` · `status.unsubscribe` |
 | C→S | `procs.list` · `procs.kill` · `services.list` · `services.action` |
-| C→S | `fs.list` · `fs.read` · `fs.write` · `fs.mkdir` · `fs.delete` · `fs.rename` · `fs.roots` |
+| C→S | `fs.list` · `fs.read` · `fs.write` · `fs.mkdir` · `fs.delete` · `fs.rename` · `fs.roots` · `fs.search` · `fs.doctext` |
 | C→S | `term.open` · `term.run` · `term.interrupt` · `term.close` · `term.list` · `ping` |
 | C→S | `ai.engines` · `ai.submit` · `ai.tasks` · `ai.task` · `ai.cancel` · `ai.reset`（**deprecated**，一次性任务兼容面） |
 | C→S | `codex.get` · `codex.apply` · `codex.restore` |
 | C→S | `sessions.list` · `sessions.read`（磁盘上的历史会话，只读） |
-| C→S | `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` |
+| C→S | `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` · `chat.config` |
 | S→C | `auth.ok` · `auth.fail` · `hello` · `status` · `procs` · `services` |
 | S→C | `fs.listing` · `fs.file` · `fs.written` · `fs.roots` |
 | S→C | `term.opened` · `term.output` · `term.exit` · `term.list` |
@@ -295,7 +295,7 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 
 | 字段 | 说明 |
 |---|---|
-| `chat.create.engine` | `'codex' \| 'dsh'`，缺省 `'dsh'`（兼容旧行为）；未知值回 `action.result` / `bad_engine` |
+| `chat.create.engine` | 任何"可选内核"的 id：`'codex'` / `'dsh'`（原生适配）或 ACP 内核（`'opencode'` / `'mimo'`，见 §5.6）；缺省 `'dsh'`；未接入的 tier 回 `bad_engine` 并说明原因 |
 | `chat.create.provider` / `model` | 可选。dsh 传给 SDK `initialize`；codex 以 `-c model_provider=` / `-c model=` 覆盖单次执行，不写 `config.toml` |
 | `chats[]` / `chat` 详情 | 均带 `engine`；codex 另带 `threadId`（首回合前为 `null`） |
 | `chat.event.item` | 事件记录用 `kind`（`message`/`reasoning`/`tool`/`tool_result`/`turn`/…），**禁用 `type` 字段** |
@@ -344,7 +344,112 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 
 ## 八、给接手者的建议起点
 
-1. **先修 P5-1**（左栏收不回去），它在浏览器里影响所有手机用户，且根因已定位。
-2. **再补 P5-6 真机验证**：Android 对话页只编译过，没在真机跑完整流程。
-3. 动 P5-3（公网加固）前先与使用者确认——agent 具备任意命令执行与全盘文件权限，
+按 §5.5 / §5.6 的现状往下接：
+
+1. **先跑一次手工启动**（`TermDesk.bat`），看启动报告里的内核表与公网自检是否符合预期。
+2. **shim 实测**（QoderWork CN / Command Code）：两者的 CLI 契约已记录在注册表里，
+   但还没有跑过一次真实回合——这是它们从"已发现"变成"可选"的唯一缺口。
+3. **审批 UI**：Codex 的 approval 目前是显式拒绝 + 留痕；ACP 的
+   `session/request_permission` 目前按 `TERMDESK_ACP_APPROVE` 决定（默认放行并留痕），
+   两者都该收敛成一个手机上的确认界面。
+4. **本机内核**（手机 Termux 沙盒）见 `documents/本地内核方案.md`，尚未实现。
+5. 动公网加固前先与使用者确认——agent 具备任意命令执行与全盘文件权限，
    目前仅靠 token 保护。
+
+## 九、PC 端启动、公网通道与内核接入（本次新增）
+
+### 9.1 手工启动：`TermDesk.bat`
+
+双击即可，等价于：
+
+```
+node pc-agent/src/server.js --host 0.0.0.0 --enable-shell --tunnel
+```
+
+启动时按顺序打印三件事，不需要在手机上试探：
+
+1. **头部**：监听地址、shell 是否开启、允许的目录、局域网地址（已按"像家庭/办公网"
+   排序，虚拟网卡排在后面）、配对页与安装页地址。
+2. **内核表**：每个内核一行，带 tier 与真实原因。`✔` = 手机可选，`○` = 已安装但
+   未接入，`·` = 未找到。`TERMDESK_KERNELS_PROBE=1` 时还会做一次 ACP 握手，
+   把内核自己声明的能力写在同一行（"可回放历史 / 可列会话 / 可恢复 / 可 fork"）。
+3. **公网**：启动 cloudflared，打印地址与形态（固定域名 / 临时地址），并用一次
+   公网 `/healthz` 请求自检"这个地址真的能连上"，通过后才打印配对二维码。
+
+### 9.2 公网通道：Cloudflare 命名隧道（已实测可用）
+
+本机已有 `~/.cloudflared/termdesk-config.yml`（tunnel `eb39ed5e-…`），
+ingress 把 `term.wolfoxlabs.xyz` 路由到 `127.0.0.1:7420`。
+agent 现在**优先使用它**，所以地址是固定的：
+
+```
+https://term.wolfoxlabs.xyz   →   wss://term.wolfoxlabs.xyz（手机用的就是这个）
+```
+
+优先级：`TERMDESK_TUNNEL_CONFIG` 环境变量 → `~/.cloudflared/termdesk-config.yml`
+→ 目录里其它带 hostname 的 config → `~/.termdesk/cloudflared.json` 里的 token →
+临时 `*.trycloudflare.com` 地址。主机名按 **service 端口**挑选，不是"文件里第一个
+hostname"——同一份配置里 `dsh.wolfoxlabs.xyz` 指向的是 3080。
+
+实测（本轮）：命名隧道注册成功，`https://term.wolfoxlabs.xyz/healthz` 返回
+`{"ok":true,"service":"termdesk-pc-agent","protocol":1}`，`/app` 返回 200。
+
+不需要 VPS 中转：电脑主动出站连 Cloudflare，到手机只走 443，无需公网 IP、无需端口映射。
+VPS 中转（`~/.termdesk/relay.json`）已改为**默认关闭**，需要时设 `TERMDESK_RELAY=1`。
+
+### 9.3 内核接入：一个 ACP 适配器点亮所有 ACP 内核
+
+内核注册表在 `pc-agent/src/kernels/registry.js`，是**唯一的事实来源**：picker、探针、
+对话管线都读它，所以三者不会再各自漂移。tier 的含义就是手机能不能选：
+
+| tier | 含义 | 本机现状 |
+|---|---|---|
+| `native` | 为单个产品写的适配器 | Codex（官方 app-server）、DSH（SDK 运行时） |
+| `acp` | 由共享的 ACP 适配器驱动 | OpenCode 1.3.16、MiMo Code 0.1.9 |
+| `shim` | Claude Code 形状的 CLI，契约已记录、尚缺实测 | QoderWork CN、Command Code |
+| `unsupported` | 已安装但没有可编程接口 | Antigravity、豆包 |
+
+`pc-agent/src/kernels/acp.js` 是那一个适配器：
+
+| ACP | TermDesk 里的含义 |
+|---|---|
+| `session/new` | 新对话（由 TermDesk 指定工作目录） |
+| `session/list` | 内核自己的会话索引 → 手机的历史列表 |
+| `session/load` | 打开历史：内核回放自己的记录 → 历史正文；**同一个 session 继续发消息** |
+| `session/prompt` | 一轮对话，期间以 `session/update` 通知流式返回 |
+| `session/cancel` | 停止本轮（ACP 定义为通知，无返回值） |
+| `session/request_permission` | 内核反请求权限；**必须回答**，否则该轮永久挂起 |
+
+因此"历史"和"对话"在 ACP 上不是两套东西：**同一个 session id 既是历史条目也是可继续的
+对话**，这正是"历史即对话"想要的形态，而现在它由内核提供，不是 TermDesk 重写的。
+
+新增一个 ACP 内核 = 加一条数据（连代码都不用改）：
+
+```
+set TERMDESK_ACP_KERNELS=[{"id":"mine","label":"Mine","bin":"C:\path\mine.exe","args":["acp"]}]
+```
+
+**权限策略**：`session/request_permission` 默认选 `allow_once`（本机已开启 shell，
+使用者已选择完全控制），每次决策都写进对话记录作为留痕；设 `TERMDESK_ACP_APPROVE=deny`
+则改为拒绝。审批 UI 落地后这里会收敛（见 §八）。
+
+### 9.4 shim：Claude Code 形状的 CLI
+
+两者都有完整的会话面（`--print` 非交互、`--output-format` 结构化输出、按 id 恢复），
+差的只是"跑一次实测"。契约已记录在注册表里：
+
+| 内核 | 新会话 | 续聊 | 列会话 |
+|---|---|---|---|
+| QoderWork CN | `--print --output-format stream-json <prompt>` | `--resume <id>` | `--list-sessions`（已实测可返回） |
+| Command Code | `--print <prompt> --output-format json` | `--session <id>` | 无（按 transcript 路径） |
+
+### 9.5 本次新增的验证
+
+无真实模型调用，全部为元数据 / 纯函数级：
+
+| 测试 | 结果 |
+|---|---|
+| `tools/acp-map-test.js` | 30/30（事件映射、权限选择、无 `type` 字段） |
+| `tools/acp-live-test.js` | 15/15（OpenCode 与 MiMo 的真实 `initialize` / `session/list` / `session/new` / `session/load`） |
+| `tools/kernel-registry-test.js` | 24/24（tier 诚实性、picker 与管线一致、spawn 规格） |
+| `tools/tunnel-config-test.js` | 12/12（按端口挑 hostname、注释不误解析、公网自检失败返回而非抛出） |
