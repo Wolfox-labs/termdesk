@@ -10,6 +10,16 @@ data class SessionInfo(
     val updatedAt: String?,
     val sizeBytes: Long,
     val path: String,
+    /**
+     * Whether the PC says this session can be continued.
+     *
+     * It comes over the wire because the PC is the side that knows which kernels
+     * have a verified resume entry point; deciding it here is how ACP history
+     * ended up permanently read-only.
+     */
+    val canResume: Boolean = false,
+    /** Why not, when it cannot. */
+    val resumeNote: String? = null,
 )
 
 /** A working directory that contains sessions. Drives the sidebar index. */
@@ -29,6 +39,9 @@ data class SessionDetail(
     val events: List<SessionEvent>,
     val totalEvents: Int,
     val truncated: Boolean,
+    /** The PC's verdict on whether this can be continued (see [SessionInfo]). */
+    val canResume: Boolean = false,
+    val resumeNote: String? = null,
 )
 
 /**

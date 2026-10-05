@@ -1852,6 +1852,8 @@ class AgentClient(
                         updatedAt = if (o.isNull("updatedAt")) null else o.optString("updatedAt"),
                         sizeBytes = o.optLong("sizeBytes"),
                         path = o.optString("path"),
+                        canResume = o.optBoolean("canResume", false),
+                        resumeNote = o.optString("resumeNote").takeIf { it.isNotBlank() && it != "null" },
                     ),
                 )
             }
@@ -1909,6 +1911,8 @@ class AgentClient(
             events = events,
             totalEvents = o.optInt("totalEvents", events.size),
             truncated = o.optBoolean("truncated", false),
+            canResume = meta?.optBoolean("canResume", false) ?: false,
+            resumeNote = meta?.optString("resumeNote")?.takeIf { it.isNotBlank() && it != "null" },
         )
     }
 

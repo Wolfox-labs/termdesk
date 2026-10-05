@@ -146,10 +146,14 @@ fun ChatSection(
 
     // Opening a recorded session attaches the kernel to it (metadata-only on the
     // PC), so history and a live conversation become the same view rather than
-    // two separate objects. DSH has no resume, so its history stays read-only.
+    // two separate objects. The PC says per session whether it can be continued.
     LaunchedEffect(recordedSession?.engine, recordedSession?.id, connected) {
         val session = recordedSession
-        if (session != null && connected && session.engine == "codex") onResumeSession(session)
+        // Any kernel the PC marks resumable, not just codex: attaching to a
+        // recorded session is metadata-only on the PC (the kernel replays its own
+        // transcript), so this costs nothing and history and a live conversation
+        // become the same view.
+        if (session != null && connected && session.canResume) onResumeSession(session)
     }
 
     // A new subject always starts folded.
@@ -186,7 +190,7 @@ fun ChatSection(
             },
             onToggleDetail = { detailOpen = !detailOpen },
             onNew = { onCreateChat(defaultCwd) },
-            canResume = connected && recordedSession?.engine == "codex" && !sending,
+            canResume = connected && recordedSession?.canResume == true && !sending,
             onResume = { recordedSession?.let(onResumeSession) },
         )
 
@@ -212,9 +216,9 @@ fun ChatSection(
         Box(Modifier.weight(1f)) {
             when {
                 recordedSession != null -> {
-                    if (recordedSession.engine == "dsh") {
+                    recordedSession.resumeNote?.let { note ->
                         Text(
-                            "DSH 内核暂未开放可靠的原生恢复；此处保留只读，不伪造上下文。",
+                            note,
                             modifier = Modifier.padding(12.dp),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

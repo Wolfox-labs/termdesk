@@ -67,6 +67,7 @@ function table() {
       label: 'Codex',
       tier: 'native',
       transport: 'app-server',
+      resume: true,
       detail: '官方 app-server：列表 / 读取 / 恢复 / fork / 打断都由内核提供',
       resolve: () => {
         if (process.env.TERMDESK_CODEX) return fileOrNull(process.env.TERMDESK_CODEX) ?? process.env.TERMDESK_CODEX;
@@ -85,6 +86,7 @@ function table() {
       label: 'DeepSeek Harness',
       tier: 'native',
       transport: 'sdk',
+      resume: false,
       detail: 'SDK 运行时：可连续对话；历史恢复尚未开放',
       resolve: () => {
         if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
@@ -102,6 +104,7 @@ function table() {
       tier: 'acp',
       transport: 'acp',
       acpArgs: ['acp'],
+      resume: true,
       detail: 'ACP：会话列表 / 恢复 / fork / 图片与内嵌上下文',
       resolve: () => {
         if (process.env.TERMDESK_OPENCODE) return fileOrNull(process.env.TERMDESK_OPENCODE) ?? process.env.TERMDESK_OPENCODE;
@@ -118,6 +121,7 @@ function table() {
       tier: 'acp',
       transport: 'acp',
       acpArgs: ['acp'],
+      resume: true,
       detail: 'ACP（OpenCode 内核）：会话列表 / 恢复 / fork',
       resolve: () => {
         if (process.env.TERMDESK_MIMO) return fileOrNull(process.env.TERMDESK_MIMO) ?? process.env.TERMDESK_MIMO;
@@ -242,7 +246,11 @@ export function listKernels() {
       shim: entry.shim ?? null,
       multiTurn: entry.tier === 'native' || entry.tier === 'acp',
       progress: entry.tier === 'native' || entry.tier === 'acp',
-      resume: entry.tier === 'native' || entry.tier === 'acp',
+      // Per kernel, NOT per tier: "native" describes how it is driven, not
+      // whether it can reopen a past conversation. DSH is native and still has
+      // no verified resume, and saying otherwise is what makes a phone offer a
+      // button that cannot work.
+      resume: Boolean(entry.resume),
     };
   });
 }

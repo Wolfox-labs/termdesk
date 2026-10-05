@@ -31,7 +31,7 @@ import {
   PROVIDER_TEMPLATES,
 } from './codexconfig.js';
 import { listSessions, readSession, sessionRoots } from './sessions.js';
-import { chatEngineIds, isAcpKernel } from './kernels/registry.js';
+import { chatEngineIds, getKernel, isAcpKernel } from './kernels/registry.js';
 import { threadSummaryToSession, threadToSessionDetail, discoverThreadIdsFromDisk } from './kernels/codex.js';
 
 const STATUS_INTERVAL_MS = 2000;
@@ -486,6 +486,21 @@ export function createFrameHandler(ctx) {
       // ---- Existing sessions on disk ----
 
       case C2S.SESSIONS_LIST: {
+        /**
+         * Can this session be continued, and if not, why?
+         *
+         * Answered here rather than on the phone: the PC is the side that knows
+         * whether a kernel has a verified resume entry point. The phone used to
+         * hard-code "codex only", so ACP history looked permanently read-only
+         * while the kernel could reopen it perfectly well.
+         */
+        const resumeVerdict = (engineId) => {
+          const kernel = getKernel(engineId);
+          if (!kernel) return { canResume: false, resumeNote: `未知内核 "${engineId}"，无法判断能否继续` };
+          if (!kernel.available) return { canResume: false, resumeNote: `${kernel.label} 当前不可用` };
+          if (kernel.resume) return { canResume: true, resumeNote: null };
+          return { canResume: false, resumeNote: `${kernel.label} 未提供经过验证的恢复入口，这里保持只读` };
+        };
         try {
           // The kernel is the authority for its own sessions; TermDesk only asks.
           // The on-disk scan survives as a fallback so history stays visible when
@@ -543,7 +558,7 @@ export function createFrameHandler(ctx) {
             roots: sessionRoots(),
             total: all.length,
             workspaces,
-            sessions: all.slice(0, 600),
+            sessions: all.slice(0, 600).map((s) => ({ ...s, ...resumeVerdict(s.engine) })),
             // Tells the client where the Codex index came from: the kernel's own
             // session API, or the on-disk fallback when Codex is unreachable.
             codexSource,
@@ -582,7 +597,9 @@ export function createFrameHandler(ctx) {
             send(S2C.ERROR, { code: 'session_not_found', message: '找不到该会话' });
           } else {
             send(S2C.SESSION, {
-              meta: detail.meta,
+              // The same verdict the list carries, so the view that renders the
+              // transcript can enable "continue" without a second lookup.
+              meta: { ...detail.meta, ...resumeVerdict(frame.engine) },
               events: detail.events,
               totalEvents: detail.totalEvents,
               truncated: detail.truncated,

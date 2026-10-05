@@ -32,6 +32,17 @@ check('a shim kernel is installed but not selectable',
 check('an unsupported kernel says why',
   !byId.antigravity || byId.antigravity.detail.length > 0);
 
+// Resume is a per-kernel fact. Deriving it from the tier is how the phone came
+// to offer "continue this conversation" for kernels that cannot, and to hide it
+// for kernels that can.
+check('codex can reopen a past conversation', byId.codex?.resume === true, String(byId.codex?.resume));
+check('dsh cannot (and does not claim to)', byId.dsh?.resume === false, String(byId.dsh?.resume));
+check('ACP kernels can reopen a past conversation',
+  list.filter((k) => k.tier === 'acp').every((k) => k.resume === true),
+  list.filter((k) => k.tier === 'acp').map((k) => `${k.id}:${k.resume}`).join(','));
+check('a shim kernel does not claim resume',
+  list.filter((k) => k.tier === 'shim').every((k) => k.resume === false));
+
 // The chat pipeline and the picker must agree, or the phone offers a kernel the
 // pipeline rejects.
 check('chat engines equal the selectable kernels',
