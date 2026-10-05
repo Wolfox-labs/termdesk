@@ -29,7 +29,7 @@ import { EngineManager } from './engines.js';
 import { ChatManager } from './chat.js';
 import { loadRelayConfig, startRelayConnector } from './relay-client.js';
 import { Tunnel, findCloudflared, findTunnelConfig, verifyPublic } from './tunnel.js';
-import { pairPage, pairPayload, qrTerminal } from './pair.js';
+import { pairPage, pairPayload, qrMatrix, qrTerminal } from './pair.js';
 import { createFrameHandler, pushStatusFrame } from './handlers.js';
 
 const DEFAULT_PORT = 7420;
@@ -239,6 +239,9 @@ async function printKernels(engines) {
   console.log('');
 }
 
+/** When this process started, reported by /status.json. */
+const startedAt = Date.now();
+
 const args = parseArgs(process.argv.slice(2));
 const token = loadOrCreateToken();
 
@@ -299,6 +302,54 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  /**
+   * Machine-readable state for the desktop window.
+   *
+   * Loopback only, like the pairing page: these describe this computer, so the
+   * tunnel must not become a way to enumerate it. They exist because the desktop
+   * shell is a client of the same agent the phone talks to — one source of
+   * truth, instead of the GUI re-deriving anything.
+   */
+  if (url.pathname === '/status.json' || url.pathname === '/kernels.json') {
+    if (!isLoopback(req)) {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, code: 'loopback_only' }));
+      return;
+    }
+    if (url.pathname === '/kernels.json') {
+      engines.probeEngines()
+        .then((kernels) => {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true, kernels }));
+        })
+        .catch((err) => {
+          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, message: String(err?.message ?? err) }));
+        });
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      ok: true,
+      service: 'termdesk-pc-agent',
+      version: '0.2.0',
+      protocol: PROTOCOL_VERSION,
+      hostname: os.hostname(),
+      platform: `${os.platform()} ${os.release()}`,
+      port: args.port,
+      host: args.host,
+      shell: SHELL_ENABLED,
+      roots: allowedRoots(),
+      lanUrls: lanAddresses().map((a) => `ws://${a}:${args.port}`),
+      startedAt: startedAt,
+      uptimeMs: Date.now() - startedAt,
+      tunnel: tunnel.status(),
+      apk: Boolean(findClientApk()),
+      relay: Boolean(relayConnector),
+    }));
+    return;
+  }
+
   // Pairing: loopback only, because the page contains the token.
   if (url.pathname === '/pair' || url.pathname === '/pair.json') {
     if (!isLoopback(req)) {
@@ -320,6 +371,10 @@ const server = http.createServer((req, res) => {
           payload,
           tunnel: status,
           cloudflared: findCloudflared(),
+          hostname: os.hostname(),
+          port: args.port,
+          // The desktop window draws this instead of an SVG.
+          qr: qrMatrix(payload),
         }));
         return;
       }

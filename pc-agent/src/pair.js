@@ -27,6 +27,26 @@ export async function qrSvg(text, { width = 280 } = {}) {
   });
 }
 
+/**
+ * The QR as a module grid, for clients that draw it themselves.
+ *
+ * The pairing page gets an SVG, but the desktop window renders with Compose and
+ * has no SVG pipeline — adding one would be a dependency for a rectangle grid.
+ * The agent already owns the encoder, so it hands out the grid and the client
+ * just paints squares. Rows are '0'/'1' strings to keep the JSON small.
+ */
+export function qrMatrix(text, { errorCorrectionLevel = 'M' } = {}) {
+  const code = QRCode.create(text, { errorCorrectionLevel });
+  const { size, data } = code.modules;
+  const rows = [];
+  for (let y = 0; y < size; y += 1) {
+    let row = '';
+    for (let x = 0; x < size; x += 1) row += data[y * size + x] ? '1' : '0';
+    rows.push(row);
+  }
+  return { size, rows };
+}
+
 /** Block-character QR for the terminal, for when no browser is open. */
 export async function qrTerminal(text) {
   return await QRCode.toString(text, { type: 'terminal', small: true });

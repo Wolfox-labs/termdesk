@@ -93,6 +93,7 @@ termdesk/
 │  ├─ src/tunnel.js           cloudflared（命名隧道 / 配置文件 / 临时地址）
 │  └─ tools/                  自检与诊断脚本
 ├─ android/                 手机端 App（Kotlin + Jetpack Compose）
+├─ desktop/                 桌面版窗口（Compose Desktop，复用手机版主题）
 ├─ TermDesk.bat             手工启动（见下）
 ├─ REQUIREMENTS.md          需求与功能单 / 交接说明
 └─ tools/                   cloudflared 二进制（不纳入版本控制）
@@ -161,6 +162,30 @@ Cloudflare 地址上（PC 主动出站，不需要公网 IP、端口映射或 VP
 `TERMDESK_ROOTS="E:\;D:\work"` 收窄。所有路径都会解析并从符号链接层面校验，
 越界一律拒绝。
 
+## 桌面版（Windows 图形界面）
+
+手机版是 Compose/Material3，而 Compose 有桌面版，所以桌面窗口**直接编译手机版那份主题源码**
+（`desktop/build.gradle.kts` 里多挂一个 `kotlin.srcDir` 指向 `android/.../ui/theme`）。
+好处不是省事，而是**结构上不可能漂移**：配色、圆角、字号只有一份。不动 `android/` 里的任何文件，
+只是读它。
+
+```bash
+desktop\TermDesk-Desktop.bat          # 只开窗口
+desktop\TermDesk-Desktop.bat -start   # 开窗口并把代理一起起起来
+```
+
+窗口里能看到：代理状态（监听地址 / 终端开关 / 允许目录 / 运行时长）、**内核表**（打勾的才是手机
+可选的，附上"为什么不行"）、**公网地址与扫码二维码**（地址形态标注"固定域名"或"临时地址"）、
+**代理输出**，以及 启动 / 停止 / 重新启动 与打开配对页、安装页。
+
+三条边界，都是刻意的：
+
+- **不是 web 界面**：Compose Desktop 走 Skia 原生渲染，这个程序里没有浏览器。
+- **不开机/登录自启**：窗口开着才有代理；窗口关掉时，它会停掉**自己启动的**那个代理。
+- **不抢别人的进程**：如果代理是 `TermDesk.bat` 启动的，窗口会如实说明，而不是假装能停掉它。
+
+打包成安装包（`gradlew packageMsi`）留到项目收尾时做——那一步需要机器上有 WiX。
+
 ## 自检
 
 代理启动后（终端类用例需 `--enable-shell`）：
@@ -187,6 +212,8 @@ node tools/chat-e2e.js          # 对话：流式、去重、会话延续（dsh 
 ```
 
 以上都不调用真实模型：`acp-live-test` 只做协议握手与`session/*` 元数据调用。
+
+桌面版的构建检查：`cd desktop && gradlew.bat compileKotlin`（它同时验证手机版主题仍能编译）。
 
 公网通道的验证（需要隧道在跑）：
 

@@ -2,6 +2,8 @@
 android/build/
 android/app/build/
 android/.gradle/
+desktop/build/
+desktop/.gradle/
 android/.kotlin/
 android/local.properties
 *.apk
