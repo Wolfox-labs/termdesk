@@ -24,6 +24,7 @@ import { C2S, S2C, CLOSE_UNAUTHORIZED, parseFrame, encodeFrame, PROTOCOL_VERSION
 import { loadOrCreateToken, tokenMatches, tokenPath } from './auth.js';
 import { allowedRoots } from './files.js';
 import { handleTransferRequest } from './transfer.js';
+import { handleLocalKernelRequest } from './localkernel.js';
 import { TerminalManager } from './terminal.js';
 import { listKernels, probeKernels } from './kernels/registry.js';
 import { ChatManager } from './chat.js';
@@ -457,6 +458,10 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ ok: false, code: 'unauthorized', message: 'missing or wrong access key' }));
     return;
   }
+  // The local kernel payload is a transfer too: same token, same surface.
+  const kernelHandled = handleLocalKernelRequest(req, res, url, token);
+  if (kernelHandled) return;
+
   handleTransferRequest(req, res, url, token).then((handled) => {
     if (!handled) {
       res.writeHead(404, { 'content-type': 'text/plain' });

@@ -17,16 +17,26 @@
  *   node tools/build-local-kernel.mjs [input.tar] [--version v1]
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
 
-const DEFAULT_INPUT = 'E:/aiPic/termdesk/.tmp/termux-build/stage/dev.termdesk.app-f-droid-bootstrap-aarch64.tar';
-const OUT_DIR = 'E:/aiPic/termdesk/$d/local-kernel';
+// Where the rebuilt Termux bootstrap actually lives on this machine. The first
+// guess (.tmp/termux-build/stage) no longer exists: the payload was moved to
+// the ignored scratch dir `$d/`, which is where the agent serves it from.
+const DEFAULT_INPUT = 'E:/aiPic/termdesk/$d/dev.termdesk.app-f-droid-bootstrap-aarch64.tar';
+const OUT_DIR = process.env.TERMDESK_LOCAL_KERNEL_DIR ?? path.join(os.homedir(), '.termdesk', 'local-kernel');
 
 const args = process.argv.slice(2);
-const input = args.find((a) => !a.startsWith('--')) ?? DEFAULT_INPUT;
+// `--version v1` used to be picked up as the input path, because the VALUE of a
+// flag also does not start with "--". Skip a flag's value explicitly.
+const flagValues = new Set();
+for (let i = 0; i < args.length; i += 1) {
+  if (args[i] === '--version' || args[i] === '--out') flagValues.add(args[i + 1]);
+}
+const input = args.find((a) => !a.startsWith('--') && !flagValues.has(a)) ?? DEFAULT_INPUT;
 const versionArg = args.indexOf('--version');
 const version = versionArg >= 0 ? args[versionArg + 1] : 'v1';
 
@@ -40,13 +50,25 @@ const outFile = path.join(OUT_DIR, `bootstrap-${version}.tar.gz`);
 console.log(`building ${outFile} from ${path.basename(input)}`);
 
 const started = Date.now();
-const hash = crypto.createHash('sha256');
 const source = fs.createReadStream(input);
-source.on('data', (chunk) => hash.update(chunk));
 await pipeline(source, zlib.createGzip({ level: 6 }), fs.createWriteStream(outFile));
 
 const stat = fs.statSync(outFile);
-const sha256 = hash.digest('hex');
+
+/**
+ * The hash the phone verifies is the hash of the file it DOWNLOADS.
+ *
+ * It used to be taken from the input stream on the way past, which identified
+ * the tar and not the tar.gz - a verification that would have failed every
+ * time, or worse, passed against the wrong file.
+ */
+const sha256 = await new Promise((resolve, reject) => {
+  const digest = crypto.createHash('sha256');
+  fs.createReadStream(outFile)
+    .on('data', (chunk) => digest.update(chunk))
+    .on('error', reject)
+    .on('end', () => resolve(digest.digest('hex')));
+});
 
 const manifest = {
   name: 'TermDesk 本地内核',

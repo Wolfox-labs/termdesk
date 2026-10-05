@@ -91,7 +91,7 @@ export function startRelayConnector({ config, port, token, accessKey = '', log =
       let f; try { f = JSON.parse(raw.toString()); } catch { ws.terminate(); return; }
       if (f.type === 'http.request' && !req) {
         const url = new URL(f.path, localBase);
-        const allowed = new Set(['/download', '/upload', '/upload/session', '/upload/session/commit']);
+        const allowed = new Set(['/download', '/upload', '/upload/session', '/upload/session/commit', '/kernel/local', '/kernel/local.pkg']);
         if (url.origin !== localBase || !allowed.has(url.pathname) || !['GET', 'POST', 'PUT', 'DELETE'].includes(f.method)) { ws.terminate(); return; }
         const headers = { Authorization: `Bearer ${token}`, 'content-type': f.contentType || 'application/octet-stream' };
         if (accessKey) headers['X-TermDesk-Key'] = accessKey;
