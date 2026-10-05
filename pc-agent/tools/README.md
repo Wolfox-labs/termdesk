@@ -53,3 +53,13 @@ AI 层（依赖本机 Codex / DSH 安装）：
 - `session-share-probe.js` — 会话共享边界
 - `tunnel-*.js` / `dsh-*-check.js` — 隧道与远程可用性
 - `probe-*.ps1` — 进程/服务字段可读性
+
+内核层（ACP / 内核清单，元数据优先、不调模型）：
+
+| 脚本 | 覆盖 |
+|---|---|
+| `acp-live-test.js` | 逐个 ACP 内核握手：initialize / list / new / load |
+| `acp-session-models.mjs` | 某个内核新会话能选的模型 id（例如 `node tools/acp-session-models.mjs opencode deepseek`） |
+| `acp-model-list.mjs` | 走手机协议问同一件事（需要代理已启动） |
+| `phone-acp-stub-e2e.mjs` | **整条手机链路**：假内核 + 真实服务进程 + 真实 WebSocket 帧（`npm test` 会跑，零成本） |
+| `fake-acp-agent.mjs` | 上面的假内核本体；用 `TERMDESK_ACP_KERNELS` 注册，生产代码不知道它存在 |
