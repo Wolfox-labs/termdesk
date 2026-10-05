@@ -29,6 +29,7 @@ import dev.termdesk.app.data.ServiceInfo
 import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
 import dev.termdesk.app.data.TermLine
+import dev.termdesk.app.data.UploadedFile
 import dev.termdesk.app.data.TextFile
 import dev.termdesk.app.data.TransferState
 import dev.termdesk.app.data.WorkspaceInfo
@@ -176,11 +177,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun sendChatMessage(chatId: String, text: String, model: String? = null, effort: String? = null) =
         client.sendChatMessage(chatId, text, model, effort)
 
+    /** The last finished upload, so `+` can attach it to the next message. */
+    val lastUpload: StateFlow<UploadedFile?> = client.lastUpload
+
+    fun clearLastUpload() = client.clearLastUpload()
+
     /** Model lists per chat, answered by the kernel itself. */
     val chatModels: StateFlow<Map<String, ChatModels>> = client.chatModels
 
     /** Ask what the open conversation can switch to (no model runs for this). */
     fun requestChatModels(chatId: String) = client.requestChatModels(chatId)
+
+    /** Switch the session's permission / agent mode (the kernel applies it now). */
+    fun setChatMode(chatId: String, modeId: String) = client.setChatMode(chatId, modeId)
 
     /** Change what the open conversation runs on from now on (model / effort). */
     fun configureChat(chatId: String, model: String?, effort: String?) =

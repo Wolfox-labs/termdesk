@@ -58,6 +58,7 @@ import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.ChatModels
+import dev.termdesk.app.data.UploadedFile
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
@@ -129,6 +130,9 @@ fun AppShell(
     onTermClose: () -> Unit,
     codexConfig: CodexConfig?,
     chatModels: Map<String, ChatModels>,
+    lastUpload: UploadedFile?,
+    onUploadFile: (android.net.Uri, String) -> Unit,
+    onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
     codexTemplates: List<CodexProviderTemplate>,
     onCodexLoad: () -> Unit,
@@ -152,6 +156,7 @@ fun AppShell(
     onCloseChat: (String) -> Unit,
     onLeaveChat: () -> Unit,
     onConfigureChat: (String, String?, String?) -> Unit,
+    onSetChatMode: (String, String) -> Unit,
     onCloseRecorded: () -> Unit,
     onLoadSessions: () -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
@@ -265,6 +270,9 @@ fun AppShell(
                     onTermClose = onTermClose,
                     codexConfig = codexConfig,
                     chatModels = chatModels,
+                    lastUpload = lastUpload,
+                    onUploadFile = onUploadFile,
+                    onClearUpload = onClearUpload,
                     onRequestChatModels = onRequestChatModels,
                     codexTemplates = codexTemplates,
                     onCodexLoad = onCodexLoad,
@@ -290,6 +298,7 @@ fun AppShell(
                     onCloseChat = onCloseChat,
                     onLeaveChat = onLeaveChat,
                     onConfigureChat = onConfigureChat,
+                    onSetChatMode = onSetChatMode,
                     onCloseRecorded = onCloseRecorded,
                     onLoadSessions = onLoadSessions,
                     onOpenSession = onOpenSession,
@@ -513,6 +522,9 @@ private fun SectionBody(
     onTermClose: () -> Unit,
     codexConfig: CodexConfig?,
     chatModels: Map<String, ChatModels>,
+    lastUpload: UploadedFile?,
+    onUploadFile: (android.net.Uri, String) -> Unit,
+    onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
     codexTemplates: List<CodexProviderTemplate>,
     onCodexLoad: () -> Unit,
@@ -551,6 +563,7 @@ private fun SectionBody(
     onRefreshEngines: () -> Unit,
     onOpenSections: () -> Unit,
     onConfigureChat: (String, String?, String?) -> Unit,
+    onSetChatMode: (String, String) -> Unit,
     search: SearchResults?,
     searching: Boolean,
     onSearchFiles: (String, String) -> Unit,
@@ -616,9 +629,13 @@ private fun SectionBody(
             engines = engines,
             codexConfig = codexConfig,
             chatModels = chatModels,
+            lastUpload = lastUpload,
+            onUploadFile = onUploadFile,
+            onClearUpload = onClearUpload,
             onRequestChatModels = onRequestChatModels,
             onOpenSections = onOpenSections,
             onConfigureChat = onConfigureChat,
+            onSetChatMode = onSetChatMode,
             onLoadChats = onLoadChats,
             onCreateChat = onCreateChat,
             onOpenChat = onOpenChat,

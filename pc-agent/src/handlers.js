@@ -630,10 +630,11 @@ export function createFrameHandler(ctx) {
       }
 
       case C2S.CHAT_CONFIG: {
-        const result = chats.setConfig(frame.chatId, {
+        const result = await chats.setConfig(frame.chatId, {
           model: frame.model,
           effort: frame.effort,
           title: frame.title,
+          mode: frame.mode,
         });
         if (result.ok) {
           send(S2C.CHAT, result.chat);

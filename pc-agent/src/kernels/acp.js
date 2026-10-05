@@ -484,6 +484,21 @@ export class AcpKernel extends EventEmitter {
     return { modes: meta.modes ?? null, configOptions: meta.configOptions ?? [] };
   }
 
+  /**
+   * Switch the session's permission / agent mode (`session/set_mode`).
+   *
+   * This is the kernel's own switch - Command Code calls one of them "Bypass
+   * Permissions", OpenCode calls them build/plan - and it takes effect on the
+   * session immediately, not on the next turn like a model.
+   */
+  async setMode(sessionId, modeId) {
+    if (!modeId) throw new Error('缺少模式 id');
+    await this.call('session/set_mode', { sessionId, modeId }, { timeout: 30_000 });
+    const meta = this.sessionMeta.get(sessionId);
+    if (meta?.modes) meta.modes.currentModeId = modeId;
+    return true;
+  }
+
   /** The models this session says it can switch to. */
   availableModels(sessionId) {
     const meta = this.sessionMeta.get(sessionId);

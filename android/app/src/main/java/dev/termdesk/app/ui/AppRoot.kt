@@ -56,6 +56,7 @@ fun AppRoot(
     val codexTemplates by vm.codexTemplates.collectAsState()
     val chats by vm.chats.collectAsState()
     val chatModels by vm.chatModels.collectAsState()
+    val lastUpload by vm.lastUpload.collectAsState()
     val activeChat by vm.activeChat.collectAsState()
     val chatEvents by vm.chatEvents.collectAsState()
     val chatSending by vm.chatSending.collectAsState()
@@ -201,6 +202,9 @@ fun AppRoot(
                 onTermClose = vm::closeTerminal,
                 codexConfig = codexConfig,
                 chatModels = chatModels,
+                lastUpload = lastUpload,
+                onUploadFile = vm::uploadFile,
+                onClearUpload = vm::clearLastUpload,
                 onRequestChatModels = vm::requestChatModels,
                 codexTemplates = codexTemplates,
                 onCodexLoad = vm::loadCodexConfig,
@@ -228,6 +232,7 @@ fun AppRoot(
                 onCloseChat = vm::closeChat,
                 onLeaveChat = vm::leaveChat,
                 onConfigureChat = vm::configureChat,
+                onSetChatMode = vm::setChatMode,
                 onCloseRecorded = vm::closeSession,
                 onLoadSessions = { vm.loadSessions() },
                 onOpenSession = { session -> vm.openSession(session) },

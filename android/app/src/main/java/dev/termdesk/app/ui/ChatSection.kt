@@ -1,6 +1,8 @@
 package dev.termdesk.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -24,6 +26,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -37,6 +40,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -78,6 +82,7 @@ import androidx.compose.ui.unit.sp
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatModels
+import dev.termdesk.app.data.UploadedFile
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.ChatInfo
@@ -119,6 +124,9 @@ fun ChatSection(
     engines: List<KernelInfo>,
     codexConfig: CodexConfig?,
     chatModels: Map<String, ChatModels>,
+    lastUpload: UploadedFile?,
+    onUploadFile: (android.net.Uri, String) -> Unit,
+    onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
     onOpenSections: () -> Unit,
     onLoadChats: () -> Unit,
@@ -129,6 +137,7 @@ fun ChatSection(
     onCloseChat: (String) -> Unit,
     onLeaveChat: () -> Unit,
     onConfigureChat: (String, String?, String?) -> Unit,
+    onSetChatMode: (String, String) -> Unit,
     onCloseRecorded: () -> Unit,
     onLoadSessions: () -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
@@ -222,6 +231,7 @@ fun ChatSection(
                     codexConfig = codexConfig,
                     models = chatModels[chat.id],
                     onConfigure = onConfigureChat,
+                    onSetMode = onSetChatMode,
                     onRequestModels = { onRequestChatModels(chat.id) },
                 )
             } else if (recorded != null) {
@@ -247,8 +257,15 @@ fun ChatSection(
                     chat = activeChat,
                     events = events,
                     sending = sending,
+                    models = chatModels[activeChat.id],
+                    lastUpload = lastUpload,
+                    onUploadFile = onUploadFile,
+                    onClearUpload = onClearUpload,
                     onSend = onSend,
                     onCancel = onCancel,
+                    onConfigure = onConfigureChat,
+                    onSetMode = onSetChatMode,
+                    onClose = onCloseChat,
                     connected = connected,
                 )
                 else -> Column(Modifier.fillMaxSize()) {
@@ -454,6 +471,7 @@ private fun ChatDetailPanel(
     codexConfig: CodexConfig?,
     models: ChatModels?,
     onConfigure: (String, String?, String?) -> Unit,
+    onSetMode: (String, String) -> Unit,
     onRequestModels: () -> Unit,
 ) {
     val catalog = if (chat.engine == "codex") codexConfig?.models.orEmpty() else emptyList()
@@ -472,6 +490,7 @@ private fun ChatDetailPanel(
         all.distinctBy { it.first }
     }
     val modelIds = picker.map { it.first }
+    val modeIds = models?.modes.orEmpty().map { it.id }
     val labelOf = { id: String -> picker.firstOrNull { it.first == id }?.second ?: id }
     var pickerOpen by remember { mutableStateOf(false) }
     val declaredCurrent = models?.current?.takeIf { it.isNotBlank() }
@@ -562,6 +581,16 @@ private fun ChatDetailPanel(
                 )
             }
         }
+        if (modeIds.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            InlineChips(
+                label = "权限",
+                items = modeIds,
+                selected = models?.currentMode.orEmpty(),
+                labelOf = { id -> models?.modeLabelOf(id) ?: id },
+                onSelect = { onSetMode(chat.id, it) },
+            )
+        }
         if (levels.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
             InlineChips(
@@ -586,7 +615,7 @@ private fun ChatDetailPanel(
             )
         }
         if (pickerOpen) {
-            ModelPickerDialog(
+            ChoicePickerDialog(
                 title = "选择模型 · " + chat.engine,
                 options = picker,
                 selected = chat.model.ifBlank { declaredCurrent.orEmpty() },
@@ -640,7 +669,7 @@ private const val CHIP_LIMIT = 12
 
 /** Searchable model picker: an ACP kernel can declare more models than a screen holds. */
 @Composable
-private fun ModelPickerDialog(
+private fun ChoicePickerDialog(
     title: String,
     options: List<Pair<String, String>>,
     selected: String,
@@ -661,7 +690,7 @@ private fun ModelPickerDialog(
                     value = query,
                     onValueChange = { query = it },
                     singleLine = true,
-                    label = { Text("搜索模型") },
+                    label = { Text("搜索") },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
@@ -1065,10 +1094,46 @@ private fun Conversation(
     chat: ChatInfo,
     events: List<ChatEvent>,
     sending: Boolean,
+    models: ChatModels?,
+    lastUpload: UploadedFile?,
+    onUploadFile: (android.net.Uri, String) -> Unit,
+    onClearUpload: () -> Unit,
     onSend: (String, String) -> Unit,
     onCancel: (String) -> Unit,
+    onConfigure: (String, String?, String?) -> Unit,
+    onSetMode: (String, String) -> Unit,
+    onClose: (String) -> Unit,
     connected: Boolean,
 ) {
+    // What this conversation can run as, both of them the kernel's own words:
+    // the model list and the permission / agent modes it declared.
+    val modelOptions = models?.models.orEmpty().map { it.id to it.label }
+    val modeOptions = models?.modes.orEmpty().map { it.id to it.label }
+    // The chat summary carries the mode the PC has actually applied, so it wins
+    // over the mode the list was fetched with (a change since then is real).
+    val chosenMode = chat.mode.ifBlank { models?.currentMode.orEmpty() }.ifBlank { null }
+    val chosenModelLabel = when {
+        chat.model.isNotBlank() -> models?.labelOf(chat.model) ?: chat.model
+        models?.current != null -> models.labelOf(models.current!!)
+        else -> "内核默认"
+    }
+    val chosenModeLabel = chosenMode?.let { id -> modeOptions.firstOrNull { it.first == id }?.second ?: id } ?: "内核默认"
+    var modelPickerOpen by remember(chat.id) { mutableStateOf(false) }
+    var modePickerOpen by remember(chat.id) { mutableStateOf(false) }
+    // The file picked with `+`, once the PC has actually got it. The prompt then
+    // carries its path, which every kernel can read - no kernel-specific image
+    // block is invented here.
+    var attachment by remember(chat.id) { mutableStateOf<UploadedFile?>(null) }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) onUploadFile(uri, chat.cwd)
+    }
+    LaunchedEffect(lastUpload?.path) {
+        val done = lastUpload ?: return@LaunchedEffect
+        if (done.path.startsWith(chat.cwd.trimEnd('\\', '/'))) {
+            attachment = done
+            onClearUpload()
+        }
+    }
     // Fresh state per chat: opening or switching a conversation always lands at
     // its end, never at a leftover scroll offset from the previous one.
     val listState = key(chat.id) { rememberLazyListState() }
@@ -1129,6 +1194,85 @@ private fun Conversation(
             }
         }
 
+        run {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // Attachment first: a long model name used to push it off the
+                // right edge, where a scrolled row hid it entirely.
+                ComposerChip("＋", "附件", withChevron = false) { filePicker.launch(arrayOf("*/*")) }
+                if (modelOptions.isNotEmpty()) {
+                    // The model name is the long one, so it is the chip that gives
+                    // way: the attachment and permission entries stay on screen.
+                    ComposerChip("模型", chosenModelLabel, modifier = Modifier.weight(1f)) { modelPickerOpen = true }
+                }
+                if (modeOptions.isNotEmpty()) {
+                    ComposerChip("权限", chosenModeLabel) { modePickerOpen = true }
+                }
+            }
+        }
+
+        // The file that is about to be sent, and how to take it back off.
+        attachment?.let { file ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "附件 " + file.name,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = { attachment = null }, modifier = Modifier.size(26.dp)) {
+                    Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = "移除附件",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
+            }
+        }
+
+        // `/` opens the conversation's own command panel. It lists what TermDesk
+        // can actually do to THIS conversation - not a pretend copy of a kernel's
+        // menu - and everything in it does something real when tapped.
+        if (draft.startsWith("/") && !draft.contains(' ') && !draft.contains('\n')) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+            ) {
+                SlashRow("模型", if (modelOptions.isEmpty()) "该内核没有模型清单" else chosenModelLabel, modelOptions.isNotEmpty()) {
+                    draft = ""
+                    modelPickerOpen = true
+                }
+                SlashRow("权限模式", if (modeOptions.isEmpty()) "该内核没有权限开关" else chosenModeLabel, modeOptions.isNotEmpty()) {
+                    draft = ""
+                    modePickerOpen = true
+                }
+                SlashRow("附件", "传到电脑，随下一条消息发出", true) {
+                    draft = ""
+                    filePicker.launch(arrayOf("*/*"))
+                }
+                SlashRow("关闭会话", "结束这个对话", true) {
+                    draft = ""
+                    onClose(chat.id)
+                }
+            }
+        }
+
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Composer(
             draft = draft,
@@ -1139,12 +1283,113 @@ private fun Conversation(
             onSend = {
                 val text = draft.trim()
                 if (text.isNotEmpty()) {
-                    onSend(chat.id, text)
+                    // The attachment travels as a path in the prompt: every kernel
+                    // can read a file, and the transcript then shows what was sent.
+                    val full = attachment?.let { "[附件] ${it.name} → ${it.path}\n$text" } ?: text
+                    onSend(chat.id, full)
                     draft = ""
+                    attachment = null
                 }
             },
             onCancel = { onCancel(chat.id) },
         )
+
+        if (modelPickerOpen) {
+            ChoicePickerDialog(
+                title = "选择模型 · " + chat.engine,
+                options = modelOptions,
+                selected = chat.model,
+                onDismiss = { modelPickerOpen = false },
+                onPick = { id ->
+                    modelPickerOpen = false
+                    onConfigure(chat.id, id, chat.effort.ifBlank { null })
+                },
+            )
+        }
+        if (modePickerOpen) {
+            ChoicePickerDialog(
+                title = "权限模式 · " + chat.engine,
+                options = modeOptions,
+                selected = chosenMode.orEmpty(),
+                onDismiss = { modePickerOpen = false },
+                onPick = { id ->
+                    modePickerOpen = false
+                    onSetMode(chat.id, id)
+                },
+            )
+        }
+    }
+}
+
+/** One line in the `/` panel: what it is, what it currently is, and what it does. */
+@Composable
+private fun SlashRow(label: String, hint: String, enabled: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "/" + label,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+            color = if (enabled) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.outline,
+            modifier = Modifier.width(96.dp),
+        )
+        Text(
+            hint,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/** One small pill in the conversation's bottom bar: label above value. */
+@Composable
+private fun ComposerChip(
+    label: String,
+    value: String,
+    withChevron: Boolean = true,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            value,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (withChevron) {
+            Spacer(Modifier.width(2.dp))
+            Icon(
+                Icons.Outlined.KeyboardArrowDown,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+        }
     }
 }
 

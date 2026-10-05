@@ -214,6 +214,14 @@ class AgentClient(
     private val _chatModels = MutableStateFlow<Map<String, ChatModels>>(emptyMap())
     val chatModels: StateFlow<Map<String, ChatModels>> = _chatModels.asStateFlow()
 
+    /** The last upload that finished, so `+` can attach it to the next message. */
+    private val _lastUpload = MutableStateFlow<UploadedFile?>(null)
+    val lastUpload: StateFlow<UploadedFile?> = _lastUpload.asStateFlow()
+
+    fun clearLastUpload() {
+        _lastUpload.value = null
+    }
+
     /** The chat currently open, or null while the index is showing. */
     private val _activeChat = MutableStateFlow<ChatInfo?>(null)
     val activeChat: StateFlow<ChatInfo?> = _activeChat.asStateFlow()
@@ -595,6 +603,17 @@ class AgentClient(
     }
 
     /**
+     * Switch this session's permission / agent mode.
+     *
+     * The kernel owns this setting and applies it to the live session, so it is
+     * pushed now rather than carried to the next turn. A kernel that declares no
+     * modes refuses, and the refusal is shown.
+     */
+    fun setChatMode(chatId: String, modeId: String) {
+        sendFrame(JSONObject().put("type", "chat.config").put("chatId", chatId).put("mode", modeId))
+    }
+
+    /**
      * Ask what this conversation can be switched to.
      *
      * Metadata only: the PC answers from the kernel's own session declaration,
@@ -786,6 +805,7 @@ class AgentClient(
                 remotePath
             }.onSuccess { remotePath ->
                 _transfer.value = null
+                _lastUpload.value = UploadedFile(displayName, remotePath, System.currentTimeMillis())
                 _lastAction.value = ActionResult(
                     "fs.upload", remotePath, true, "uploaded",
                     "已上传 ${displayName}",
@@ -1542,6 +1562,7 @@ class AgentClient(
             provider = if (o.isNull("provider")) "" else o.optString("provider"),
             model = if (o.isNull("model")) "" else o.optString("model"),
             effort = if (o.isNull("effort")) "" else o.optString("effort"),
+            mode = if (o.isNull("mode")) "" else o.optString("mode"),
             status = o.optString("status", "idle"),
             ready = o.optBoolean("ready", false),
             engine = o.optString("engine", "dsh"),
@@ -1625,11 +1646,24 @@ class AgentClient(
         }.orEmpty()
         val current = if (frame.isNull("current")) null else frame.optString("current").ifBlank { null }
         val note = if (frame.isNull("message")) null else frame.optString("message").ifBlank { null }
+        val modeObj = frame.optJSONObject("modes")
+        val modes = modeObj?.optJSONArray("availableModes")?.let { arr ->
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val id = o.optString("id")
+                    if (id.isNotBlank()) add(ModelChoice(id, o.optString("name").ifBlank { id }))
+                }
+            }
+        }.orEmpty()
+        val currentMode = modeObj?.let { if (it.isNull("currentModeId")) null else it.optString("currentModeId").ifBlank { null } }
         _chatModels.value = _chatModels.value + (chatId to ChatModels(
             chatId = chatId,
             supported = frame.optBoolean("supported", false),
             current = current,
             models = models,
+            modes = modes,
+            currentMode = currentMode,
             note = note,
         ))
     }

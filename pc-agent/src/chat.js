@@ -145,6 +145,12 @@ function defaultRoute() {
   };
 }
 
+/** The name a kernel gave a mode, so the transcript says "Bypass Permissions" and not an id. */
+function modeLabel(chat, modeId) {
+  const modes = chat.availableModes?.availableModes ?? [];
+  return modes.find((m) => m.id === modeId)?.name ?? modeId;
+}
+
 let chatCounter = 0;
 
 /**
@@ -200,6 +206,10 @@ class Chat {
     this.availableModels = null;
     /** ACP: the model already pushed to the kernel, so it is pushed once. */
     this.appliedModel = null;
+    /** ACP: the session's permission / agent mode, as the kernel named it. */
+    this.mode = null;
+    /** ACP: the modes this session declares (so the phone never guesses one). */
+    this.availableModes = null;
     /**
      * True while this chat's ACP session is backed by a live kernel process.
      * ACP chats hold no child of their own (one process serves every session on
@@ -259,6 +269,7 @@ class Chat {
       ready: this.ready,
       sessionId: this.sessionId,
       threadId: this.threadId,
+      mode: this.mode,
       createdAt: this.createdAt,
       lastUsedAt: this.lastUsedAt,
       eventCount: this.events.length,
@@ -438,7 +449,7 @@ export class ChatManager {
    * they are real state, not a UI hint: the change is recorded on the chat, the
    * user sees a line in the transcript, and the next turn carries it.
    */
-  setConfig(id, { model, effort, title } = {}) {
+  async setConfig(id, { model, effort, title, mode } = {}) {
     const chat = this.chats.get(id);
     if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
     if (model !== undefined) chat.model = model == null || model === '' ? null : String(model);
@@ -447,11 +458,31 @@ export class ChatManager {
       chat.title = String(title).trim();
       chat.titleSource = 'user';
     }
+    // A permission / agent mode is not sticky state on our side: the kernel owns
+    // it and it applies to the live session, so it has to be pushed now. A
+    // kernel without modes says so instead of accepting a switch that does
+    // nothing.
+    if (mode !== undefined && mode !== null && String(mode).trim() !== '') {
+      if (!isAcpKernel(chat.engine)) {
+        return { ok: false, code: 'mode_unsupported', message: `${chat.engine} 内核没有权限模式开关` };
+      }
+      try {
+        const kernel = await this.ensureAcpSession(chat);
+        if (!kernel.setMode) {
+          return { ok: false, code: 'mode_unsupported', message: `${chat.engine} 内核不支持切换权限模式` };
+        }
+        await kernel.setMode(chat.sessionId, String(mode));
+        chat.mode = String(mode);
+      } catch (err) {
+        return { ok: false, code: 'mode_failed', message: `切换权限模式失败：${String(err?.message ?? err)}` };
+      }
+    }
     chat.lastUsedAt = Date.now();
     chat.push({
       kind: 'local',
       role: 'engine',
-      text: `已切换 · 模型 ${chat.model ?? '内核默认'} · 思考 ${chat.effort ?? '默认'}`,
+      text: `已切换 · 模型 ${chat.model ?? '内核默认'} · 思考 ${chat.effort ?? '默认'}`
+        + (chat.mode ? ` · 权限 ${modeLabel(chat, chat.mode)}` : ''),
     });
     return { ok: true, chat: chat.summary() };
   }
@@ -920,6 +951,9 @@ export class ChatManager {
     // What this kernel says the conversation can be switched to. The phone
     // offers exactly this list, so a model choice is never a guess.
     chat.availableModels = kernel.availableModels(sessionId);
+    const options = kernel.sessionOptions?.(sessionId) ?? null;
+    chat.availableModes = options?.modes ?? null;
+    chat.mode = options?.modes?.currentModeId ?? null;
     if (sessionId) this.acpSessions.set(sessionId, chat);
     return sessionId;
   }

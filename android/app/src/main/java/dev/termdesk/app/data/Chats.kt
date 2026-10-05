@@ -20,6 +20,8 @@ data class ChatInfo(
      * per-thread settings, so this is real state, not a display hint.
      */
     val effort: String,
+    /** ACP: the session's permission / agent mode, blank for the kernel's own. */
+    val mode: String,
     /** running | idle | stopped | failed */
     val status: String,
     /** True once the runtime handshake finished and prompts can be accepted. */
@@ -135,9 +137,27 @@ data class ChatModels(
     val supported: Boolean,
     val current: String?,
     val models: List<ModelChoice>,
+    /**
+     * Permission / agent modes the kernel declares for this session - OpenCode
+     * has build and plan, Command Code has five including "Bypass Permissions".
+     * Empty when the kernel declares none: never a guessed list.
+     */
+    val modes: List<ModelChoice> = emptyList(),
+    val currentMode: String? = null,
     /** Why there is no list, when there is none (a kernel with no model API). */
     val note: String?,
 ) {
     /** The label for an id, so the UI never has to show a raw slug alone. */
     fun labelOf(id: String): String = models.firstOrNull { it.id == id }?.label ?: id
+
+    fun modeLabelOf(id: String): String = modes.firstOrNull { it.id == id }?.label ?: id
 }
+
+/**
+ * A file the phone just put on the PC.
+
+ * The upload itself is the file browser's own machinery; this is only the
+ * receipt, so the conversation can attach the file the user picked with `+`
+ * to the next message without asking them to type a path.
+ */
+data class UploadedFile(val name: String, val path: String, val at: Long)
