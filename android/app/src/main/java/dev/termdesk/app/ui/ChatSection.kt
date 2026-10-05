@@ -529,8 +529,8 @@ private fun RecordedDetailPanel(session: SessionDetail) {
                 text = buildString {
                     append("${session.totalEvents} 条")
                     if (session.truncated) append("（已截断）")
-                    if (session.engine == "dsh") append(" · 只读")
-                    else append(" · 可继续对话")
+                    // The PC's verdict, not a guess from the engine name.
+                    append(if (session.canResume) " · 可继续对话" else " · 只读")
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

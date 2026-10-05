@@ -107,6 +107,26 @@ async function listCodexSessions(chats) {
   return value;
 }
 
+/**
+ * Can this session be continued, and if not, why?
+ *
+ * Answered on the PC rather than on the phone: this side is what knows whether a
+ * kernel has a verified resume entry point. The phone used to hard-code "codex
+ * only", so ACP history looked permanently read-only while the kernel could
+ * reopen it perfectly well.
+ *
+ * Module scope, not inside a case arm: both the list and the read path need it,
+ * and keeping it in the list arm made every "open this session" fail with
+ * "resumeVerdict is not defined".
+ */
+function resumeVerdict(engineId) {
+  const kernel = getKernel(engineId);
+  if (!kernel) return { canResume: false, resumeNote: `未知内核 "${engineId}"，无法判断能否继续` };
+  if (!kernel.available) return { canResume: false, resumeNote: `${kernel.label} 当前不可用` };
+  if (kernel.resume) return { canResume: true, resumeNote: null };
+  return { canResume: false, resumeNote: `${kernel.label} 未提供经过验证的恢复入口，这里保持只读` };
+}
+
 export function createFrameHandler(ctx) {
   const { send, socket, shellEnabled, terminals, engines, chats } = ctx;
 
@@ -486,21 +506,6 @@ export function createFrameHandler(ctx) {
       // ---- Existing sessions on disk ----
 
       case C2S.SESSIONS_LIST: {
-        /**
-         * Can this session be continued, and if not, why?
-         *
-         * Answered here rather than on the phone: the PC is the side that knows
-         * whether a kernel has a verified resume entry point. The phone used to
-         * hard-code "codex only", so ACP history looked permanently read-only
-         * while the kernel could reopen it perfectly well.
-         */
-        const resumeVerdict = (engineId) => {
-          const kernel = getKernel(engineId);
-          if (!kernel) return { canResume: false, resumeNote: `未知内核 "${engineId}"，无法判断能否继续` };
-          if (!kernel.available) return { canResume: false, resumeNote: `${kernel.label} 当前不可用` };
-          if (kernel.resume) return { canResume: true, resumeNote: null };
-          return { canResume: false, resumeNote: `${kernel.label} 未提供经过验证的恢复入口，这里保持只读` };
-        };
         try {
           // The kernel is the authority for its own sessions; TermDesk only asks.
           // The on-disk scan survives as a fallback so history stays visible when

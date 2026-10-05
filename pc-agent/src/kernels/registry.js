@@ -200,6 +200,11 @@ function envKernels() {
       tier: 'acp',
       transport: 'acp',
       acpArgs: Array.isArray(k.args) ? k.args : ['acp'],
+      // ACP by construction, and ACP declares session capabilities, so the
+      // default is "it can reopen a past conversation" unless the entry says
+      // otherwise. (`resume: Boolean(entry.resume)` would have silently disabled
+      // it for every kernel added through the environment.)
+      resume: k.resume !== false,
       detail: '来自 TERMDESK_ACP_KERNELS 的 ACP 内核',
       resolve: () => (fileOrNull(k.bin) ?? k.bin),
     }));
