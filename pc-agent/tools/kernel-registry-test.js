@@ -76,7 +76,9 @@ for (const kernel of list.filter((k) => k.tier === 'acp' && k.available)) {
     kernel.path);
 }
 check('a shim keeps its recorded CLI contract',
-  (shimSpec('command-code')?.resumeArgs?.length ?? 0) > 0 || !byId['command-code']);
+  (shimSpec('qoder')?.resumeArgs?.length ?? 0) > 0 || !byId.qoder);
+check('command-code is driven by ACP, not by a shim',
+  (isAcpKernel('command-code') === true && isCliKernel('command-code') === false) || !byId['command-code']);
 check('spawn spec for an unknown id is null', spawnSpec('definitely-not-a-kernel') === null);
 
 // The pipeline itself: every selectable engine is accepted, and anything else

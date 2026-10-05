@@ -170,28 +170,20 @@ function table() {
         ?? firstFile([path.join(LOCAL_PROGRAMS, 'QoderWork CN', 'resources', 'bin', 'qoderclicn.exe')]),
     },
     {
+      // Command Code grew a real ACP server in 1.74.1 (`cmd acp`), so it is driven
+      // by the same adapter as OpenCode instead of by a CLI shim: the kernel itself
+      // hands back the session index, replays a past transcript and accepts images -
+      // none of which a shim can do. The shim manifest this entry used to carry was
+      // also wrong in two places (a real turn puts the session id at `event.sessionId`
+      // and the answer in `finalText` / `text_delta.delta`), which is exactly why a
+      // shim stays a guess until it is promoted to a protocol.
       id: 'command-code',
       label: 'Command Code',
-      tier: 'shim',
-      // The CLI can continue a session by id (--resume / --session), so the
-      // phone may offer "继续对话" - but no transcript body, which the chat
-      // pipeline says out loud instead of showing an empty conversation.
+      tier: 'acp',
+      transport: 'acp',
+      acpArgs: ['acp'],
       resume: true,
-      transport: 'cli',
-      detail: 'CLI 形状：--print / --output-format json / --session 已记录（v1.65.0），shim 适配器已就绪，尚缺一次真实 CLI 实测',
-      shim: {
-        // Recorded from `command-code --help` (v1.65.0). Same caveat as
-        // QoderWork: the text key and prompt transport await one real run.
-        newArgs: ['--print', '--output-format', 'json'],
-        resumeArgs: ['--print', '--output-format', 'json', '--session'],
-        // Metadata keys for the session index. Still guesses until a real run:
-        // a wrong guess yields a missing title, not a wrong one.
-        prompt: 'argv',
-        sessionId: 'session_id',
-        text: 'text',
-        replay: false,
-        verified: false,
-      },
+      detail: 'ACP（1.74.1 原生）：会话列表 / 读取回放 / 恢复 / 图片与内嵌上下文',
       resolve: () => {
         if (process.env.TERMDESK_COMMAND_CODE) return fileOrNull(process.env.TERMDESK_COMMAND_CODE) ?? process.env.TERMDESK_COMMAND_CODE;
         return nodeEntry([
