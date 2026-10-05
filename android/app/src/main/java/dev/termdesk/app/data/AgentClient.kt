@@ -135,11 +135,6 @@ class AgentClient(
     )
     val kernelTarget: StateFlow<String> = _kernelTarget.asStateFlow()
 
-    /** The sandbox shell, started on first use. */
-    private val localShell: LocalShell? by lazy {
-        appContext?.let { LocalShell(it) }
-    }
-
     /** Set when the agent reports the shell is not enabled on the PC. */
     private val _termUnavailable = MutableStateFlow<String?>(null)
     val termUnavailable: StateFlow<String?> = _termUnavailable.asStateFlow()
@@ -153,6 +148,9 @@ class AgentClient(
     val codexTemplates: StateFlow<List<CodexProviderTemplate>> = _codexTemplates.asStateFlow()
 
     // ---- local kernel (the sandbox that runs ON this phone) ----
+
+    /** The agent that runs inside the phone's sandbox (null only without a context, i.e. in tests). */
+    val localAgent: LocalAgent? = appContext?.let { LocalAgent(it) }
 
     private val localKernelInstaller = appContext?.let { LocalKernelInstaller(it, client) }
 
@@ -418,6 +416,8 @@ class AgentClient(
      *
      * The scrollback is cleared because the two kernels are different machines:
      * mixing their output would make the transcript lie about where a command ran.
+     * Connecting is the caller's job (see [connectLocal] and the PC URL it already
+     * holds) because only the caller knows what "remote" points at.
      */
     fun setKernelTarget(target: String) {
         val clean = if (target == "local") "local" else "remote"
@@ -427,20 +427,33 @@ class AgentClient(
             ?.edit()?.putString(KEY_KERNEL_TARGET, clean)?.apply()
         _termLines.value = emptyList()
         _termBusy.value = false
-        localShell?.cancel()
-        if (clean == "remote") {
-            openTerminal()
-        } else {
-            _termSession.value = null
-            if (localShell?.ready() != true) {
-                appendTerm("本地内核未安装：设置 → 内核", TermLine.Stream.SYSTEM)
-            }
-        }
+        _termSession.value = null
+    }
+
+    /**
+     * Bring up the agent inside the sandbox and talk to it.
+     *
+     * Same protocol, same client code as the PC: the local kernel is a second
+     * machine, not a second implementation. The state is returned so the caller
+     * can say why it failed when it did.
+     */
+    suspend fun connectLocal(): LocalAgentState? {
+        val agent = localAgent ?: return null
+        _termLines.value = emptyList()
+        _termSession.value = null
+        val state = agent.start()
+        if (state.ready) connect(state.url, state.token) else _link.value = LinkState.Failed(state.note)
+        return state
+    }
+
+    /** Stop the sandbox agent without forgetting the choice. */
+    fun stopLocal() {
+        localAgent?.stop()
+        disconnect()
     }
 
     /** Open a terminal session, or reuse the existing one. */
     fun openTerminal() {
-        if (_kernelTarget.value == "local") return
         if (_termSession.value != null) return
         sendFrame(JSONObject().put("type", "term.open"))
     }
@@ -448,11 +461,18 @@ class AgentClient(
     fun runCommand(command: String) {
         val trimmed = command.trim()
         if (trimmed.isEmpty()) return
-        if (_kernelTarget.value == "local") {
-            runLocalCommand(trimmed)
+        val sid = _termSession.value
+        if (sid == null) {
+            // Silence here is how "the terminal is broken" starts. Name the reason
+            // the session is missing instead.
+            val why = if (_kernelTarget.value == "local") {
+                localAgent?.state?.value?.note?.takeIf { it.isNotBlank() } ?: "本地代理还没有启动"
+            } else {
+                "还没有连上电脑端代理"
+            }
+            appendTerm(why, TermLine.Stream.SYSTEM)
             return
         }
-        val sid = _termSession.value ?: return
 
         // Echo locally so the terminal feels responsive before the round trip.
         appendTerm("❯ $trimmed", TermLine.Stream.INPUT)
@@ -460,43 +480,7 @@ class AgentClient(
         sendFrame(JSONObject().put("type", "term.run").put("sessionId", sid).put("command", trimmed))
     }
 
-    /** One command in the sandbox, streamed line by line into the same scrollback. */
-    private fun runLocalCommand(command: String) {
-        val shell = localShell
-        if (shell == null || !shell.ready()) {
-            appendTerm("本地内核未安装：设置 → 内核", TermLine.Stream.SYSTEM)
-            return
-        }
-        try {
-            shell.start(
-                onLine = { line, isErr ->
-                    appendTerm(line, if (isErr) TermLine.Stream.STDERR else TermLine.Stream.STDOUT)
-                },
-                onFinish = { code ->
-                    // The sentinel says the turn is over; the code is worth showing
-                    // only when it is not success, or every command ends in noise.
-                    if (code != 0) appendTerm("退出码 $code", TermLine.Stream.SYSTEM)
-                    _termBusy.value = false
-                },
-                onExit = { _termBusy.value = false },
-            )
-        } catch (err: Throwable) {
-            appendTerm("无法启动本地 shell：${err.message}", TermLine.Stream.STDERR)
-            _termBusy.value = false
-            return
-        }
-        appendTerm("❯ $command", TermLine.Stream.INPUT)
-        _termBusy.value = true
-        shell.send(command)
-    }
-
     fun interruptCommand() {
-        if (_kernelTarget.value == "local") {
-            localShell?.cancel()
-            appendTerm("已停止", TermLine.Stream.SYSTEM)
-            _termBusy.value = false
-            return
-        }
         val sid = _termSession.value ?: return
         sendFrame(JSONObject().put("type", "term.interrupt").put("sessionId", sid))
     }

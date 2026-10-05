@@ -15,6 +15,7 @@ import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.KernelInfo
+import dev.termdesk.app.data.LocalAgentState
 import dev.termdesk.app.data.LocalKernelState
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.FilePreview
@@ -83,7 +84,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun openTerminal() = client.openTerminal()
     fun runCommand(command: String) = client.runCommand(command)
     /** One kernel for the whole app: chosen in Settings, obeyed everywhere. */
-    fun setKernelTarget(target: String) = client.setKernelTarget(target)
+    fun setKernelTarget(target: String) {
+        val clean = if (target == "local") "local" else "remote"
+        client.setKernelTarget(clean)
+        if (clean == "local") {
+            // "Local" is a process that may not be running yet: bring it up, then
+            // talk to it exactly like the PC.
+            viewModelScope.launch { client.connectLocal() }
+        } else {
+            client.connect(savedUrl, savedToken)
+        }
+    }
+
+    /** The sandbox agent: its state, and a way to stop it. */
+    val localAgentState: StateFlow<LocalAgentState>? get() = client.localAgent?.state
+    fun stopLocalAgent() = client.stopLocal()
     fun interruptCommand() = client.interruptCommand()
     fun closeTerminal() = client.closeTerminal()
     fun clearTerminal() = client.clearTerminal()
@@ -338,10 +353,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             pairingFile.delete()
         }
-        val url = savedUrl
-        val token = savedToken
-        if (url.isNotBlank() && token.isNotBlank()) {
-            client.connect(url, token)
+        if (client.kernelTarget.value == "local") {
+            // The choice survived the restart, so the sandbox agent has to come up
+            // instead of the PC socket. There is no token to read yet - the agent
+            // writes it when it starts.
+            viewModelScope.launch { client.connectLocal() }
+        } else {
+            val url = savedUrl
+            val token = savedToken
+            if (url.isNotBlank() && token.isNotBlank()) {
+                client.connect(url, token)
+            }
         }
     }
 

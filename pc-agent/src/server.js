@@ -760,7 +760,8 @@ server.listen(args.port, args.host, async () => {
       console.error('  公网   启动失败：' + (err?.message ?? err));
       console.error('  公网   ' + (findCloudflared() ? '检查网络后重试' : '把 cloudflared 放进 tools/ 或设置 TERMDESK_CLOUDFLARED'));
     }
-  } else {
+  } else if (!args.local) {
+    // No tunnel line in local mode: the banner there already said 不适用.
     console.log('  公网   未启动（加 --tunnel，或直接双击 TermDesk.bat）');
     console.log('');
   }

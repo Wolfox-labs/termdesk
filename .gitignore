@@ -46,3 +46,7 @@ DEPLOYMENT.local.md
 $d/
 *.tar
 
+# Staged at build time from pc-agent/src by the syncLocalAgent Gradle task.
+# The local agent travels inside the APK so it can never drift from the app's
+# protocol version; the source of truth is pc-agent/.
+android/app/src/main/assets/local-agent/

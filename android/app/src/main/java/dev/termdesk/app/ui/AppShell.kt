@@ -206,7 +206,7 @@ fun AppShell(
         Column(Modifier.fillMaxSize().imePadding()) {
             // The sessions area draws its own single-row bar (list title or
             // conversation title), so the shell only adds one for tool sections.
-            if (section != Section.Sessions) {
+            if (section != Section.Sessions || sessionsShowLocalGate(section, kernelTarget, engines)) {
                 TopBar(
                     section = section,
                     panelOpen = panelOpen,
@@ -501,8 +501,24 @@ private fun SectionDrawer(
  * still the PC's. Saying that out loud beats showing another machine's data under
  * a kernel name that says otherwise.
  */
+/**
+ * Is the conversation section showing the local-kernel notice instead of chats?
+ *
+ * One place decides, because two things depend on the answer: the body shows the
+ * notice, and the shell has to draw its own bar in that case - the sessions
+ * section normally draws its own, so without this the notice covered the whole
+ * screen and the drawer became unreachable.
+ */
+private fun sessionsShowLocalGate(section: Section, kernelTarget: String, engines: List<KernelInfo>): Boolean =
+    section == Section.Sessions && kernelTarget == "local" && engines.none { it.selectable }
+
 @Composable
-private fun LocalKernelNotice(section: String, onUseRemote: () -> Unit) {
+private fun LocalKernelNotice(
+    title: String,
+    reason: String,
+    actionLabel: String,
+    onAction: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -510,22 +526,22 @@ private fun LocalKernelNotice(section: String, onUseRemote: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("本地内核", style = MaterialTheme.typography.titleMedium)
+        Text(title, style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(6.dp))
         Text(
-            section + " 还没跑在本地内核上",
+            reason,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(14.dp))
         Text(
-            "切回远程内核",
+            actionLabel,
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier
                 .clip(RoundedCornerShape(10.dp))
                 .background(MaterialTheme.colorScheme.primaryContainer)
-                .clickable(onClick = onUseRemote)
+                .clickable(onClick = onAction)
                 .padding(horizontal = 16.dp, vertical = 9.dp),
         )
     }
@@ -620,7 +636,8 @@ private fun SectionBody(
     onRemoveLocalKernel: () -> Unit,
 ) {
     when (section) {
-        Section.System -> if (kernelTarget == "local") LocalKernelNotice("系统") { onSetKernelTarget("remote") } else SystemSection(
+        // No local gate here any more: the sandbox agent serves this section too.
+        Section.System -> SystemSection(
             status = status,
             processes = processes,
             services = services,
@@ -630,7 +647,7 @@ private fun SectionBody(
             onKillProcess = onKillProcess,
             onServiceAction = onServiceAction,
         )
-        Section.Files -> if (kernelTarget == "local") LocalKernelNotice("文件") { onSetKernelTarget("remote") } else FilesSection(
+        Section.Files -> FilesSection(
             listing = listing,
             loading = loading,
             transfer = transfer,
@@ -659,7 +676,12 @@ private fun SectionBody(
             onClear = onTermClear,
             onClose = onTermClose,
         )
-        Section.Sessions -> if (kernelTarget == "local") LocalKernelNotice("对话") { onSetKernelTarget("remote") } else ChatSection(
+        Section.Sessions -> if (sessionsShowLocalGate(section, kernelTarget, engines)) LocalKernelNotice(
+            title = "本地内核",
+            reason = "沙盒里还没有可用的 agent 内核：装上 opencode / dsh 之类任何一个，会话就能在这里跑起来",
+            actionLabel = "切回这台电脑",
+            onAction = { onSetKernelTarget("remote") },
+        ) else ChatSection(
             chats = chats,
             activeChat = activeChat,
             events = chatEvents,

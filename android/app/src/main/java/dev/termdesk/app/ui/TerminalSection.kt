@@ -98,9 +98,12 @@ fun TerminalSection(
     var historyIndex by remember { mutableStateOf(-1) }
     val listState = rememberLazyListState()
 
-    // Open the session lazily, the first time this pane is shown.
+    // Open the session lazily, the first time this pane is shown - for whichever
+    // backend this app is connected to. It used to be remote-only, which left the
+    // local kernel with no session at all: every command then answered "no session"
+    // instead of running.
     LaunchedEffect(sessionId, unavailable) {
-        if (kernel == "remote" && sessionId == null && unavailable == null) onOpen()
+        if (sessionId == null && unavailable == null) onOpen()
     }
 
     // Follow new output, the way a terminal should.
@@ -129,7 +132,7 @@ fun TerminalSection(
         ) {
             Text(
                 text = when {
-                    kernel == "local" -> "本地内核 · bash"
+                    kernel == "local" -> (sessionId?.let { "$it · bash" } ?: "本地内核 · bash")
                     unavailable != null -> "不可用"
                     sessionId == null -> "连接中…"
                     else -> "${sessionId} · PowerShell"
@@ -150,7 +153,7 @@ fun TerminalSection(
             IconButton(onClick = onClear, enabled = lines.isNotEmpty()) {
                 Icon(Icons.Outlined.ClearAll, contentDescription = "清屏", modifier = Modifier.size(19.dp))
             }
-            if (sessionId != null && kernel == "remote") {
+            if (sessionId != null) {
                 IconButton(onClick = onClose) {
                     Icon(
                         Icons.Outlined.Close,
