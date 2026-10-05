@@ -68,8 +68,8 @@ check('an unknown id has no tier', kernelTier('definitely-not-a-kernel') === nul
 // subcommand, and never as a bare path with no args.
 for (const kernel of list.filter((k) => k.tier === 'acp' && k.available)) {
   const spec = spawnSpec(kernel.id);
-  check(`${kernel.id}: spawn spec ends with the acp subcommand`,
-    Array.isArray(spec?.args) && spec.args[spec.args.length - 1] === 'acp',
+  check(`${kernel.id}: spawn spec asks for the acp subcommand`,
+    Array.isArray(spec?.args) && spec.args.includes('acp'),
     JSON.stringify(spec));
   check(`${kernel.id}: picker shows the kernel file, not the runtime host`,
     typeof kernel.path === 'string' && kernel.path.length > 0 && !/\bnode\.exe$/i.test(kernel.path),

@@ -181,7 +181,11 @@ function table() {
       label: 'Command Code',
       tier: 'acp',
       transport: 'acp',
-      acpArgs: ['acp'],
+      // --no-auto-update matters here: this CLI updates itself in the
+      // background (it did so mid-session on 2026-10-05, 1.65.0 -> 1.74.1), and
+      // an npm install rewriting the package under a live ACP server kills the
+      // kernel process - which the phone sees as a failed conversation.
+      acpArgs: ['acp', '--no-auto-update'],
       resume: true,
       detail: 'ACP（1.74.1 原生）：会话列表 / 读取回放 / 恢复 / 图片与内嵌上下文',
       resolve: () => {
