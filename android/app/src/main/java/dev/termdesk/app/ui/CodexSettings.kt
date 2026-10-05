@@ -83,6 +83,8 @@ fun SettingsSection(
     engines: List<KernelInfo>,
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
+    kernelTarget: String,
+    onSetKernelTarget: (String) -> Unit,
     onRefreshEngines: () -> Unit,
     storage: StorageUse?,
     onLoadStorage: () -> Unit,
@@ -140,21 +142,20 @@ fun SettingsSection(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        val kernelSummary = "远程 · " + (defaultEngine?.let { id -> engines.find { it.id == id }?.displayName ?: id } ?: "这台电脑")
+        val kernelSummary = if (kernelTarget == "local") "本机"
+        else "这台电脑 · " + (defaultEngine?.let { id -> engines.find { it.id == id }?.displayName ?: id } ?: "未指定")
         val themeLabel = when (themeMode) {
             ThemeMode.Dark -> "深色"
             ThemeMode.Light -> "浅色"
             ThemeMode.System -> "跟随系统"
         }
         val storageLabel = storage?.let { (if (it.truncated) "≥ " else "") + Storage.format(it.totalBytes) } ?: "—"
-        val localLabel = localKernelStageLabel(localKernel)
         val codexLabel = config?.model?.takeIf { it.isNotBlank() } ?: "未配置"
 
         if (page == null) {
             SettingsRootRow("内核", kernelSummary) { page = "kernel" }
             SettingsRootRow("外观", themeLabel) { page = "appearance" }
             SettingsRootRow("存储", storageLabel) { page = "storage" }
-            SettingsRootRow("本地内核", localLabel) { page = "local" }
             SettingsRootRow("Codex 配置", codexLabel) { page = "codex" }
         } else {
             SubPageHeader(
@@ -162,7 +163,6 @@ fun SettingsSection(
                     "kernel" -> "内核"
                     "appearance" -> "外观"
                     "storage" -> "存储"
-                    "local" -> "本地内核"
                     else -> "Codex 配置"
                 },
                 onBack = { page = null },
@@ -172,6 +172,10 @@ fun SettingsSection(
         when (page) {
             null -> Unit
             "kernel" -> {
+                KernelTargetRow(kernelTarget, onSetKernelTarget)
+                if (kernelTarget == "local") {
+                    LocalKernelCard(localKernel, onInstallLocalKernel, onRemoveLocalKernel)
+                } else {
         // --- kernel / target -------------------------------------------------
         Card {
             SettingRow(
@@ -208,28 +212,6 @@ fun SettingsSection(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Spacer(Modifier.height(2.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "本机 · 手机沙盒",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            localKernelStateLabel(localKernel),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (localKernel.installed) Semantic.current.success
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                     Row(Modifier.padding(top = 6.dp)) {
                         Text(
                             "重新检测",
@@ -244,6 +226,7 @@ fun SettingsSection(
                 }
             }
         }
+                }
             }
             "appearance" -> {
         // --- appearance ------------------------------------------------------
@@ -348,76 +331,6 @@ fun SettingsSection(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
             }
         }
-            }
-            "local" -> {
-        // --- local kernel (a Linux userland that runs on THIS phone) ----------
-        Card {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("本地内核", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.weight(1f))
-                Text(
-                    localKernelStageLabel(localKernel),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = when (localKernel.stage) {
-                        LocalKernelStage.READY -> MaterialTheme.colorScheme.primary
-                        LocalKernelStage.FAILED -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                localKernel.note.ifBlank { "装了以后这台手机自己也有 Linux 环境（bash / apt / python / node / git）" },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (localKernel.installedBytes > 0) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "占用 ${Storage.format(localKernel.installedBytes)}" +
-                        (localKernel.installedVersion?.let { " · 版本 $it" } ?: ""),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (localKernel.busy) {
-                Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(
-                    progress = { localKernel.progress.coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(
-                    onClick = onInstallLocalKernel,
-                    enabled = !localKernel.busy,
-                ) {
-                    Text(
-                        when {
-                            localKernel.installed -> "重装"
-                            localKernel.stage == LocalKernelStage.FAILED -> "重试"
-                            else -> "安装"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
-                if (localKernel.installedBytes > 0) {
-                    TextButton(onClick = onRemoveLocalKernel, enabled = !localKernel.busy) {
-                        Text("删除", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-                Spacer(Modifier.weight(1f))
-                if (localKernel.manifest != null && !localKernel.busy) {
-                    Text(
-                        "载荷 ${Storage.format(localKernel.manifest!!.sizeBytes)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-
             }
             else -> {
         if (config == null) {
@@ -663,6 +576,67 @@ fun SettingsSection(
     }
 }
 
+/** Which kernel everything runs on: one choice, made here. */
+@Composable
+private fun KernelTargetRow(target: String, onSet: (String) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        TargetChip("这台电脑", target == "remote") { onSet("remote") }
+        TargetChip("本机", target == "local") { onSet("local") }
+    }
+}
+
+@Composable
+private fun TargetChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+        else MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier
+            .clip(RoundedCornerShape(9.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surface,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+    )
+}
+
+/** The local kernel: what it is on this phone, and the one button that changes that. */
+@Composable
+private fun LocalKernelCard(state: LocalKernelState, onInstall: () -> Unit, onRemove: () -> Unit) {
+    Card {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "本机内核",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                localKernelStateLabel(state),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (state.installed) Semantic.current.success
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (state.busy) {
+            Spacer(Modifier.height(8.dp))
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (state.installed) {
+                TextButton(onClick = onRemove, enabled = !state.busy) { Text("删除", style = MaterialTheme.typography.labelMedium) }
+            } else {
+                TextButton(onClick = onInstall, enabled = !state.busy) { Text("安装", style = MaterialTheme.typography.labelMedium) }
+            }
+        }
+    }
+}
+
 /** Root row: opens one settings page, and says what that page currently is. */
 @Composable
 private fun SettingsRootRow(label: String, value: String, onClick: () -> Unit) {
@@ -900,21 +874,11 @@ private fun formatTokens(n: Long): String = when {
 }
 
 /** One word for where the local kernel install is. */
-/** What the sandbox row says: real state, not a promise. */
+/** The local kernel's state, as one word. */
 private fun localKernelStateLabel(state: LocalKernelState): String = when {
-    state.installed -> "已安装 · 尚未接入对话"
+    state.installed -> "已安装"
     state.stage == LocalKernelStage.FAILED -> "安装失败"
     state.busy -> "处理中…"
     else -> "未安装"
 }
 
-private fun localKernelStageLabel(state: LocalKernelState): String = when (state.stage) {
-    LocalKernelStage.READY -> "已安装"
-    LocalKernelStage.ABSENT -> "未安装"
-    LocalKernelStage.DOWNLOADING -> "下载中"
-    LocalKernelStage.VERIFYING -> "校验中"
-    LocalKernelStage.EXTRACTING -> "解包中"
-    LocalKernelStage.CHECKING -> "检查中"
-    LocalKernelStage.FAILED -> "有错误"
-    LocalKernelStage.UNKNOWN -> "未知"
-}

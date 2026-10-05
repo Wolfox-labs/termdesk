@@ -123,12 +123,17 @@ class AgentClient(
     val termBusy: StateFlow<Boolean> = _termBusy.asStateFlow()
 
     /**
-     * Which kernel the terminal runs on: the PC (`remote`) or the phone's own
-     * sandbox (`local`). The screen is the same either way - only the backend
-     * changes, which is what documents/本地内核方案.md §8 asks for.
+     * Which kernel the app runs on: the PC (`remote`) or this phone (`local`).
+     *
+     * One choice, made in Settings - not a switch on every screen. The terminal,
+     * the conversations and the file browser all point at whatever is chosen
+     * here, which is the whole point of calling it a kernel.
      */
-    private val _termBackend = MutableStateFlow("remote")
-    val termBackend: StateFlow<String> = _termBackend.asStateFlow()
+    private val _kernelTarget = MutableStateFlow(
+        appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.getString(KEY_KERNEL_TARGET, "remote") ?: "remote",
+    )
+    val kernelTarget: StateFlow<String> = _kernelTarget.asStateFlow()
 
     /** The sandbox shell, started on first use. */
     private val localShell: LocalShell? by lazy {
@@ -226,6 +231,11 @@ class AgentClient(
      */
     private val _chatModels = MutableStateFlow<Map<String, ChatModels>>(emptyMap())
     val chatModels: StateFlow<Map<String, ChatModels>> = _chatModels.asStateFlow()
+
+    private companion object {
+        const val PREFS = "termdesk"
+        const val KEY_KERNEL_TARGET = "kernelTarget"
+    }
 
     /** The last upload that finished, so `+` can attach it to the next message. */
     private val _lastUpload = MutableStateFlow<UploadedFile?>(null)
@@ -404,34 +414,33 @@ class AgentClient(
     // ---- P3 operations ----
 
     /**
-     * Switch the terminal's execution backend.
+     * Choose the kernel. Everything that executes follows it.
      *
-     * The scrollback is cleared because the two backends are different machines:
+     * The scrollback is cleared because the two kernels are different machines:
      * mixing their output would make the transcript lie about where a command ran.
      */
-    fun setTermBackend(backend: String) {
-        if (backend == _termBackend.value) return
-        _termBackend.value = backend
+    fun setKernelTarget(target: String) {
+        val clean = if (target == "local") "local" else "remote"
+        if (_kernelTarget.value == clean) return
+        _kernelTarget.value = clean
+        appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()?.putString(KEY_KERNEL_TARGET, clean)?.apply()
         _termLines.value = emptyList()
         _termBusy.value = false
         localShell?.cancel()
-        if (backend == "remote") {
+        if (clean == "remote") {
             openTerminal()
         } else {
-            val shell = localShell
-            val ready = shell?.ready() == true
             _termSession.value = null
-            appendTerm(
-                if (ready) "本地内核 · 手机沙盒（命令跑在这台手机上，电脑可以不在线）"
-                else "本地内核还没安装：设置 → 本地内核 → 安装",
-                TermLine.Stream.SYSTEM,
-            )
+            if (localShell?.ready() != true) {
+                appendTerm("本地内核未安装：设置 → 内核", TermLine.Stream.SYSTEM)
+            }
         }
     }
 
     /** Open a terminal session, or reuse the existing one. */
     fun openTerminal() {
-        if (_termBackend.value == "local") return
+        if (_kernelTarget.value == "local") return
         if (_termSession.value != null) return
         sendFrame(JSONObject().put("type", "term.open"))
     }
@@ -439,7 +448,7 @@ class AgentClient(
     fun runCommand(command: String) {
         val trimmed = command.trim()
         if (trimmed.isEmpty()) return
-        if (_termBackend.value == "local") {
+        if (_kernelTarget.value == "local") {
             runLocalCommand(trimmed)
             return
         }
@@ -455,7 +464,7 @@ class AgentClient(
     private fun runLocalCommand(command: String) {
         val shell = localShell
         if (shell == null || !shell.ready()) {
-            appendTerm("本地内核还没安装：设置 → 本地内核 → 安装", TermLine.Stream.SYSTEM)
+            appendTerm("本地内核未安装：设置 → 内核", TermLine.Stream.SYSTEM)
             return
         }
         try {
@@ -482,9 +491,9 @@ class AgentClient(
     }
 
     fun interruptCommand() {
-        if (_termBackend.value == "local") {
+        if (_kernelTarget.value == "local") {
             localShell?.cancel()
-            appendTerm("已停止（本地 shell 已结束，下一条命令会重新启动它）", TermLine.Stream.SYSTEM)
+            appendTerm("已停止", TermLine.Stream.SYSTEM)
             _termBusy.value = false
             return
         }

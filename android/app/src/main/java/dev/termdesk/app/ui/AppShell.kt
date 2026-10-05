@@ -120,8 +120,8 @@ fun AppShell(
     onDeleteEntry: (String) -> Unit,
     onRenameEntry: (String, String) -> Unit,
     termLines: List<TermLine>,
-    termBackend: String,
-    onSetTermBackend: (String) -> Unit,
+    kernelTarget: String,
+    onSetKernelTarget: (String) -> Unit,
     termBusy: Boolean,
     termSession: String?,
     termUnavailable: String?,
@@ -262,8 +262,8 @@ fun AppShell(
                     onDeleteEntry = onDeleteEntry,
                     onRenameEntry = onRenameEntry,
                     termLines = termLines,
-                    termBackend = termBackend,
-                    onSetTermBackend = onSetTermBackend,
+                    kernelTarget = kernelTarget,
+                    onSetKernelTarget = onSetKernelTarget,
                     termBusy = termBusy,
                     termSession = termSession,
                     termUnavailable = termUnavailable,
@@ -494,6 +494,43 @@ private fun SectionDrawer(
     }
 }
 
+/**
+ * What a PC-backed module says while this phone is the chosen kernel.
+ *
+ * The local kernel runs a terminal here; conversations and the file browser are
+ * still the PC's. Saying that out loud beats showing another machine's data under
+ * a kernel name that says otherwise.
+ */
+@Composable
+private fun LocalKernelNotice(section: String, onUseRemote: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text("本地内核", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            section + " 还没跑在本地内核上",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(14.dp))
+        Text(
+            "切回远程内核",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.primaryContainer)
+                .clickable(onClick = onUseRemote)
+                .padding(horizontal = 16.dp, vertical = 9.dp),
+        )
+    }
+}
+
 @Composable
 private fun SectionBody(
     section: Section,
@@ -516,8 +553,8 @@ private fun SectionBody(
     onDeleteEntry: (String) -> Unit,
     onRenameEntry: (String, String) -> Unit,
     termLines: List<TermLine>,
-    termBackend: String,
-    onSetTermBackend: (String) -> Unit,
+    kernelTarget: String,
+    onSetKernelTarget: (String) -> Unit,
     termBusy: Boolean,
     termSession: String?,
     termUnavailable: String?,
@@ -583,7 +620,7 @@ private fun SectionBody(
     onRemoveLocalKernel: () -> Unit,
 ) {
     when (section) {
-        Section.System -> SystemSection(
+        Section.System -> if (kernelTarget == "local") LocalKernelNotice("系统") { onSetKernelTarget("remote") } else SystemSection(
             status = status,
             processes = processes,
             services = services,
@@ -593,7 +630,7 @@ private fun SectionBody(
             onKillProcess = onKillProcess,
             onServiceAction = onServiceAction,
         )
-        Section.Files -> FilesSection(
+        Section.Files -> if (kernelTarget == "local") LocalKernelNotice("文件") { onSetKernelTarget("remote") } else FilesSection(
             listing = listing,
             loading = loading,
             transfer = transfer,
@@ -612,8 +649,7 @@ private fun SectionBody(
         )
         Section.Terminal -> TerminalSection(
             lines = termLines,
-            backend = termBackend,
-            onSetBackend = onSetTermBackend,
+            kernel = kernelTarget,
             busy = termBusy,
             sessionId = termSession,
             unavailable = termUnavailable,
@@ -623,7 +659,7 @@ private fun SectionBody(
             onClear = onTermClear,
             onClose = onTermClose,
         )
-        Section.Sessions -> ChatSection(
+        Section.Sessions -> if (kernelTarget == "local") LocalKernelNotice("对话") { onSetKernelTarget("remote") } else ChatSection(
             chats = chats,
             activeChat = activeChat,
             events = chatEvents,
@@ -658,6 +694,8 @@ private fun SectionBody(
                         connected = connected,
         )
         Section.Settings -> SettingsSection(
+            kernelTarget = kernelTarget,
+            onSetKernelTarget = onSetKernelTarget,
             config = codexConfig,
             templates = codexTemplates,
             themeMode = themeMode,

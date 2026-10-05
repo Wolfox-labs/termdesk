@@ -77,12 +77,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val termLines: StateFlow<List<TermLine>> = client.termLines
     val termSession: StateFlow<String?> = client.termSession
     val termBusy: StateFlow<Boolean> = client.termBusy
-    val termBackend: StateFlow<String> = client.termBackend
+    val kernelTarget: StateFlow<String> = client.kernelTarget
     val termUnavailable: StateFlow<String?> = client.termUnavailable
 
     fun openTerminal() = client.openTerminal()
     fun runCommand(command: String) = client.runCommand(command)
-    fun setTermBackend(backend: String) = client.setTermBackend(backend)
+    /** One kernel for the whole app: chosen in Settings, obeyed everywhere. */
+    fun setKernelTarget(target: String) = client.setKernelTarget(target)
     fun interruptCommand() = client.interruptCommand()
     fun closeTerminal() = client.closeTerminal()
     fun clearTerminal() = client.clearTerminal()
