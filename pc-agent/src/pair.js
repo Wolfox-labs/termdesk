@@ -7,7 +7,21 @@
  *
  *   termdesk://pair?url=wss://host&token=...&name=yaosw
  */
-import QRCode from 'qrcode';
+/**
+ * `qrcode` is loaded on demand, not at import time.
+ *
+ * Only the pairing page needs it, and the local kernel (the agent running inside
+ * the phone's sandbox) never serves that page. Importing it up front would make
+ * the whole agent fail to boot over a module that exists purely to draw a QR
+ * code for a page nobody in that context can open.
+ */
+async function qrCode() {
+  try {
+    return (await import('qrcode')).default;
+  } catch (err) {
+    throw new Error('没有 qrcode 模块，画不了二维码（本地内核里不需要配对页）: ' + err.message);
+  }
+}
 
 export function pairPayload({ wsUrl, token, name }) {
   const params = new URLSearchParams();
@@ -19,6 +33,7 @@ export function pairPayload({ wsUrl, token, name }) {
 
 /** SVG string, so the page needs no image encoding and scales on any screen. */
 export async function qrSvg(text, { width = 280 } = {}) {
+  const QRCode = await qrCode();
   return await QRCode.toString(text, {
     type: 'svg',
     errorCorrectionLevel: 'M',
@@ -35,7 +50,8 @@ export async function qrSvg(text, { width = 280 } = {}) {
  * The agent already owns the encoder, so it hands out the grid and the client
  * just paints squares. Rows are '0'/'1' strings to keep the JSON small.
  */
-export function qrMatrix(text, { errorCorrectionLevel = 'M' } = {}) {
+export async function qrMatrix(text, { errorCorrectionLevel = 'M' } = {}) {
+  const QRCode = await qrCode();
   const code = QRCode.create(text, { errorCorrectionLevel });
   const { size, data } = code.modules;
   const rows = [];
@@ -49,6 +65,7 @@ export function qrMatrix(text, { errorCorrectionLevel = 'M' } = {}) {
 
 /** Block-character QR for the terminal, for when no browser is open. */
 export async function qrTerminal(text) {
+  const QRCode = await qrCode();
   return await QRCode.toString(text, { type: 'terminal', small: true });
 }
 

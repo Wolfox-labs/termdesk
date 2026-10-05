@@ -99,13 +99,21 @@ const chats = new ChatManager();
 let routedSocket = null;
 
 function parseArgs(argv) {
-  const args = { port: DEFAULT_PORT, host: '0.0.0.0', showToken: false, tunnel: false };
+  const args = { port: DEFAULT_PORT, host: '0.0.0.0', showToken: false, tunnel: false, local: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--show-token') args.showToken = true;
     else if (a === '--tunnel') args.tunnel = true;
+    else if (a === '--local') args.local = true;
     else if (a === '--port') args.port = Number(argv[++i]);
     else if (a === '--host') args.host = argv[++i];
+  }
+  // Local mode is the same agent, hosted by something that is not a desktop:
+  // the phone's own sandbox. It is loopback-only by construction, so a tunnel,
+  // a relay and a pairing page are not "disabled" - they are meaningless there.
+  if (args.local) {
+    args.host = '127.0.0.1';
+    args.tunnel = false;
   }
   return args;
 }
@@ -126,6 +134,10 @@ const tunnel = new Tunnel();
 let tunnelStart = null;
 
 function ensureTunnel() {
+  // Local mode is loopback-only by construction: there is no public address to
+  // hand out, and cloudflared started inside a phone sandbox would be useless and
+  // invisible. Refusing here means no future route can reintroduce it.
+  if (args.local) return Promise.resolve(tunnel.status());
   if (tunnel.status().running) return Promise.resolve(tunnel.status());
   if (tunnelStart === null) {
     tunnelStart = tunnel.start({ port: args.port }).finally(() => { tunnelStart = null; });
@@ -209,6 +221,17 @@ function localAddresses() {
 function printHeader({ args, token, apk, relay }) {
   const line = (label, value) => console.log('  ' + label.padEnd(7) + value);
   console.log('');
+  if (args.local) {
+    console.log('  TermDesk 本地内核 — 跑在这台机器自己的沙盒里');
+    console.log('  ' + '-'.repeat(64));
+    line('监听', args.host + ':' + args.port + '（只在本机回环，外部连不上）');
+    line('shell', SHELL_ENABLED ? '已开启（可以执行命令、读写文件）' : '已关闭（加 --enable-shell 打开）');
+    line('目录', allowedRoots().join('   '));
+    line('令牌', token.slice(0, 6) + '…   完整内容在 ' + tokenPath());
+    line('公网', '不适用：本地内核不配对、不建隧道');
+    console.log('');
+    return;
+  }
   console.log('  TermDesk PC — 手机远程指挥这台电脑上的 agent 内核');
   console.log('  ' + '-'.repeat(64));
   line('本机', os.hostname() + '   监听 ' + args.host + ':' + args.port);
@@ -254,6 +277,18 @@ if (args.showToken) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
+
+  // Local mode has no desktop-only surfaces. Checked here, before any route,
+  // not inside one of them: the pairing page stayed reachable - and even started
+  // a tunnel - because the guard sat inside the APK block.
+  if (args.local && (url.pathname === '/app' || url.pathname === '/app.apk' || url.pathname.startsWith('/pair'))) {
+    res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      ok: false,
+      message: '本地内核不提供配对页：这个代理只在本机回环上，由手机里的 TermDesk 直接启动',
+    }));
+    return;
+  }
 
   // A tiny health endpoint makes it easy to confirm the agent is reachable
   // from the phone's browser before pairing the app. When an access key is
@@ -422,7 +457,7 @@ const server = http.createServer((req, res) => {
           hostname: os.hostname(),
           port: args.port,
           // The desktop window draws this instead of an SVG.
-          qr: qrMatrix(payload),
+          qr: await qrMatrix(payload),
         }));
         return;
       }
@@ -694,7 +729,7 @@ server.listen(args.port, args.host, async () => {
   // it depends on a local proxy being up; with a working Cloudflare tunnel it
   // only added a reconnect loop nobody could explain. TERMDESK_RELAY=1 turns it
   // back on.
-  const relayConfig = process.env.TERMDESK_RELAY === '1' ? loadRelayConfig() : null;
+  const relayConfig = !args.local && process.env.TERMDESK_RELAY === '1' ? loadRelayConfig() : null;
   if (relayConfig) relayConnector = startRelayConnector({ config: relayConfig, port: args.port, token, accessKey: ACCESS_KEY });
   printHeader({ args, token, apk: findClientApk(), relay: Boolean(relayConfig) });
   // Printed before the tunnel on purpose: the kernel list is useful immediately,

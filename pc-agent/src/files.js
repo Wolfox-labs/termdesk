@@ -13,15 +13,20 @@ import path from 'node:path';
 import os from 'node:os';
 import zlib from 'node:zlib';
 
-/** Directories the client may browse. Override with TERMDESK_ROOTS=a;b;c */
+/** Directories the client may browse. Override with TERMDESK_ROOTS=a;b;c (a semicolon list on every platform, so a
+ * POSIX path separator can never be confused with the list separator) */
 function defaultRoots() {
   if (process.env.TERMDESK_ROOTS) {
     return process.env.TERMDESK_ROOTS.split(';').map((s) => s.trim()).filter(Boolean);
   }
   const home = os.homedir();
+  // A POSIX host (the phone sandbox) has no drive letters. Its browsable world
+  // is its home directory; offering "C:\\" there would be a Windows habit
+  // leaking into a Linux userland, and the client would show empty roots.
+  if (process.platform !== "win32") return [home];
   return [
     home,
-    ...['E:', 'D:', 'C:'].map((d) => `${d}\\`),
+    ...["E:", "D:", "C:"].map((d) => `${d}\\`),
   ];
 }
 

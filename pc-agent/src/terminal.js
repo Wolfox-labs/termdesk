@@ -21,6 +21,7 @@
  * non-ASCII survive the pipe intact.
  */
 import { spawn } from 'node:child_process';
+import os from 'node:os';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // reap a session after 30 min idle
 const MAX_SCROLLBACK = 2000; // retained output lines per session
@@ -59,6 +60,26 @@ while ($true) {
 }
 `;
 
+/**
+ * The same contract, for a POSIX shell.
+ *
+ * Why not the JSON frame: parsing JSON in shell is a liability (sed/awk quoting
+ * bugs, one per platform). The command is base64 on both sides already; here the
+ * id and the payload are separated by a TAB, which base64 can never contain, so
+ * the loop is three lines and there is nothing to mis-quote. The sentinel, the
+ * scrollback and the completion detection stay exactly as they are - the parser
+ * never knew which shell produced the bytes.
+ */
+const POSIX_LOOP_SCRIPT = `
+while IFS='	' read -r __td_id __td_payload; do
+  [ -z "\$__td_id" ] && continue
+  __td_cmd=\$(printf '%s' "\$__td_payload" | base64 -d 2>/dev/null)
+  eval "\$__td_cmd"
+  __td_code=\$?
+  printf '\\n__TD_END_%s_%s__\\n' "\$__td_id" "\$__td_code"
+done
+`;
+
 /** One live PowerShell process plus its scrollback. */
 class TerminalSession {
   constructor(id, onOutput) {
@@ -81,12 +102,36 @@ class TerminalSession {
     this.generation += 1;
     const generation = this.generation;
     this.closed = false;
+    this.posix = false;
+    this.shellName = 'shell';
     this.buffer = '';
-    this.child = spawn(
-      'powershell.exe',
-      ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', LOOP_SCRIPT],
-      { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
-    );
+    // The shell belongs to the machine the agent runs on. Windows gets
+    // PowerShell (there is no usable PTY there without native modules); anywhere
+    // else gets bash, which is what the sandbox has.
+    // TERMDESK_POSIX_SHELL=1 exercises the bash path on a Windows host that has
+    // one (Git bash). Without it this branch could only ever be tested on the
+    // phone, which is exactly the kind of path that rots unnoticed.
+    const posix = process.platform !== 'win32' || process.env.TERMDESK_POSIX_SHELL === '1';
+    this.shellName = posix ? 'bash' : 'PowerShell';
+    this.posix = posix;
+    const shellBin = posix ? (process.env.TERMDESK_SHELL || '/bin/bash') : 'powershell.exe';
+    // `-c <script>`, not `-s`: with -s bash reads the *program* from stdin, so
+    // the loop would never run and the first command would wait forever.
+    const shellArgs = posix
+      ? ['--norc', '--noprofile', '-c', POSIX_LOOP_SCRIPT]
+      : ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', LOOP_SCRIPT];
+    // Windows keeps the behaviour it had (the agent starts in its own directory).
+    // A POSIX host has a meaningful home - the sandbox - and the caller may name a
+    // start directory explicitly, which is what the phone does.
+    const cwd = posix
+      ? (process.env.TERMDESK_SHELL_CWD || process.env.HOME || os.homedir())
+      : undefined;
+    this.child = spawn(shellBin, shellArgs, {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: process.env,
+      cwd,
+    });
 
     this.child.stdout.on('data', (chunk) => {
       if (generation !== this.generation) return; // stale process
@@ -176,8 +221,10 @@ class TerminalSession {
       this.currentCommand = { id, command: cmd, startedAt: Date.now() };
       this.lastActivity = Date.now();
       const payload = Buffer.from(cmd, 'utf8').toString('base64');
+      // Two frames, one contract: bash reads '<id>\t<base64>', PowerShell reads JSON.
+      const frame = this.posix ? `${id}\t${payload}\n` : `${JSON.stringify({ id, c: payload })}\n`;
       try {
-        this.child.stdin.write(`${JSON.stringify({ id, c: payload })}\n`);
+        this.child.stdin.write(frame);
       } catch {
         this.listeners.pop();
         resolve({ output: '', code: -1, error: 'write_failed' });
@@ -259,7 +306,7 @@ export class TerminalManager {
       this.owner?.(sid, text, stream);
     }).start();
     this.sessions.set(id, session);
-    session.emit(`TermDesk shell ${id} — PowerShell\n`, 'system');
+    session.emit(`TermDesk shell ${id} — ${session.shellName ?? 'shell'}\n`, 'system');
     return session;
   }
 

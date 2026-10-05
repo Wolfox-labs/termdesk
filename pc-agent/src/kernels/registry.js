@@ -47,6 +47,25 @@ function firstFile(candidates) {
 }
 
 /**
+ * First executable of that name on PATH.
+ *
+ * The Windows entries below name exact install locations, because a Windows
+ * installer never lands where one would expect. A POSIX host is the opposite:
+ * everything worth running is on PATH, and hard-coding a /data/data/... path
+ * there would be a Windows habit leaking into a Linux userland.
+ */
+function firstOnPath(names) {
+  const dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  for (const name of names) {
+    for (const dir of dirs) {
+      const found = fileOrNull(path.join(dir, name));
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/**
  * Node-hosted CLIs (npm global installs) are spawned as
  * `node <entry> <args…>`. `process.execPath` is used rather than a bare `node`
  * so a stripped PATH (scheduled task, service) cannot break the launch.
@@ -73,6 +92,7 @@ function table() {
       detail: '官方 app-server：列表 / 读取 / 恢复 / fork / 打断都由内核提供',
       resolve: () => {
         if (process.env.TERMDESK_CODEX) return fileOrNull(process.env.TERMDESK_CODEX) ?? process.env.TERMDESK_CODEX;
+        if (process.platform !== "win32") return firstOnPath(["codex"]);
         const base = path.join(os.homedir(), 'AppData', 'Local', 'OpenAI', 'Codex', 'bin');
         try {
           for (const entry of fs.readdirSync(base)) {
@@ -92,6 +112,9 @@ function table() {
       detail: 'SDK 运行时：可连续对话；历史恢复尚未开放',
       resolve: () => {
         if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
+        // In a sandbox, "dsh" is whatever is on PATH; the Windows path below
+        // only exists inside the desktop app install.
+        if (process.platform !== "win32") return firstOnPath(["dsh"]);
         // Must be the JS entry: the chat pipeline launches it as
         // `node <entry> --profile sdk`, and `bin/dsh.ps1` is only a launcher shim.
         return firstFile([
@@ -110,6 +133,7 @@ function table() {
       detail: 'ACP：会话列表 / 恢复 / fork / 图片与内嵌上下文',
       resolve: () => {
         if (process.env.TERMDESK_OPENCODE) return fileOrNull(process.env.TERMDESK_OPENCODE) ?? process.env.TERMDESK_OPENCODE;
+        if (process.platform !== "win32") return firstOnPath(["opencode"]);
         return firstFile([
           path.join('D:', path.sep, 'OpenCode', 'opencode-cli.exe'),
           path.join(LOCAL_PROGRAMS, '@opencode-aidesktop', 'resources', 'bin', 'opencode-cli.exe'),
@@ -127,6 +151,7 @@ function table() {
       detail: 'ACP（OpenCode 内核）：会话列表 / 恢复 / fork',
       resolve: () => {
         if (process.env.TERMDESK_MIMO) return fileOrNull(process.env.TERMDESK_MIMO) ?? process.env.TERMDESK_MIMO;
+        if (process.platform !== "win32") return firstOnPath(["mimo"]);
         return nodeEntry([
           path.join(NPM_ROOT, 'node_modules', '@mimo-ai', 'cli', 'bin', 'mimo'),
         ]);
@@ -167,7 +192,9 @@ function table() {
         verified: false,
       },
       resolve: () => fileOrNull(process.env.TERMDESK_QODER)
-        ?? firstFile([path.join(LOCAL_PROGRAMS, 'QoderWork CN', 'resources', 'bin', 'qoderclicn.exe')]),
+        ?? (process.platform !== "win32"
+          ? firstOnPath(["qoderclicn", "qoder"])
+          : firstFile([path.join(LOCAL_PROGRAMS, "QoderWork CN", "resources", "bin", "qoderclicn.exe")])),
     },
     {
       // Command Code grew a real ACP server in 1.74.1 (`cmd acp`), so it is driven
@@ -190,6 +217,7 @@ function table() {
       detail: 'ACP（1.74.1 原生）：会话列表 / 读取回放 / 恢复 / 图片与内嵌上下文',
       resolve: () => {
         if (process.env.TERMDESK_COMMAND_CODE) return fileOrNull(process.env.TERMDESK_COMMAND_CODE) ?? process.env.TERMDESK_COMMAND_CODE;
+        if (process.platform !== "win32") return firstOnPath(["cmdc", "commandcode", "command-code"]);
         return nodeEntry([
           path.join(NPM_ROOT, 'node_modules', 'command-code', 'dist', 'index.mjs'),
         ]);

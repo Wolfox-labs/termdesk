@@ -4,7 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { WebSocket } from 'ws';
-import { SocksProxyAgent } from 'socks-proxy-agent';
+import { createRequire } from 'node:module';
+
+/**
+ * The SOCKS proxy agent is required lazily: only a relay that is explicitly
+ * configured with a proxy needs it, and the sandbox build ships without it.
+ */
+const require = createRequire(import.meta.url);
 
 const MAX_QUEUE = 16 * 1024 * 1024;
 export function loadRelayConfig() {
@@ -22,7 +28,9 @@ function send(ws, value) {
 export function startRelayConnector({ config, port, token, accessKey = '', log = console.log }) {
   let control = null, retry = null, heartbeat = null, stopped = false, failures = 0;
   const localSockets = new Map(), transfers = new Set();
-  const proxy = config.proxy ? new SocksProxyAgent(config.proxy) : undefined;
+  const proxy = config.proxy
+    ? new (require('socks-proxy-agent').SocksProxyAgent)(config.proxy)
+    : undefined;
   const endpoint = route => { const url = new URL(config.url); url.pathname = route; url.search = ''; return url; };
   const localBase = `http://127.0.0.1:${port}`;
   function dropLocals() {
