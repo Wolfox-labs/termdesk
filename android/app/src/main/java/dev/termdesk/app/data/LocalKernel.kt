@@ -414,3 +414,120 @@ private const val TAG = "TermDeskLocalKernel"
         }
         return missing
     }
+
+/**
+ * Runs commands inside the installed sandbox.
+ *
+ * One long-lived `bash -s` per shell, not one process per command: a fresh
+ * process would lose `cd` and the environment, which is most of what a terminal
+ * is for. Every command is followed by a sentinel line carrying both the exit
+ * code and the working directory, so the UI can stop saying "running" and show
+ * the real prompt without parsing bash prompts.
+ *
+ * The plan (documents/本地内核方案.md §8) asks for exactly this: switch the
+ * execution backend, keep the UI and the event vocabulary.
+ */
+class LocalShell(private val context: Context) {
+
+    private val shellFile: File get() = File(context.filesDir, "usr/bin/bash")
+    private val prefix: File get() = File(context.filesDir, "usr")
+
+    @Volatile private var process: Process? = null
+    @Volatile private var stdin: java.io.BufferedWriter? = null
+    @Volatile private var running = false
+    private val readers = ArrayList<Thread>()
+
+    /** The sandbox's current directory, as the last command left it. */
+    @Volatile var cwd: String = ""
+        private set
+
+    /** Metadata only: is there a shell to run? */
+    fun ready(): Boolean = shellFile.exists()
+
+    private fun home(): File = File(context.filesDir, "home").apply { mkdirs() }
+
+    /**
+     * Start the shell if it is not running. [onLine] receives output lines with
+     * `stderr = true` for the error stream; [onFinish] receives the exit code.
+     */
+    fun start(onLine: (String, Boolean) -> Unit, onFinish: (Int) -> Unit, onExit: () -> Unit) {
+        if (process != null) return
+        if (!ready()) throw IllegalStateException("本地内核还没安装")
+        val pb = ProcessBuilder(shellFile.absolutePath, "--norc", "--noprofile", "-s")
+        pb.directory(home())
+        pb.environment().apply {
+            put("PATH", prefix.absolutePath + "/bin:" + prefix.absolutePath + "/bin/applets:/system/bin:/system/xbin")
+            put("LD_LIBRARY_PATH", prefix.absolutePath + "/lib")
+            put("PREFIX", prefix.absolutePath)
+            put("HOME", home().absolutePath)
+            put("TMPDIR", File(prefix, "tmp").apply { mkdirs() }.absolutePath)
+            put("TERM", "xterm-256color")
+            put("LANG", "en_US.UTF-8")
+        }
+        val child = pb.start()
+        process = child
+        stdin = child.outputStream.bufferedWriter()
+        readers.clear()
+        val consume: (java.io.InputStream, Boolean) -> Unit = { stream, isErr ->
+            val thread = Thread {
+                try {
+                    stream.bufferedReader().forEachLine { line ->
+                        if (line.startsWith(END_PREFIX)) {
+                            val parts = line.removePrefix(END_PREFIX).split('|', limit = 2)
+                            val code = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: 0
+                            if (parts.size > 1 && parts[1].isNotBlank()) cwd = parts[1].trim()
+                            running = false
+                            onFinish(code)
+                        } else {
+                            onLine(line, isErr)
+                        }
+                    }
+                } catch (_: Throwable) {
+                    // The shell was killed or the app is going away.
+                }
+            }
+            thread.isDaemon = true
+            thread.start()
+            readers.add(thread)
+        }
+        consume(child.inputStream, false)
+        consume(child.errorStream, true)
+        val watcher = Thread {
+            runCatching { child.waitFor() }
+            process = null
+            stdin = null
+            running = false
+            onExit()
+        }
+        watcher.isDaemon = true
+        watcher.start()
+    }
+
+    /** Send one command; the caller stops showing "running" when it finishes. */
+    fun send(command: String) {
+        val out = stdin ?: throw IllegalStateException("本地 shell 没有启动")
+        running = true
+        out.write(command)
+        if (!command.endsWith("\n")) out.write("\n")
+        // Exit code and working directory in one line, so `cd` survives.
+        out.write("printf '" + END_PREFIX + "%d|%s\\n' \"\$?\" \"\$PWD\"\n")
+        out.flush()
+    }
+
+    fun busy(): Boolean = running
+
+    /** Ctrl-C, as far as a phone can: kill the shell; the next command restarts it. */
+    fun cancel() {
+        running = false
+        runCatching { process?.destroy() }
+        process = null
+        stdin = null
+    }
+
+    fun stop() = cancel()
+
+    companion object {
+        /** Never shown: the reader turns it into an exit code instead. */
+        private const val END_PREFIX = "__TERMDESK_END__"
+    }
+}

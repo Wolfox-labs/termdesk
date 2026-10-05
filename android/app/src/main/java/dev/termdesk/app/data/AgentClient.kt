@@ -122,6 +122,19 @@ class AgentClient(
     private val _termBusy = MutableStateFlow(false)
     val termBusy: StateFlow<Boolean> = _termBusy.asStateFlow()
 
+    /**
+     * Which kernel the terminal runs on: the PC (`remote`) or the phone's own
+     * sandbox (`local`). The screen is the same either way - only the backend
+     * changes, which is what documents/本地内核方案.md §8 asks for.
+     */
+    private val _termBackend = MutableStateFlow("remote")
+    val termBackend: StateFlow<String> = _termBackend.asStateFlow()
+
+    /** The sandbox shell, started on first use. */
+    private val localShell: LocalShell? by lazy {
+        appContext?.let { LocalShell(it) }
+    }
+
     /** Set when the agent reports the shell is not enabled on the PC. */
     private val _termUnavailable = MutableStateFlow<String?>(null)
     val termUnavailable: StateFlow<String?> = _termUnavailable.asStateFlow()
@@ -390,16 +403,47 @@ class AgentClient(
 
     // ---- P3 operations ----
 
+    /**
+     * Switch the terminal's execution backend.
+     *
+     * The scrollback is cleared because the two backends are different machines:
+     * mixing their output would make the transcript lie about where a command ran.
+     */
+    fun setTermBackend(backend: String) {
+        if (backend == _termBackend.value) return
+        _termBackend.value = backend
+        _termLines.value = emptyList()
+        _termBusy.value = false
+        localShell?.cancel()
+        if (backend == "remote") {
+            openTerminal()
+        } else {
+            val shell = localShell
+            val ready = shell?.ready() == true
+            _termSession.value = null
+            appendTerm(
+                if (ready) "本地内核 · 手机沙盒（命令跑在这台手机上，电脑可以不在线）"
+                else "本地内核还没安装：设置 → 本地内核 → 安装",
+                TermLine.Stream.SYSTEM,
+            )
+        }
+    }
+
     /** Open a terminal session, or reuse the existing one. */
     fun openTerminal() {
+        if (_termBackend.value == "local") return
         if (_termSession.value != null) return
         sendFrame(JSONObject().put("type", "term.open"))
     }
 
     fun runCommand(command: String) {
-        val sid = _termSession.value ?: return
         val trimmed = command.trim()
         if (trimmed.isEmpty()) return
+        if (_termBackend.value == "local") {
+            runLocalCommand(trimmed)
+            return
+        }
+        val sid = _termSession.value ?: return
 
         // Echo locally so the terminal feels responsive before the round trip.
         appendTerm("❯ $trimmed", TermLine.Stream.INPUT)
@@ -407,7 +451,43 @@ class AgentClient(
         sendFrame(JSONObject().put("type", "term.run").put("sessionId", sid).put("command", trimmed))
     }
 
+    /** One command in the sandbox, streamed line by line into the same scrollback. */
+    private fun runLocalCommand(command: String) {
+        val shell = localShell
+        if (shell == null || !shell.ready()) {
+            appendTerm("本地内核还没安装：设置 → 本地内核 → 安装", TermLine.Stream.SYSTEM)
+            return
+        }
+        try {
+            shell.start(
+                onLine = { line, isErr ->
+                    appendTerm(line, if (isErr) TermLine.Stream.STDERR else TermLine.Stream.STDOUT)
+                },
+                onFinish = { code ->
+                    // The sentinel says the turn is over; the code is worth showing
+                    // only when it is not success, or every command ends in noise.
+                    if (code != 0) appendTerm("退出码 $code", TermLine.Stream.SYSTEM)
+                    _termBusy.value = false
+                },
+                onExit = { _termBusy.value = false },
+            )
+        } catch (err: Throwable) {
+            appendTerm("无法启动本地 shell：${err.message}", TermLine.Stream.STDERR)
+            _termBusy.value = false
+            return
+        }
+        appendTerm("❯ $command", TermLine.Stream.INPUT)
+        _termBusy.value = true
+        shell.send(command)
+    }
+
     fun interruptCommand() {
+        if (_termBackend.value == "local") {
+            localShell?.cancel()
+            appendTerm("已停止（本地 shell 已结束，下一条命令会重新启动它）", TermLine.Stream.SYSTEM)
+            _termBusy.value = false
+            return
+        }
         val sid = _termSession.value ?: return
         sendFrame(JSONObject().put("type", "term.interrupt").put("sessionId", sid))
     }

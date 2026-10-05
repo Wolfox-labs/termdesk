@@ -43,9 +43,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -53,17 +55,59 @@ import androidx.compose.ui.unit.sp
 import dev.termdesk.app.data.TermLine
 import dev.termdesk.app.ui.theme.Semantic
 
-/** Commands worth one tap on a phone keyboard. */
-private val QUICK_COMMANDS = listOf(
-    "ls" to "dir",
-    "cd .." to "cd ..",
-    "git status" to "git status",
-    "git diff" to "git diff --stat",
-    "top" to "Get-Process | Sort-Object CPU -Descending | Select-Object -First 15",
-    "ip" to "ipconfig",
-    "ports" to "netstat -ano | Select-String LISTEN",
-    "env" to "\$env:PATH -split ';'",
-)
+/** Commands worth one tap on a phone keyboard, per backend: the two machines
+ *  speak different shells, so their shortcuts are not interchangeable. */
+private fun quickCommands(backend: String): List<Pair<String, String>> = if (backend == "local") {
+    listOf(
+        "ls" to "ls -la",
+        "pwd" to "pwd",
+        "uname" to "uname -a",
+        "disk" to "df -h .",
+        "python" to "python3 -V",
+        "procs" to "ps -ef | head -20",
+        "env" to "echo \$PATH",
+    )
+} else {
+    listOf(
+        "ls" to "dir",
+        "cd .." to "cd ..",
+        "git status" to "git status",
+        "git diff" to "git diff --stat",
+        "top" to "Get-Process | Sort-Object CPU -Descending | Select-Object -First 15",
+        "ip" to "ipconfig",
+        "ports" to "netstat -ano | Select-String LISTEN",
+        "env" to "\$env:PATH -split ';'",
+    )
+}
+
+/** One backend choice: name, what it means, and whether it is the active one. */
+@Composable
+private fun BackendChip(label: String, hint: String, selected: Boolean, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surface,
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            hint,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
 
 @Composable
 fun TerminalSection(
@@ -73,18 +117,20 @@ fun TerminalSection(
     unavailable: String?,
     onOpen: () -> Unit,
     onRun: (String) -> Unit,
+    backend: String,
+    onSetBackend: (String) -> Unit,
     onInterrupt: () -> Unit,
     onClear: () -> Unit,
     onClose: () -> Unit,
 ) {
-    var input by remember { mutableStateOf("") }
+    var input by remember { mutableStateOf("" ) }
     var history by remember { mutableStateOf(listOf<String>()) }
     var historyIndex by remember { mutableStateOf(-1) }
     val listState = rememberLazyListState()
 
     // Open the session lazily, the first time this pane is shown.
     LaunchedEffect(sessionId, unavailable) {
-        if (sessionId == null && unavailable == null) onOpen()
+        if (backend == "remote" && sessionId == null && unavailable == null) onOpen()
     }
 
     // Follow new output, the way a terminal should.
@@ -103,6 +149,20 @@ fun TerminalSection(
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
+        // Which kernel this terminal drives. Same screen either way: the plan's
+        // "switch the execution backend, keep the UI" (本地内核方案 §8).
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            BackendChip("远程内核", "这台电脑", backend == "remote") { onSetBackend("remote") }
+            BackendChip("本地内核", "手机沙盒", backend == "local") { onSetBackend("local") }
+        }
+
         // Header: status + controls
         Row(
             modifier = Modifier
@@ -113,6 +173,7 @@ fun TerminalSection(
         ) {
             Text(
                 text = when {
+                    backend == "local" -> "手机沙盒 · bash"
                     unavailable != null -> "不可用"
                     sessionId == null -> "连接中…"
                     else -> "${sessionId} · PowerShell"
@@ -133,7 +194,7 @@ fun TerminalSection(
             IconButton(onClick = onClear, enabled = lines.isNotEmpty()) {
                 Icon(Icons.Outlined.ClearAll, contentDescription = "清屏", modifier = Modifier.size(19.dp))
             }
-            if (sessionId != null) {
+            if (sessionId != null && backend == "remote") {
                 IconButton(onClick = onClose) {
                     Icon(
                         Icons.Outlined.Close,
@@ -205,8 +266,9 @@ fun TerminalSection(
             }
         }
 
-        // Quick commands
-        if (sessionId != null) {
+        // Quick commands. The local backend has no remote session id, and its
+        // shortcuts are the sandbox's own commands, not PowerShell's.
+        if (backend == "local" || sessionId != null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -215,7 +277,7 @@ fun TerminalSection(
                     .padding(horizontal = 8.dp, vertical = 5.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                QUICK_COMMANDS.forEach { (label, cmd) ->
+                quickCommands(backend).forEach { (label, cmd) ->
                     Box(
                         modifier = Modifier
                             .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(7.dp))

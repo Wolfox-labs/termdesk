@@ -49,6 +49,7 @@ fun AppRoot(
     val localKernel by vm.localKernel.collectAsState()
     val transfer by vm.transfer.collectAsState()
     val termLines by vm.termLines.collectAsState()
+    val termBackend by vm.termBackend.collectAsState()
     val termSession by vm.termSession.collectAsState()
     val termBusy by vm.termBusy.collectAsState()
     val termUnavailable by vm.termUnavailable.collectAsState()
@@ -192,10 +193,12 @@ fun AppRoot(
                 onDeleteEntry = vm::deleteEntry,
                 onRenameEntry = vm::renameEntry,
                 termLines = termLines,
+                termBackend = termBackend,
                 termBusy = termBusy,
                 termSession = termSession,
                 termUnavailable = termUnavailable,
                 onTermOpen = vm::openTerminal,
+                onSetTermBackend = vm::setTermBackend,
                 onTermRun = vm::runCommand,
                 onTermInterrupt = vm::interruptCommand,
                 onTermClear = vm::clearTerminal,
