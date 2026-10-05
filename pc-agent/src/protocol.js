@@ -43,6 +43,9 @@ export const C2S = {
   CHAT_RESUME: 'chat.resume',
   CHAT_SEND: 'chat.send',
   CHAT_CONFIG: 'chat.config',
+  // What this conversation can be switched to. Asked for when the phone needs
+  // it, because a kernel only declares its model list once a session exists.
+  CHAT_MODELS: 'chat.models',
   CHAT_READ: 'chat.read',
   CHAT_CANCEL: 'chat.cancel',
   CHAT_CLOSE: 'chat.close',
@@ -74,6 +77,7 @@ export const S2C = {
   SESSION: 'session',
   CHATS: 'chats',
   CHAT: 'chat',
+  CHAT_MODELS: 'chat.models',
   CHAT_EVENT: 'chat.event',
   CHAT_STATUS: 'chat.status',
   CHAT_TURN: 'chat.turn',

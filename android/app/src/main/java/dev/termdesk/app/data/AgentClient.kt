@@ -206,6 +206,14 @@ class AgentClient(
     private val _chats = MutableStateFlow<List<ChatInfo>>(emptyList())
     val chats: StateFlow<List<ChatInfo>> = _chats.asStateFlow()
 
+    /**
+     * Model lists per chat, asked for on demand. Deliberately NOT part of
+     * [ChatInfo]: a kernel can declare 1500 models and a chat summary has to
+     * stay a summary.
+     */
+    private val _chatModels = MutableStateFlow<Map<String, ChatModels>>(emptyMap())
+    val chatModels: StateFlow<Map<String, ChatModels>> = _chatModels.asStateFlow()
+
     /** The chat currently open, or null while the index is showing. */
     private val _activeChat = MutableStateFlow<ChatInfo?>(null)
     val activeChat: StateFlow<ChatInfo?> = _activeChat.asStateFlow()
@@ -584,6 +592,17 @@ class AgentClient(
         frame.put("model", model ?: "")
         frame.put("effort", effort ?: "")
         sendFrame(frame)
+    }
+
+    /**
+     * Ask what this conversation can be switched to.
+     *
+     * Metadata only: the PC answers from the kernel's own session declaration,
+     * so no model runs for this. It also opens the session the first turn will
+     * then use, which is why the answer carries that session's id.
+     */
+    fun requestChatModels(chatId: String) {
+        sendFrame(JSONObject().put("type", "chat.models").put("chatId", chatId))
     }
 
     /** Stop the current reply. The PC disposes the runtime; there is no per-turn cancel. */
@@ -1350,6 +1369,7 @@ class AgentClient(
                     frame.optJSONArray("approvals")?.let { _approvals.value = parseApprovals(it) }
                 }
                 "chat.approval" -> applyApproval(frame)
+                "chat.models" -> applyChatModels(frame)
                 "chat" -> {
                     _chatSending.value = false
                     val info = parseChatInfo(frame)
@@ -1400,6 +1420,7 @@ class AgentClient(
                 "chat.closed" -> {
                     val chatId = frame.optString("chatId")
                     _chats.value = _chats.value.filterNot { it.id == chatId }
+                    _chatModels.value = _chatModels.value - chatId
                     _approvals.value = _approvals.value.filterNot { it.chatId == chatId }
                     if (_activeChat.value?.id == chatId) {
                         _activeChat.value = null
@@ -1513,11 +1534,14 @@ class AgentClient(
         if (id.isEmpty()) return null
         return ChatInfo(
             id = id,
-            title = o.optString("title"),
+            // optString() turns a JSON null into the four-letter word "null",
+            // which then showed up on screen as a model called null. Absent
+            // means absent: the kernel default, not a name.
+            title = if (o.isNull("title")) "" else o.optString("title"),
             cwd = o.optString("cwd"),
-            provider = o.optString("provider"),
-            model = o.optString("model"),
-            effort = o.optString("effort"),
+            provider = if (o.isNull("provider")) "" else o.optString("provider"),
+            model = if (o.isNull("model")) "" else o.optString("model"),
+            effort = if (o.isNull("effort")) "" else o.optString("effort"),
             status = o.optString("status", "idle"),
             ready = o.optBoolean("ready", false),
             engine = o.optString("engine", "dsh"),
@@ -1584,6 +1608,30 @@ class AgentClient(
         val event = parseChatEvent(item)
         chatEventIndex[event.seq] = event
         _chatEvents.value = chatEventIndex.values.sortedBy { it.seq }
+    }
+
+    /** Keep the kernel's answer for this chat; the picker reads it from here. */
+    private fun applyChatModels(frame: JSONObject) {
+        val chatId = frame.optString("chatId")
+        if (chatId.isBlank()) return
+        val models = frame.optJSONArray("models")?.let { arr ->
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val id = o.optString("id")
+                    if (id.isNotBlank()) add(ModelChoice(id, o.optString("label").ifBlank { id }))
+                }
+            }
+        }.orEmpty()
+        val current = if (frame.isNull("current")) null else frame.optString("current").ifBlank { null }
+        val note = if (frame.isNull("message")) null else frame.optString("message").ifBlank { null }
+        _chatModels.value = _chatModels.value + (chatId to ChatModels(
+            chatId = chatId,
+            supported = frame.optBoolean("supported", false),
+            current = current,
+            models = models,
+            note = note,
+        ))
     }
 
     private fun upsertChat(info: ChatInfo) {

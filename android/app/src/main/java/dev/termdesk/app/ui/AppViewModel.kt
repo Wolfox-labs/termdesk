@@ -10,6 +10,7 @@ import dev.termdesk.app.data.ActionResult
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatInfo
+import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
@@ -174,6 +175,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun openChat(chatId: String) = client.openChat(chatId)
     fun sendChatMessage(chatId: String, text: String, model: String? = null, effort: String? = null) =
         client.sendChatMessage(chatId, text, model, effort)
+
+    /** Model lists per chat, answered by the kernel itself. */
+    val chatModels: StateFlow<Map<String, ChatModels>> = client.chatModels
+
+    /** Ask what the open conversation can switch to (no model runs for this). */
+    fun requestChatModels(chatId: String) = client.requestChatModels(chatId)
 
     /** Change what the open conversation runs on from now on (model / effort). */
     fun configureChat(chatId: String, model: String?, effort: String?) =

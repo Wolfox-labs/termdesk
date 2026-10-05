@@ -118,3 +118,26 @@ data class ChatEvent(
 
     val hasText: Boolean get() = text.isNotBlank()
 }
+
+/** One model a kernel says this conversation can switch to. */
+data class ModelChoice(val id: String, val label: String)
+
+/**
+ * What a live conversation can be switched to, as the kernel declared it.
+ *
+ * ACP kernels only declare this once a session exists, so it arrives when the
+ * phone asks for it ([AgentClient.requestChatModels]) instead of riding along in
+ * every chat frame: one kernel declares 1556 models, and a summary is not the
+ * place to carry them.
+ */
+data class ChatModels(
+    val chatId: String,
+    val supported: Boolean,
+    val current: String?,
+    val models: List<ModelChoice>,
+    /** Why there is no list, when there is none (a kernel with no model API). */
+    val note: String?,
+) {
+    /** The label for an id, so the UI never has to show a raw slug alone. */
+    fun labelOf(id: String): String = models.firstOrNull { it.id == id }?.label ?: id
+}

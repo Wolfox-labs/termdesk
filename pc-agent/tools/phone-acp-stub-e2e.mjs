@@ -118,6 +118,24 @@ try {
   const chatId = chat.id;
   check('the conversation opens on the stub kernel', chat.engine === 'stub', `engine=${chat.engine}`);
 
+  // ---- the model list, asked for before any turn ---------------------------
+  // The phone shows the picker as soon as a conversation is open, so the list
+  // has to exist then - not after the first answer. The session opened to answer
+  // this question is the one turn 1 then uses: if that were not so, every chat
+  // would pay a second, empty session in the kernel's own history.
+  client.ws.send(JSON.stringify({ type: 'chat.models', chatId }));
+  const modelsFrame = await waitFrame(
+    client,
+    (f) => f.type === 'chat.models' && f.chatId === chatId,
+    20000,
+    'the model list',
+  );
+  check('the model list arrives before the first turn', modelsFrame.supported === true, JSON.stringify(modelsFrame).slice(0, 120));
+  check('the list carries what the kernel declared', (modelsFrame.models ?? []).some((m) => m.id === 'stub/echo-1'), JSON.stringify(modelsFrame.models));
+  check('the list names the current model', modelsFrame.current === 'stub/echo-1', String(modelsFrame.current));
+  check('the permission modes ride along', (modelsFrame.modes?.availableModes ?? []).length > 0, JSON.stringify(modelsFrame.modes));
+  check('no second session was opened for it', modelsFrame.sessionId === 'stub-0001', String(modelsFrame.sessionId));
+
   // ---- turn 1 --------------------------------------------------------------
   const ask = '走一遍完整链路';
   client.ws.send(JSON.stringify({ type: 'chat.send', chatId, text: ask }));

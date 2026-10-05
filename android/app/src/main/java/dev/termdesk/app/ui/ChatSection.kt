@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -76,6 +77,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
+import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.ChatInfo
@@ -116,6 +118,8 @@ fun ChatSection(
     recordedSession: SessionDetail?,
     engines: List<KernelInfo>,
     codexConfig: CodexConfig?,
+    chatModels: Map<String, ChatModels>,
+    onRequestChatModels: (String) -> Unit,
     onOpenSections: () -> Unit,
     onLoadChats: () -> Unit,
     onCreateChat: (String?) -> Unit,
@@ -158,6 +162,17 @@ fun ChatSection(
 
     // A new subject always starts folded.
     LaunchedEffect(activeChat?.id, recordedSession?.id) { detailOpen = false }
+
+    // A conversation's model list is the kernel's own declaration, and a kernel
+    // only declares it once a session exists - so it is asked for as soon as a
+    // conversation is open, not only when the folded panel is expanded. Codex is
+    // the exception: its catalog is configuration, not a session declaration.
+    LaunchedEffect(activeChat?.id, activeChat?.engine, connected) {
+        val chat = activeChat ?: return@LaunchedEffect
+        if (connected && chat.engine != "codex" && chatModels[chat.id] == null) {
+            onRequestChatModels(chat.id)
+        }
+    }
 
     val open = activeChat != null || recordedSession != null
 
@@ -205,7 +220,9 @@ fun ChatSection(
                 ChatDetailPanel(
                     chat = chat,
                     codexConfig = codexConfig,
+                    models = chatModels[chat.id],
                     onConfigure = onConfigureChat,
+                    onRequestModels = { onRequestChatModels(chat.id) },
                 )
             } else if (recorded != null) {
                 RecordedDetailPanel(recorded)
@@ -435,14 +452,33 @@ private fun SessionBar(
 private fun ChatDetailPanel(
     chat: ChatInfo,
     codexConfig: CodexConfig?,
+    models: ChatModels?,
     onConfigure: (String, String?, String?) -> Unit,
+    onRequestModels: () -> Unit,
 ) {
     val catalog = if (chat.engine == "codex") codexConfig?.models.orEmpty() else emptyList()
-    // The thread's own model may not be in the catalog (it can be set outside
-    // TermDesk), so it is always offered first — otherwise nothing looks chosen.
-    val models = remember(catalog, chat.model) {
-        val slugs = catalog.map { it.slug }
-        if (chat.model.isNotBlank() && chat.model !in slugs) listOf(chat.model) + slugs else slugs
+    // Two sources of truth, one picker: Codex declares its models in the config
+    // catalog, every other kernel answers through chat.models (its own session
+    // declaration). The thread's own model may be in neither (it can be set
+    // outside TermDesk), so it is always offered - otherwise nothing looks chosen.
+    val picker = remember(catalog, models, chat.model, chat.engine) {
+        val declared = models?.models.orEmpty().map { it.id to it.label }
+        val fromCatalog = catalog.map { it.slug to (it.displayName.ifBlank { it.slug }) }
+        val pairs = if (chat.engine == "codex") fromCatalog else declared
+        val all = if (chat.model.isNotBlank() && pairs.none { it.first == chat.model }) {
+            listOf(chat.model to chat.model) + pairs
+        } else pairs
+        // 1556 models are real, so the picker is searchable and never a chip row.
+        all.distinctBy { it.first }
+    }
+    val modelIds = picker.map { it.first }
+    val labelOf = { id: String -> picker.firstOrNull { it.first == id }?.second ?: id }
+    var pickerOpen by remember { mutableStateOf(false) }
+    val declaredCurrent = models?.current?.takeIf { it.isNotBlank() }
+    val currentLabel = when {
+        chat.model.isNotBlank() -> labelOf(chat.model)
+        declaredCurrent != null -> labelOf(declaredCurrent)
+        else -> "内核默认"
     }
     val levels = remember(catalog, chat.model) {
         catalog.firstOrNull { it.slug == chat.model }?.reasoningLevels
@@ -485,14 +521,46 @@ private fun ChatDetailPanel(
             overflow = TextOverflow.Ellipsis,
         )
 
-        if (models.isNotEmpty()) {
+        // A handful of models stay chips. Anything longer is a searchable picker:
+        // one ACP kernel declares 1556 of them, and a chip row is not a way to
+        // choose among those.
+        if (modelIds.isNotEmpty() && modelIds.size <= CHIP_LIMIT) {
             Spacer(Modifier.height(8.dp))
             InlineChips(
                 label = "模型",
-                items = models,
+                items = modelIds,
                 selected = chat.model,
+                labelOf = labelOf,
                 onSelect = { onConfigure(chat.id, it, chat.effort.ifBlank { null }) },
             )
+        } else if (modelIds.size > CHIP_LIMIT) {
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "模型",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.width(44.dp),
+                )
+                TextButton(
+                    onClick = { pickerOpen = true },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        currentLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    modelIds.size.toString() + " 个可选 · 可搜索",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
         }
         if (levels.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
@@ -503,12 +571,30 @@ private fun ChatDetailPanel(
                 onSelect = { onConfigure(chat.id, chat.model.ifBlank { null }, it) },
             )
         }
-        if (models.isEmpty() && levels.isEmpty() && chat.engine != "codex") {
+        if (modelIds.isEmpty() && levels.isEmpty()) {
             Spacer(Modifier.height(4.dp))
+            val note = models?.note
             Text(
-                "该内核由自己决定模型与强度。",
+                when {
+                    models == null && chat.engine != "codex" -> "正在读取这个内核的模型清单…"
+                    !note.isNullOrBlank() -> note
+                    chat.engine == "codex" -> "Codex 的模型清单见设置（models.json）"
+                    else -> "该内核没有声明模型清单，由它自己决定。"
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (pickerOpen) {
+            ModelPickerDialog(
+                title = "选择模型 · " + chat.engine,
+                options = picker,
+                selected = chat.model.ifBlank { declaredCurrent.orEmpty() },
+                onDismiss = { pickerOpen = false },
+                onPick = { id ->
+                    pickerOpen = false
+                    onConfigure(chat.id, id, chat.effort.ifBlank { null })
+                },
             )
         }
     }
@@ -549,12 +635,95 @@ private fun RecordedDetailPanel(session: SessionDetail) {
     }
 }
 
-/** Label + horizontally scrollable choices, one line each. */
+/** Above this many choices a chip row stops being a choice and becomes a scroll. */
+private const val CHIP_LIMIT = 12
+
+/** Searchable model picker: an ACP kernel can declare more models than a screen holds. */
 @Composable
+private fun ModelPickerDialog(
+    title: String,
+    options: List<Pair<String, String>>,
+    selected: String,
+    onDismiss: () -> Unit,
+    onPick: (String) -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    val filtered = remember(options, query) {
+        if (query.isBlank()) options
+        else options.filter { (id, name) -> id.contains(query, true) || name.contains(query, true) }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, style = MaterialTheme.typography.titleSmall) },
+        text = {
+            Column(Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    label = { Text("搜索模型") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    filtered.size.toString() + " / " + options.size.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
+                    items(filtered, key = { it.first }) { (id, name) ->
+                        val isSelected = id == selected
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPick(id) }
+                                .padding(vertical = 8.dp, horizontal = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    name,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                if (name != id) {
+                                    Text(
+                                        id,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                            if (isSelected) {
+                                Text(
+                                    "当前",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+@Composable
+/** Label + horizontally scrollable choices, one line each. */
 private fun InlineChips(
     label: String,
     items: List<String>,
     selected: String,
+    labelOf: (String) -> String = { it },
     onSelect: (String) -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -574,7 +743,7 @@ private fun InlineChips(
             items.forEach { item ->
                 val isSelected = item == selected
                 Text(
-                    text = item,
+                    text = labelOf(item),
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                     color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer

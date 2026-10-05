@@ -55,6 +55,7 @@ fun AppRoot(
     val codexConfig by vm.codexConfig.collectAsState()
     val codexTemplates by vm.codexTemplates.collectAsState()
     val chats by vm.chats.collectAsState()
+    val chatModels by vm.chatModels.collectAsState()
     val activeChat by vm.activeChat.collectAsState()
     val chatEvents by vm.chatEvents.collectAsState()
     val chatSending by vm.chatSending.collectAsState()
@@ -199,6 +200,8 @@ fun AppRoot(
                 onTermClear = vm::clearTerminal,
                 onTermClose = vm::closeTerminal,
                 codexConfig = codexConfig,
+                chatModels = chatModels,
+                onRequestChatModels = vm::requestChatModels,
                 codexTemplates = codexTemplates,
                 onCodexLoad = vm::loadCodexConfig,
                 onCodexApply = vm::applyCodexProvider,

@@ -650,6 +650,22 @@ export function createFrameHandler(ctx) {
         break;
       }
 
+      case C2S.CHAT_MODELS: {
+        const result = await chats.modelsFor(frame.chatId);
+        if (result.ok) {
+          send(S2C.CHAT_MODELS, result);
+        } else {
+          send(S2C.ACTION_RESULT, {
+            action: 'chat.models',
+            target: frame.chatId ?? '',
+            ok: false,
+            code: result.code,
+            message: result.message,
+          });
+        }
+        break;
+      }
+
       case C2S.CHAT_SEND: {
         const result = await chats.send(frame.chatId, frame.text, {
           model: frame.model,

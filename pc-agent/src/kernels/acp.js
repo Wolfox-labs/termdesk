@@ -473,6 +473,17 @@ export class AcpKernel extends EventEmitter {
     return true;
   }
 
+  /**
+   * The session's own switch surface, exactly as the kernel declared it in
+   * `session/new`: permission/agent modes and the generic config options.
+   * Read-only - what to render is the phone's decision, not this adapter's.
+   */
+  sessionOptions(sessionId) {
+    const meta = this.sessionMeta.get(sessionId);
+    if (!meta) return { modes: null, configOptions: [] };
+    return { modes: meta.modes ?? null, configOptions: meta.configOptions ?? [] };
+  }
+
   /** The models this session says it can switch to. */
   availableModels(sessionId) {
     const meta = this.sessionMeta.get(sessionId);

@@ -259,7 +259,6 @@ class Chat {
       ready: this.ready,
       sessionId: this.sessionId,
       threadId: this.threadId,
-      availableModels: this.availableModels,
       createdAt: this.createdAt,
       lastUsedAt: this.lastUsedAt,
       eventCount: this.events.length,
@@ -901,6 +900,89 @@ export class ChatManager {
     return kernel;
   }
 
+  /**
+   * Open this chat's kernel-side session, once, and remember what that session
+   * says it can become.
+   *
+   * Shared by the turn path and by "which models can this conversation use",
+   * because both need the SAME session: asking for the model list must not open
+   * a second one, and must not leave an empty one behind in the kernel's own
+   * history either - the session opened here is the one the first turn uses.
+   */
+  async openAcpSession(chat, kernel) {
+    const sessionId = await kernel.newSession({ cwd: chat.cwd });
+    // A CLI kernel names its session, so this can be empty: the id arrives with
+    // the first turn. Routing is only keyed once there is something to key on -
+    // an empty map key would catch another chat's updates.
+    chat.sessionId = sessionId;
+    chat.nativeResume = true;
+    chat.ready = true;
+    // What this kernel says the conversation can be switched to. The phone
+    // offers exactly this list, so a model choice is never a guess.
+    chat.availableModels = kernel.availableModels(sessionId);
+    if (sessionId) this.acpSessions.set(sessionId, chat);
+    return sessionId;
+  }
+
+  /** This chat's kernel, started, with a live session on it. */
+  async ensureAcpSession(chat) {
+    const kernel = this.kernelFor(chat.engine);
+    await kernel.ensureStarted();
+    if (!chat.ready || !chat.nativeResume) await this.openAcpSession(chat, kernel);
+    return kernel;
+  }
+
+  /**
+   * What this conversation can be switched to.
+   *
+   * ACP declares its models when a session exists, and TermDesk keeps chats lazy,
+   * so the list is asked for when the phone opens the picker instead of at
+   * creation: the session that answers this question is the session the first
+   * turn then runs on, so nothing is opened twice and no empty conversation is
+   * left in the kernel's history.
+   *
+   * A kernel with no model list (a CLI shim, DSH) says so instead of answering
+   * with an empty list that would look like "no models available".
+   */
+  async modelsFor(id) {
+    const chat = this.chats.get(id);
+    if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
+    if (!isAcpKernel(chat.engine)) {
+      return {
+        ok: true,
+        chatId: id,
+        supported: false,
+        current: chat.model ?? null,
+        models: [],
+        modes: null,
+        message: `${chat.engine} 内核不由 ACP 提供模型清单`,
+      };
+    }
+    try {
+      const kernel = await this.ensureAcpSession(chat);
+      const info = chat.availableModels ?? kernel.availableModels(chat.sessionId);
+      chat.availableModels = info;
+      const options = kernel.sessionOptions?.(chat.sessionId) ?? null;
+      return {
+        ok: true,
+        chatId: id,
+        sessionId: chat.sessionId ?? null,
+        supported: true,
+        current: info?.current ?? null,
+        models: (info?.models ?? []).map((m) => ({ id: m.id, label: m.label ?? m.id })),
+        // Declared permission/agent modes ride along: they are part of the same
+        // session declaration, and the phone's permission switch needs them.
+        modes: options?.modes ?? null,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        code: 'session_failed',
+        message: `${chat.engine} 无法读取模型清单：${String(err?.message ?? err)}`,
+      };
+    }
+  }
+
   /** One ACP turn: attach (or open) the session, then prompt. */
   async sendAcp(chat, message, userSeq) {
     let kernel;
@@ -913,17 +995,7 @@ export class ChatManager {
 
     if (!chat.ready || !chat.nativeResume) {
       try {
-        const sessionId = await kernel.newSession({ cwd: chat.cwd });
-        // A CLI kernel names its session, so this can be empty: the id arrives
-        // with the first turn. Routing is only keyed once there is something to
-        // key on - an empty map key would catch another chat's updates.
-        chat.sessionId = sessionId;
-        chat.nativeResume = true;
-        chat.ready = true;
-        // What this kernel says the conversation can be switched to. The phone
-        // offers exactly this list, so a model choice is never a guess.
-        chat.availableModels = kernel.availableModels(sessionId);
-        if (sessionId) this.acpSessions.set(sessionId, chat);
+        await this.openAcpSession(chat, kernel);
       } catch (err) {
         return this.failAcp(chat, `${chat.engine} 无法创建会话：${String(err?.message ?? err)}`, userSeq, 'session_failed');
       }

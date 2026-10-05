@@ -57,6 +57,7 @@ import android.net.Uri
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatInfo
+import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
@@ -127,6 +128,8 @@ fun AppShell(
     onTermClear: () -> Unit,
     onTermClose: () -> Unit,
     codexConfig: CodexConfig?,
+    chatModels: Map<String, ChatModels>,
+    onRequestChatModels: (String) -> Unit,
     codexTemplates: List<CodexProviderTemplate>,
     onCodexLoad: () -> Unit,
     onCodexApply: (String, String, String?, String?, Long?) -> Unit,
@@ -261,6 +264,8 @@ fun AppShell(
                     onTermClear = onTermClear,
                     onTermClose = onTermClose,
                     codexConfig = codexConfig,
+                    chatModels = chatModels,
+                    onRequestChatModels = onRequestChatModels,
                     codexTemplates = codexTemplates,
                     onCodexLoad = onCodexLoad,
                     onCodexApply = onCodexApply,
@@ -507,6 +512,8 @@ private fun SectionBody(
     onTermClear: () -> Unit,
     onTermClose: () -> Unit,
     codexConfig: CodexConfig?,
+    chatModels: Map<String, ChatModels>,
+    onRequestChatModels: (String) -> Unit,
     codexTemplates: List<CodexProviderTemplate>,
     onCodexLoad: () -> Unit,
     onCodexApply: (String, String, String?, String?, Long?) -> Unit,
@@ -608,6 +615,8 @@ private fun SectionBody(
             recordedSession = recordedSession,
             engines = engines,
             codexConfig = codexConfig,
+            chatModels = chatModels,
+            onRequestChatModels = onRequestChatModels,
             onOpenSections = onOpenSections,
             onConfigureChat = onConfigureChat,
             onLoadChats = onLoadChats,

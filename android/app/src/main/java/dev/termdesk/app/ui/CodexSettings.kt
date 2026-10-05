@@ -1,5 +1,6 @@
 package dev.termdesk.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -21,6 +22,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Restore
@@ -109,6 +112,14 @@ fun SettingsSection(
     var confirmApply by remember { mutableStateOf(false) }
     var confirmRestore by remember { mutableStateOf<String?>(null) }
 
+    /**
+     * Settings is a list of destinations, not a wall of controls: each row opens
+     * one page, and back walks up one level (page -> settings root -> out of
+     * Settings) instead of leaving the whole section from wherever you stand.
+     */
+    var page by remember { mutableStateOf<String?>(null) }
+    BackHandler(enabled = page != null) { page = null }
+
     LaunchedEffect(templates, config) {
         if (providerId.isEmpty() && templates.isNotEmpty()) {
             val t = templates.first()
@@ -129,6 +140,38 @@ fun SettingsSection(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        val kernelSummary = "远程 · " + (defaultEngine?.let { id -> engines.find { it.id == id }?.displayName ?: id } ?: "这台电脑")
+        val themeLabel = when (themeMode) {
+            ThemeMode.Dark -> "深色"
+            ThemeMode.Light -> "浅色"
+            ThemeMode.System -> "跟随系统"
+        }
+        val storageLabel = storage?.let { (if (it.truncated) "≥ " else "") + Storage.format(it.totalBytes) } ?: "—"
+        val localLabel = localKernelStageLabel(localKernel)
+        val codexLabel = config?.model?.takeIf { it.isNotBlank() } ?: "未配置"
+
+        if (page == null) {
+            SettingsRootRow("内核", kernelSummary) { page = "kernel" }
+            SettingsRootRow("外观", themeLabel) { page = "appearance" }
+            SettingsRootRow("存储", storageLabel) { page = "storage" }
+            SettingsRootRow("本地内核", localLabel) { page = "local" }
+            SettingsRootRow("Codex 配置", codexLabel) { page = "codex" }
+        } else {
+            SubPageHeader(
+                title = when (page) {
+                    "kernel" -> "内核"
+                    "appearance" -> "外观"
+                    "storage" -> "存储"
+                    "local" -> "本地内核"
+                    else -> "Codex 配置"
+                },
+                onBack = { page = null },
+            )
+        }
+
+        when (page) {
+            null -> Unit
+            "kernel" -> {
         // --- kernel / target -------------------------------------------------
         Card {
             SettingRow(
@@ -181,17 +224,12 @@ fun SettingsSection(
                             modifier = Modifier.weight(1f),
                         )
                         Text(
-                            "未接入",
+                            localKernelStateLabel(localKernel),
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (localKernel.installed) Semantic.current.success
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "远程内核的引擎跑在电脑上；新对话默认用选中的那个。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                     Row(Modifier.padding(top = 6.dp)) {
                         Text(
                             "重新检测",
@@ -206,7 +244,8 @@ fun SettingsSection(
                 }
             }
         }
-
+            }
+            "appearance" -> {
         // --- appearance ------------------------------------------------------
         Card {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -248,7 +287,8 @@ fun SettingsSection(
                 }
             }
         }
-
+            }
+            "storage" -> {
         // --- on-phone storage -------------------------------------------------
         Card {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -308,7 +348,8 @@ fun SettingsSection(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
             }
         }
-
+            }
+            "local" -> {
         // --- local kernel (a Linux userland that runs on THIS phone) ----------
         Card {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -377,6 +418,8 @@ fun SettingsSection(
             }
         }
 
+            }
+            else -> {
         if (config == null) {
             Text(
                 "正在读取 Codex 配置…",
@@ -398,7 +441,6 @@ fun SettingsSection(
             }
             return@Column
         }
-
         // --- current Codex state --------------------------------------------
         Card {
             Text("Codex", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -589,6 +631,8 @@ fun SettingsSection(
                 }
             }
         }
+            }
+        }
     }
 
     if (confirmApply) {
@@ -616,6 +660,56 @@ fun SettingsSection(
             },
             onDismiss = { confirmRestore = null },
         )
+    }
+}
+
+/** Root row: opens one settings page, and says what that page currently is. */
+@Composable
+private fun SettingsRootRow(label: String, value: String, onClick: () -> Unit) {
+    Card {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                value,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
+/** A settings subpage's own bar: back arrow and name, nothing else. */
+@Composable
+private fun SubPageHeader(title: String, onBack: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) {
+            Icon(
+                Icons.Outlined.ArrowBack,
+                contentDescription = "返回",
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
     }
 }
 
@@ -806,6 +900,14 @@ private fun formatTokens(n: Long): String = when {
 }
 
 /** One word for where the local kernel install is. */
+/** What the sandbox row says: real state, not a promise. */
+private fun localKernelStateLabel(state: LocalKernelState): String = when {
+    state.installed -> "已安装 · 尚未接入对话"
+    state.stage == LocalKernelStage.FAILED -> "安装失败"
+    state.busy -> "处理中…"
+    else -> "未安装"
+}
+
 private fun localKernelStageLabel(state: LocalKernelState): String = when (state.stage) {
     LocalKernelStage.READY -> "已安装"
     LocalKernelStage.ABSENT -> "未安装"

@@ -56,7 +56,9 @@
 | `unsupported` | 已安装但没有可编程接口 | Antigravity、豆包 |
 
 `chat.create` 可带 `engine` / `provider` / `model`；chat 列表与详情均带 `engine`；
-`chat.config` 可在会话内改模型与思考强度。对话事件映射到同一套种类
+`chat.config` 可在会话内改模型与思考强度；`chat.models` 按需取回这个会话能切到哪些模型
+（内核只在会话存在时才声明模型清单，所以它不在 `chat.create` 的回包里，也不在每一条
+`chats` 帧里——那是 1500 个模型随每条帧搬运）。对话事件映射到同一套种类
 （`message` / `reasoning` / `tool` / `turn` 等），手机一套渲染。
 
 **为什么用 ACP**：会话列表、历史回放和继续对话都由内核自己提供，所以"打开历史"
