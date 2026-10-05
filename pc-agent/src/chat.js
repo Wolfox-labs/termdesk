@@ -71,6 +71,7 @@ import { CodexAppServer, notificationToChatEvents, turnToChatEvents } from './ke
 import { AcpKernel, acpUpdateToChatEvents, acpSessionToSessionInfo } from './kernels/acp.js';
 import { decisionFor } from './kernels/codex.js';
 import { CliKernel } from './kernels/cli.js';
+import { ensureOverlay, routeConfig, runtimeArgs } from './kernels/dsh.js';
 import { chatEngineIds, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
 import { ApprovalBroker, OPTIONS, describe as describeApproval } from './approvals.js';
 import { dshEventToChatEvent } from './sessions.js';
@@ -139,10 +140,8 @@ function findDsh() {
  * configurable instead of hard-coded to one host's setup.
  */
 function defaultRoute() {
-  return {
-    provider: process.env.TERMDESK_CHAT_PROVIDER || 'wolfox',
-    model: process.env.TERMDESK_CHAT_MODEL || 'spe/deepseek-v4.1-flash',
-  };
+  const route = routeConfig();
+  return { provider: route.provider, model: route.model };
 }
 
 /** The name a kernel gave a mode, so the transcript says "Bypass Permissions" and not an id. */
@@ -1422,7 +1421,18 @@ export class ChatManager {
       throw new Error(`找不到 DSH 入口：${bin}`);
     }
 
-    const child = spawn(process.execPath, [bin, '--profile', 'sdk'], {
+    // The sdk profile knows no providers by itself: the shared settings file
+    // that used to supply them is absent, and the desktop profile's patch is not
+    // read here. Without this overlay the handshake is refused outright
+    // ("no adapter registered for provider") and the turn never even starts.
+    let patch = null;
+    try {
+      const route = routeConfig();
+      patch = ensureOverlay({ ...route, model: chat.model || route.model });
+    } catch (err) {
+      chat.push({ kind: 'local', role: 'engine', text: `DSH 覆盖配置没写成：${err.message}` });
+    }
+    const child = spawn(process.execPath, runtimeArgs(bin, { patch }), {
       cwd: chat.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
@@ -1457,11 +1467,22 @@ export class ChatManager {
     rlErr.on('line', (line) => this.handleStderr(chat, line));
 
     // initialize fixes cwd/provider/model for the lifetime of the process.
-    await chat.request(
-      'initialize',
-      { cwd: chat.cwd, provider: chat.provider, model: chat.model },
-      INIT_TIMEOUT_MS,
-    );
+    try {
+      await chat.request(
+        'initialize',
+        { cwd: chat.cwd, provider: chat.provider, model: chat.model },
+        INIT_TIMEOUT_MS,
+      );
+    } catch (err) {
+      const message = String(err?.message ?? err);
+      if (!patch && /no adapter registered for provider/.test(message)) {
+        throw new Error(
+          `${message}｜这个 provider 不在 TermDesk 写的覆盖配置里；` +
+          'TERMDESK_CHAT_PROVIDER / TERMDESK_DSH_BASE_URL / TERMDESK_DSH_API_KEY_ENV 可以指定它',
+        );
+      }
+      throw err;
+    }
     chat.ready = true;
     chat.lastError = null;
     chat.push({ kind: 'local', role: 'engine', text: '运行时已就绪（原生会话）' });
