@@ -77,7 +77,7 @@ import androidx.compose.ui.unit.sp
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.CodexConfig
-import dev.termdesk.app.data.EngineInfo
+import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
@@ -114,7 +114,7 @@ fun ChatSection(
     sessions: List<SessionInfo>,
     defaultCwd: String,
     recordedSession: SessionDetail?,
-    engines: List<EngineInfo>,
+    engines: List<KernelInfo>,
     codexConfig: CodexConfig?,
     onOpenSections: () -> Unit,
     onLoadChats: () -> Unit,

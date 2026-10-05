@@ -25,7 +25,7 @@ import { loadOrCreateToken, tokenMatches, tokenPath } from './auth.js';
 import { allowedRoots } from './files.js';
 import { handleTransferRequest } from './transfer.js';
 import { TerminalManager } from './terminal.js';
-import { EngineManager } from './engines.js';
+import { listKernels, probeKernels } from './kernels/registry.js';
 import { ChatManager } from './chat.js';
 import { loadRelayConfig, startRelayConnector } from './relay-client.js';
 import { Tunnel, findCloudflared, findTunnelConfig, verifyPublic } from './tunnel.js';
@@ -84,7 +84,6 @@ function httpAccessKey(req, url) {
 }
 
 const terminals = new TerminalManager();
-const engines = new EngineManager();
 const chats = new ChatManager();
 
 /**
@@ -227,8 +226,9 @@ function printHeader({ args, token, apk, relay }) {
 }
 
 /** The kernel table: what can be driven today, and honestly why not the rest. */
-async function printKernels(engines) {
-  const list = await engines.probeEngines();
+async function printKernels() {
+  // Live ACP handshakes only when asked for: a startup banner must not spawn.
+  const list = await probeKernels();
   console.log('  内核');
   for (const kernel of list) {
     const mark = kernel.selectable ? '✔' : (kernel.available ? '○' : '·');
@@ -364,7 +364,7 @@ const server = http.createServer((req, res) => {
       return;
     }
     if (url.pathname === '/kernels.json') {
-      engines.probeEngines()
+      probeKernels()
         .then((kernels) => {
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ ok: true, kernels }));
@@ -508,7 +508,6 @@ wss.on('connection', (socket, req) => {
     socket,
     shellEnabled: SHELL_ENABLED,
     terminals,
-    engines,
     chats,
     pushStatus,
     stopStatus,
@@ -590,23 +589,8 @@ wss.on('connection', (socket, req) => {
       });
       send(S2C.HELLO, { hostname: os.hostname(), platform: `${os.platform()} ${os.release()}` });
       routedSocket = socket;
-      // Route engine task events to this socket. Last authenticated client wins,
-      // which matches how terminal output is routed.
-      engines.attach((payload) => {
-        if (socket.readyState !== socket.OPEN) return;
-        // The engine manager reports its own event name in `event`. It must NOT
-        // use `type`, because encodeFrame spreads the payload after its own
-        // `type` and a colliding key silently replaced the wire frame type.
-        const type = payload.event === 'task.started'
-          ? S2C.AI_STARTED
-          : payload.event === 'task.finished'
-            ? S2C.AI_FINISHED
-            : S2C.AI_EVENT;
-        const { event, ...rest } = payload;
-        socket.send(encodeFrame(type, rest));
-      });
-      // Chat frames carry their own type names because a chat has four distinct
-      // stream kinds (event/status/turn/closed) rather than the engine's three.
+      // Chat frames carry their own type names: a chat has four distinct
+      // stream kinds (event/status/turn/closed).
       chats.attach((payload) => {
         if (socket.readyState !== socket.OPEN) return;
         const { event, ...rest } = payload;
@@ -635,7 +619,6 @@ wss.on('connection', (socket, req) => {
       // Stop routing output to a socket that no longer exists; the sessions
       // themselves stay alive so a reconnect keeps its scrollback.
       terminals.detach();
-      engines.detach();
       chats.detach();
     }
   });
@@ -711,7 +694,7 @@ server.listen(args.port, args.host, async () => {
   printHeader({ args, token, apk: findClientApk(), relay: Boolean(relayConfig) });
   // Printed before the tunnel on purpose: the kernel list is useful immediately,
   // while cloudflared may still be negotiating its connections.
-  await printKernels(engines).catch(() => {});
+  await printKernels().catch(() => {});
 
   // A public address is the point of the tunnel: with it the phone works on
   // mobile data, on a friend's Wi-Fi, anywhere — no Tailscale and no port
@@ -748,7 +731,6 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     relayConnector?.stop();
     tunnel.stop();
     terminals.disposeAll();
-    engines.disposeAll();
     chats.disposeAll();
     server.close(() => process.exit(0));
     // Do not hang forever waiting for sockets to drain.

@@ -26,6 +26,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { AcpKernel } from './acp.js';
+
 const NPM_ROOT = path.join(os.homedir(), 'AppData', 'Roaming', 'npm');
 const LOCAL_PROGRAMS = path.join(os.homedir(), 'AppData', 'Local', 'Programs');
 
@@ -298,4 +300,74 @@ export function kernelTier(id) {
 /** True when the kernel is driven by the shared ACP adapter. */
 export function isAcpKernel(id) {
   return kernelTier(id) === 'acp';
+}
+
+/**
+ * The kernel table, optionally with a live ACP handshake.
+ *
+ * A plain [listKernels] answer is filesystem truth: is the binary there, and
+ * what tier is it. With `TERMDESK_KERNELS_PROBE=1` each installed ACP kernel is
+ * additionally asked to shake hands, through the SAME adapter the chat pipeline
+ * uses — so the picker can never advertise a capability the chat path lacks.
+ * Off by default because it spawns processes, and a startup banner should not.
+ *
+ * This used to live in engines.js as `probeEngines`, on the deprecated task
+ * pipeline; it moved here when that surface was deleted, because the kernel
+ * table is the registry's business.
+ */
+const ACP_PROBE_TTL_MS = 10 * 60_000;
+const ACP_PROBE_CACHE = new Map();
+
+export async function probeKernels() {
+  const list = listKernels();
+  if (process.env.TERMDESK_KERNELS_PROBE !== '1') return list;
+
+  const now = Date.now();
+  const out = [];
+  for (const entry of list) {
+    if (entry.tier !== 'acp' || !entry.available) {
+      out.push(entry);
+      continue;
+    }
+    const cached = ACP_PROBE_CACHE.get(entry.id);
+    if (cached && now - cached.at < ACP_PROBE_TTL_MS) {
+      out.push({ ...entry, detail: cached.detail, acp: cached.acp });
+      continue;
+    }
+    try {
+      const probe = await probeAcpKernel(entry);
+      ACP_PROBE_CACHE.set(entry.id, { at: now, detail: probe.detail, acp: probe.caps });
+      out.push({ ...entry, detail: probe.detail, acp: probe.caps });
+    } catch (err) {
+      out.push({ ...entry, detail: `ACP 握手失败：${String(err?.message ?? err).slice(0, 80)}` });
+    }
+  }
+  return out;
+}
+
+/**
+ * One ACP handshake through the same adapter the chat pipeline uses.
+ * Capability claims are not taken on faith: a kernel that says `loadSession`
+ * and then fails the call is exactly the drift this reports.
+ */
+async function probeAcpKernel(entry) {
+  const spec = spawnSpec(entry.id);
+  if (!spec) throw new Error('找不到可执行文件');
+  const kernel = new AcpKernel({ id: entry.id, label: entry.label, bin: spec.bin, args: spec.args, log: () => {} });
+  try {
+    await kernel.ensureStarted();
+    const caps = kernel.sessionSupport();
+    const name = kernel.agentInfo?.name ?? entry.label;
+    const version = kernel.agentInfo?.version ?? '';
+    const bits = [];
+    if (caps.loadSession) bits.push('可回放历史');
+    if (caps.list) bits.push('可列会话');
+    if (caps.resume) bits.push('可恢复');
+    if (caps.fork) bits.push('可 fork');
+    if (caps.close) bits.push('可关闭');
+    if (caps.image) bits.push('支持图片');
+    return { caps, detail: `ACP \u00b7 ${name} ${version}：${bits.join(' / ') || '仅握手'}` };
+  } finally {
+    kernel.dispose();
+  }
 }

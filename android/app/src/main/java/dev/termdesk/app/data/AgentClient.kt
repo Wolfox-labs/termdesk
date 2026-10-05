@@ -134,10 +134,10 @@ class AgentClient(
     private val _codexTemplates = MutableStateFlow<List<CodexProviderTemplate>>(emptyList())
     val codexTemplates: StateFlow<List<CodexProviderTemplate>> = _codexTemplates.asStateFlow()
 
-    // ---- P4: AI tasks ----
+    // ---- kernels (the PC kernel table: one source of truth) ----
 
-    private val _engines = MutableStateFlow<List<EngineInfo>>(emptyList())
-    val engines: StateFlow<List<EngineInfo>> = _engines.asStateFlow()
+    private val _engines = MutableStateFlow<List<KernelInfo>>(emptyList())
+    val engines: StateFlow<List<KernelInfo>> = _engines.asStateFlow()
 
     // ---- existing sessions on disk ----
 
@@ -189,16 +189,6 @@ class AgentClient(
     private val _chatSending = MutableStateFlow(false)
     val chatSending: StateFlow<Boolean> = _chatSending.asStateFlow()
 
-    private val _tasks = MutableStateFlow<List<TaskSummary>>(emptyList())
-    val tasks: StateFlow<List<TaskSummary>> = _tasks.asStateFlow()
-
-    /** Detail of the task whose view is open, replaced as the agent reports more. */
-    private val _activeTask = MutableStateFlow<TaskDetail?>(null)
-    val activeTask: StateFlow<TaskDetail?> = _activeTask.asStateFlow()
-
-    /** Events for the task currently streaming, oldest first. */
-    private val _liveEvents = MutableStateFlow<List<TaskEvent>>(emptyList())
-    val liveEvents: StateFlow<List<TaskEvent>> = _liveEvents.asStateFlow()
 
     private val credentials = appContext?.let { DeviceCredentials(it) }
     private var generation = 0
@@ -407,57 +397,9 @@ class AgentClient(
         sendFrame(frame)
     }
 
-    // ---- P4 operations ----
-
+    /** Refresh the PC kernel table. Metadata only: it never runs a model. */
     fun loadEngines() {
-        sendFrame(JSONObject().put("type", "ai.engines"))
-    }
-
-    fun loadTasks() {
-        sendFrame(JSONObject().put("type", "ai.tasks"))
-    }
-
-    fun submitTask(engine: String, prompt: String, cwd: String?, resume: Boolean) {
-        val text = prompt.trim()
-        if (text.isEmpty()) return
-        val frame = JSONObject()
-            .put("type", "ai.submit")
-            .put("engine", engine)
-            .put("prompt", text)
-            .put("resume", resume)
-        if (!cwd.isNullOrBlank()) frame.put("cwd", cwd)
-        sendFrame(frame)
-    }
-
-    fun openTask(taskId: String) {
-        // Clear immediately so the detail view never shows the previous task's
-        // events while the new one is loading.
-        _liveEvents.value = emptyList()
-        _activeTask.value = null
-        sendFrame(JSONObject().put("type", "ai.task").put("taskId", taskId))
-    }
-
-    /**
-     * Re-fetch the open task without clearing the current events first.
-     * Using openTask() for a live refresh would blank the step stream on every
-     * update and make it flicker.
-     */
-    private fun refreshActiveTask() {
-        val id = _activeTask.value?.id ?: return
-        sendFrame(JSONObject().put("type", "ai.task").put("taskId", id))
-    }
-
-    fun closeTask() {
-        _activeTask.value = null
-        _liveEvents.value = emptyList()
-    }
-
-    fun cancelTask(taskId: String) {
-        sendFrame(JSONObject().put("type", "ai.cancel").put("taskId", taskId))
-    }
-
-    fun resetEngineSession(engine: String) {
-        sendFrame(JSONObject().put("type", "ai.reset").put("engine", engine))
+        sendFrame(JSONObject().put("type", "kernels.list"))
     }
 
     // ---- existing-session operations ----
@@ -1339,30 +1281,8 @@ class AgentClient(
                     _searching.value = false
                     _preview.value = _preview.value?.copy(loading = false, message = msg)
                 }
-                // ---- P4 frames ----
-                "ai.engines" -> _engines.value = parseEngines(frame.optJSONArray("engines"))
-                "ai.tasks" -> _tasks.value = parseTaskSummaries(frame.optJSONArray("tasks"))
-                "ai.started" -> {
-                    // Refresh the list so a new task appears immediately.
-                    loadTasks()
-                }
-                "ai.event" -> {
-                    // The agent only signals that something changed; pull the
-                    // current detail rather than reconstructing state from deltas.
-                    refreshActiveTask()
-                }
-                "ai.finished" -> {
-                    loadTasks()
-                    // Keep the open detail view in sync with the final state.
-                    refreshActiveTask()
-                }
-                "ai.task" -> {
-                    val detail = parseTaskDetail(frame.optJSONObject("task"))
-                    if (detail != null) {
-                        _activeTask.value = detail
-                        _liveEvents.value = detail.events
-                    }
-                }
+                // The kernel table, straight from the PC registry.
+                "kernels" -> _engines.value = parseKernels(frame.optJSONArray("kernels"))
                 "sessions" -> {
                     _sessionsLoading.value = false
                     cache("index", frame)
@@ -1754,15 +1674,15 @@ class AgentClient(
         )
     }
 
-    // ---- P4 parsers ----
+    // ---- kernel parser ----
 
-    private fun parseEngines(arr: JSONArray?): List<EngineInfo> {
+    private fun parseKernels(arr: JSONArray?): List<KernelInfo> {
         if (arr == null) return emptyList()
         return buildList {
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 add(
-                    EngineInfo(
+                    KernelInfo(
                         id = o.optString("id"),
                         available = o.optBoolean("available", false),
                         path = o.optString("path"),
@@ -1777,62 +1697,6 @@ class AgentClient(
                 )
             }
         }
-    }
-
-    private fun parseTaskSummaries(arr: JSONArray?): List<TaskSummary> {
-        if (arr == null) return emptyList()
-        return buildList {
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                add(
-                    TaskSummary(
-                        id = o.optString("id"),
-                        engine = o.optString("engine"),
-                        prompt = o.optString("prompt"),
-                        status = TaskStatus.fromWire(o.optString("status")),
-                        startedAt = o.optLong("startedAt"),
-                        finishedAt = if (o.isNull("finishedAt")) null else o.optLong("finishedAt"),
-                        exitCode = if (o.isNull("exitCode")) null else o.optInt("exitCode"),
-                        eventCount = o.optInt("eventCount"),
-                    ),
-                )
-            }
-        }
-    }
-
-    private fun parseTaskDetail(o: JSONObject?): TaskDetail? {
-        if (o == null) return null
-        val eventsArr = o.optJSONArray("events")
-        val events = buildList {
-            if (eventsArr != null) {
-                for (i in 0 until eventsArr.length()) {
-                    val e = eventsArr.optJSONObject(i) ?: continue
-                    add(
-                        TaskEvent(
-                            kind = e.optString("kind"),
-                            text = e.optString("text"),
-                            state = if (e.isNull("state")) null else e.optString("state"),
-                            exitCode = if (e.isNull("exitCode")) null else e.optInt("exitCode"),
-                            output = e.optString("output"),
-                            tokens = if (e.isNull("tokens")) null else e.optInt("tokens"),
-                        ),
-                    )
-                }
-            }
-        }
-        return TaskDetail(
-            id = o.optString("id"),
-            engine = o.optString("engine"),
-            prompt = o.optString("prompt"),
-            cwd = o.optString("cwd"),
-            status = TaskStatus.fromWire(o.optString("status")),
-            startedAt = o.optLong("startedAt"),
-            finishedAt = if (o.isNull("finishedAt")) null else o.optLong("finishedAt"),
-            exitCode = if (o.isNull("exitCode")) null else o.optInt("exitCode"),
-            threadId = if (o.isNull("threadId")) null else o.optString("threadId"),
-            finalText = o.optString("finalText"),
-            events = events,
-        )
     }
 
     // ---- existing-session parsers ----

@@ -279,14 +279,14 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 | C→S | `procs.list` · `procs.kill` · `services.list` · `services.action` |
 | C→S | `fs.list` · `fs.read` · `fs.write` · `fs.mkdir` · `fs.delete` · `fs.rename` · `fs.roots` · `fs.search` · `fs.doctext` |
 | C→S | `term.open` · `term.run` · `term.interrupt` · `term.close` · `term.list` · `ping` |
-| C→S | `ai.engines` · `ai.submit` · `ai.tasks` · `ai.task` · `ai.cancel` · `ai.reset`（**deprecated**，一次性任务兼容面） |
+| C→S | `kernels.list`（内核表：唯一事实来源是 pc-agent 的 `kernels/registry.js`） |
 | C→S | `codex.get` · `codex.apply` · `codex.restore` |
 | C→S | `sessions.list` · `sessions.read`（磁盘上的历史会话，只读） |
 | C→S | `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` · `chat.config` · `chat.approve` |
 | S→C | `auth.ok` · `auth.fail` · `hello` · `status` · `procs` · `services` |
 | S→C | `fs.listing` · `fs.file` · `fs.written` · `fs.roots` |
 | S→C | `term.opened` · `term.output` · `term.exit` · `term.list` |
-| S→C | `ai.engines` · `ai.tasks` · `ai.task` · `ai.started` · `ai.event` · `ai.finished`（**deprecated**） |
+| S→C | `kernels`（内核表，含 tier / 是否可用 / 是否能续聊 / 真实原因） |
 | S→C | `codex.config` · `sessions` · `session` |
 | S→C | `chats` · `chat` · `chat.event` · `chat.status` · `chat.turn` · `chat.sent` · `chat.closed` · `chat.approval` |
 | S→C | `action.result` · `error` · `pong` |

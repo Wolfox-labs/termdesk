@@ -54,7 +54,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
-import dev.termdesk.app.data.EngineInfo
+import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.Storage
 import dev.termdesk.app.data.StorageEntry
 import dev.termdesk.app.data.StorageUse
@@ -74,7 +74,7 @@ fun SettingsSection(
     templates: List<CodexProviderTemplate>,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
-    engines: List<EngineInfo>,
+    engines: List<KernelInfo>,
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
     onRefreshEngines: () -> Unit,
@@ -581,7 +581,7 @@ private fun SettingRow(
 /** One engine the PC reported, with the reason it is or is not pickable. */
 @Composable
 private fun EngineRow(
-    engine: EngineInfo,
+    engine: KernelInfo,
     isDefault: Boolean,
     onSelect: () -> Unit,
 ) {

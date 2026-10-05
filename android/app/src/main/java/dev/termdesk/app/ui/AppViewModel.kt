@@ -13,7 +13,7 @@ import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
-import dev.termdesk.app.data.EngineInfo
+import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.FilePreview
 import dev.termdesk.app.data.SearchResults
@@ -26,9 +26,6 @@ import dev.termdesk.app.data.ProcessInfo
 import dev.termdesk.app.data.ServiceInfo
 import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
-import dev.termdesk.app.data.TaskDetail
-import dev.termdesk.app.data.TaskEvent
-import dev.termdesk.app.data.TaskSummary
 import dev.termdesk.app.data.TermLine
 import dev.termdesk.app.data.TextFile
 import dev.termdesk.app.data.TransferState
@@ -100,17 +97,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun restoreCodexBackup(name: String?) = client.restoreCodexBackup(name)
 
-    // ---- P4: AI tasks ----
+    // ---- kernels (the PC kernel table) ----
     //
-    // Deprecated as a product surface: there is no separate "task" world any
-    // more. Every new run is an agent chat (createChat / NewChatSheet). The
-    // one-shot `ai.*` protocol stays for compatibility but must not be offered
-    // as a main entry; `engines` remains live because the new-chat sheet reads
-    // kernel availability from it.
-    val engines: StateFlow<List<EngineInfo>> = client.engines
-    val tasks: StateFlow<List<TaskSummary>> = client.tasks
-    val activeTask: StateFlow<TaskDetail?> = client.activeTask
-    val liveEvents: StateFlow<List<TaskEvent>> = client.liveEvents
+    // There is no separate "task" world any more: every run is an agent chat,
+    // and the one-shot `ai.*` surface is gone from the protocol. What remains
+    // here is the kernel list itself, read from the PC registry, because the
+    // new-chat sheet and Settings both have to show what this machine can
+    // actually run on.
+    val engines: StateFlow<List<KernelInfo>> = client.engines
 
     fun loadEngines() = client.loadEngines()
 
@@ -130,15 +124,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _defaultEngine.value = clean
         prefs.edit().putString(KEY_ENGINE, clean).apply()
     }
-    fun loadTasks() = client.loadTasks()
-    fun submitTask(engine: String, prompt: String, cwd: String?, resume: Boolean) =
-        client.submitTask(engine, prompt, cwd, resume)
-    fun openTask(taskId: String) = client.openTask(taskId)
-    fun closeTask() = client.closeTask()
-    fun cancelTask(taskId: String) = client.cancelTask(taskId)
-    fun resetEngineSession(engine: String) = client.resetEngineSession(engine)
 
-    /** Default working directory for new AI tasks, mirroring the file browser. */
+    /** Default working directory for a new conversation, mirroring the file browser. */
     val defaultCwd: String get() = startPath
 
     // ---- live chats ----

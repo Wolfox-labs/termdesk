@@ -60,7 +60,7 @@ import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
-import dev.termdesk.app.data.EngineInfo
+import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.HostStatus
 import dev.termdesk.app.data.ProcessInfo
@@ -155,7 +155,7 @@ fun AppShell(
     connected: Boolean,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
-    engines: List<EngineInfo>,
+    engines: List<KernelInfo>,
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
     onRefreshEngines: () -> Unit,
@@ -529,7 +529,7 @@ private fun SectionBody(
     connected: Boolean,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
-    engines: List<EngineInfo>,
+    engines: List<KernelInfo>,
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
     onRefreshEngines: () -> Unit,

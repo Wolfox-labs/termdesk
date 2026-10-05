@@ -319,8 +319,9 @@ DSH 的 `/api` 有一道 Host/Origin 信任围栏：只接受 loopback、绑定�
 - **无单轮取消（dsh）**：DSH SDK 协议没有 cancel 方法；`chat.cancel` 对
   `engine=dsh` 实际是终止该对话的运行时（会话随之结束）。`engine=codex` 可杀掉
   当前回合进程，Codex thread 仍可继续 resume。
-- **`ai.*` 任务面已废弃**：协议保留兼容，语义已并入 `chat.*` 统一对话管线；
-  新客户端请用 `chat.create` + `engine`，不要新增对 `ai.submit` 的依赖。
+- **`ai.*` 任务面已删除**：`ai.engines` / `ai.submit` / `ai.tasks` / `ai.cancel` / `ai.reset` 全部移除。
+  内核清单改用 `kernels.list`（回答 `kernels`），内容直接来自 `kernels/registry.js`——
+  和聊天管线、桌面版读的是同一张表；一次性任务本身并入 `chat.*` 统一对话管线。
 - **公网暴露面**：agent 具备任意命令执行与全盘文件权限。除配对 token 外，可设
   `TERMDESK_ACCESS_KEY` 作第二因子（HTTP 头 `X-TermDesk-Key` / WS `?access=`）；
   生产建议再叠 Cloudflare Access。详见 [REQUIREMENTS.md](REQUIREMENTS.md) §4.1。

@@ -9,9 +9,9 @@
  *   node tools/chat-engine-test.js
  */
 import { encodeFrame } from '../src/protocol.js';
-import { buildCodexExecArgs, killProcessTree, findCodex, ENGINES } from '../src/engines.js';
-import { ChatManager, CHAT_ENGINES } from '../src/chat.js';
+import { buildCodexExecArgs, killProcessTree, findCodex } from '../src/engines.js';
 import { notificationToChatEvents, turnToChatEvents } from '../src/kernels/codex.js';
+import { ChatManager, CHAT_ENGINES } from '../src/chat.js';
 
 let passes = 0;
 let failures = 0;
@@ -29,8 +29,9 @@ function check(name, ok, detail = '') {
 
 check('CHAT_ENGINES is codex+dsh', CHAT_ENGINES.includes('codex') && CHAT_ENGINES.includes('dsh'),
   CHAT_ENGINES.join(','));
-check('engines task list matches chat engines', ENGINES.every((e) => CHAT_ENGINES.includes(e)),
-  ENGINES.join(','));
+// The task surface that used to be mirrored by ENGINES is gone: the kernel
+// table in kernels/registry.js is the only list now, and CHAT_ENGINES is
+// derived from it.
 
 // --- buildCodexExecArgs: fresh turn vs thread resume -----------------------
 

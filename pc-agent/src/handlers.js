@@ -31,7 +31,7 @@ import {
   PROVIDER_TEMPLATES,
 } from './codexconfig.js';
 import { listSessions, readSession, sessionRoots } from './sessions.js';
-import { chatEngineIds, getKernel, isAcpKernel } from './kernels/registry.js';
+import { chatEngineIds, getKernel, isAcpKernel, listKernels } from './kernels/registry.js';
 import { threadSummaryToSession, threadToSessionDetail, discoverThreadIdsFromDisk } from './kernels/codex.js';
 
 const STATUS_INTERVAL_MS = 2000;
@@ -44,7 +44,6 @@ const STATUS_INTERVAL_MS = 2000;
  * @param {import('ws').WebSocket} ctx.socket
  * @param {boolean} ctx.shellEnabled
  * @param {import('./terminal.js').TerminalManager} ctx.terminals
- * @param {import('./engines.js').EngineManager} ctx.engines
  * @param {import('./chat.js').ChatManager} ctx.chats
  * @param {() => Promise<void>} ctx.pushStatus
  * @param {() => void} ctx.stopStatus
@@ -128,7 +127,7 @@ function resumeVerdict(engineId) {
 }
 
 export function createFrameHandler(ctx) {
-  const { send, socket, shellEnabled, terminals, engines, chats } = ctx;
+  const { send, socket, shellEnabled, terminals, chats } = ctx;
 
   return async function handleFrame(frame) {
     switch (frame.type) {
@@ -382,75 +381,16 @@ export function createFrameHandler(ctx) {
         break;
       }
 
-      // ---- P4: AI engines ----
+      // ---- Kernel table (replaces the deprecated ai.* task surface) ----
       //
-      // @deprecated The `ai.*` task pipeline is kept for wire compatibility
-      // only. The unified conversation entry is `chat.*` below: create a chat
-      // with `engine: 'codex' | 'dsh'` and send turns on it. Do not add new
-      // features here.
+      // One source of truth: the registry that the chat pipeline, the desktop
+      // shell and the phone all read. The old `ai.engines` discovery had its own
+      // idea of which kernels existed, which is how the picker ended up
+      // disagreeing with what a conversation could actually run on.
 
-      case C2S.AI_ENGINES:
-        send(S2C.AI_ENGINES, { engines: await engines.probeEngines() });
+      case C2S.KERNELS_LIST:
+        send(S2C.KERNELS, { kernels: listKernels() });
         break;
-
-      case C2S.AI_TASKS:
-        send(S2C.AI_TASKS, { tasks: engines.listTasks() });
-        break;
-
-      case C2S.AI_TASK_GET: {
-        const task = engines.getTask(frame.taskId);
-        if (task === null) {
-          send(S2C.ERROR, { code: 'no_such_task', message: `没有任务 ${frame.taskId}` });
-        } else {
-          send(S2C.AI_TASK, { task });
-        }
-        break;
-      }
-
-      case C2S.AI_SUBMIT: {
-        const result = engines.submit({
-          engine: frame.engine,
-          prompt: frame.prompt,
-          cwd: frame.cwd,
-          resume: frame.resume !== false,
-        });
-        if (result.ok) {
-          send(S2C.AI_STARTED, { taskId: result.taskId, engine: frame.engine });
-        } else {
-          send(S2C.ACTION_RESULT, {
-            action: 'ai.submit',
-            target: frame.engine ?? '',
-            ok: false,
-            code: result.code,
-            message: result.message,
-          });
-        }
-        break;
-      }
-
-      case C2S.AI_CANCEL: {
-        const cancelled = engines.cancel(frame.taskId);
-        send(S2C.ACTION_RESULT, {
-          action: 'ai.cancel',
-          target: frame.taskId,
-          ok: cancelled,
-          code: cancelled ? 'cancelled' : 'not_running',
-          message: cancelled ? '已取消任务' : '任务不在运行中',
-        });
-        break;
-      }
-
-      case C2S.AI_RESET: {
-        const done = engines.resetSession(frame.engine);
-        send(S2C.ACTION_RESULT, {
-          action: 'ai.reset',
-          target: frame.engine ?? '',
-          ok: done,
-          code: done ? 'reset' : 'bad_engine',
-          message: done ? '已清除会话上下文' : '未知引擎',
-        });
-        break;
-      }
 
       // ---- Codex provider configuration ----
 

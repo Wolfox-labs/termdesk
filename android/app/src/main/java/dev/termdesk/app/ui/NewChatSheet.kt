@@ -47,7 +47,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.termdesk.app.data.CodexConfig
-import dev.termdesk.app.data.EngineInfo
+import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.WorkspaceInfo
 
 /**
@@ -62,7 +62,7 @@ import dev.termdesk.app.data.WorkspaceInfo
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NewChatSheet(
-    engines: List<EngineInfo>,
+    engines: List<KernelInfo>,
     workspaces: List<WorkspaceInfo>,
     codexConfig: CodexConfig?,
     defaultEngine: String? = null,
@@ -327,11 +327,11 @@ fun NewChatSheet(
 /** Kernel as one row; the long list only appears when asked for. */
 @Composable
 private fun KernelSelector(
-    kernels: List<EngineInfo>,
+    kernels: List<KernelInfo>,
     selectedId: String?,
     expanded: Boolean,
     onToggle: () -> Unit,
-    onSelect: (EngineInfo) -> Unit,
+    onSelect: (KernelInfo) -> Unit,
 ) {
     val selected = kernels.find { it.id == selectedId }
     Column(
@@ -368,6 +368,14 @@ private fun KernelSelector(
         }
         AnimatedVisibility(visible = expanded) {
             Column(Modifier.padding(start = 10.dp, end = 10.dp, bottom = 10.dp)) {
+                if (kernels.isEmpty()) {
+                    Text(
+                        "还没读到这台电脑的内核表。电脑端可能还在用旧版本，重启它即可。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 6.dp),
+                    )
+                }
                 kernels.forEach { engine ->
                     val isSelected = engine.id == selectedId
                     Row(
@@ -534,12 +542,10 @@ private fun joinWorkPath(parent: String, name: String): String {
  * Order the PC's discovery for the picker: wired adapters first, then kernels
  * that speak ACP, then CLI-shaped ones — and available before missing.
  */
-private fun kernelChoices(engines: List<EngineInfo>): List<EngineInfo> {
-    if (engines.isEmpty()) {
-        return listOf("codex" to "Codex", "dsh" to "DeepSeek Harness").map { (id, label) ->
-            EngineInfo(id = id, available = true, path = "", multiTurn = true, progress = true, label = label)
-        }
-    }
+private fun kernelChoices(engines: List<KernelInfo>): List<KernelInfo> {
+    // No invented fallback: if the PC has not answered yet the list is empty, and
+    // the sheet says so. A hard-coded "codex + dsh" here used to hide exactly the
+    // case it should have surfaced (a PC still running an older agent).
     val rank = mapOf("native" to 0, "acp" to 1, "shim" to 2)
     return engines.sortedWith(
         compareBy({ rank[it.tier] ?: 3 }, { if (it.available) 0 else 1 }, { it.displayName }),
