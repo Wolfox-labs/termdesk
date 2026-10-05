@@ -1625,6 +1625,27 @@ export class ChatManager {
     }
 
     if (ev.type === 'turn/end') {
+      // A turn that produced nothing must say so. Without this the phone showed a
+      // turn that started and ended with no text and no error - indistinguishable
+      // from a broken app, when the truth was that the runtime's own request/answer
+      // path returned nothing. Measured on the phone: the model answers fine from
+      // the same sandbox (direct API call, content "OK"), so an empty turn here is
+      // a fact about the runtime's turn, and it is reported as one.
+      const userSeq = chat.events.filter((e) => e.kind === 'message' && e.role === 'user').pop();
+      const produced = chat.events.some((e) => (!userSeq || e.seq > userSeq.seq)
+        && (e.kind === 'message' || e.kind === 'tool' || e.kind === 'tool_result' || e.kind === 'reasoning'));
+      const emptyReason = ev.data?.reason?.kind ?? null;
+      if (!produced) {
+        const tail = String(chat.stderrTail ?? '').replace(/\s+/g, ' ').trim().slice(-300);
+        chat.push({
+          kind: 'engine_note',
+          role: 'engine',
+          text: tail
+            ? `DSH 这一轮没有返回任何内容（原因：${emptyReason ?? '未说明'}）。运行时最后的输出：${tail}`
+            : `DSH 这一轮没有返回任何内容（原因：${emptyReason ?? '未说明'}），运行时也没有给出原因。`,
+          name: 'warning',
+        });
+      }
       chat.streaming = null;
       // Any preview still open when the turn ends was never confirmed by a
       // final message; keep it as the record rather than dropping real output.

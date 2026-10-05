@@ -242,7 +242,7 @@ class LocalAgent(private val context: Context) {
     private fun env(): Map<String, String> {
         val usr = sandboxUsr().absolutePath
         val home = home().absolutePath
-        return mapOf(
+        val env = mutableMapOf(
             "PATH" to "$usr/bin:$usr/bin/applets:/system/bin:/system/xbin",
             "LD_LIBRARY_PATH" to "$usr/lib",
             "PREFIX" to usr,
@@ -253,7 +253,47 @@ class LocalAgent(private val context: Context) {
             "TERMDESK_ROOTS" to "$home;$usr",
             "TERMDESK_SHELL" to bashBin().absolutePath,
             "TERMDESK_SHELL_CWD" to home,
+            // The sandbox routes to the free model by default. A desktop default of a
+            // paid model is a cost decision that should not be inherited by a phone
+            // someone taps at; the model can still be named per turn through the agent.
+            "TERMDESK_CHAT_PROVIDER" to "wolfox",
+            "TERMDESK_CHAT_MODEL" to "mimo-v2.6-flash",
         )
+        // DSH, when it has been installed into the sandbox. The kernel table asks
+        // TERMDESK_DSH first, and DSH_HOME keeps its profiles, credentials and
+        // sessions inside the sandbox instead of a stock ~/.dsh it cannot write.
+        val dshHome = File(home(), ".dsh")
+        val dshEntry = File(dshHome, "profiles/sdk/node_modules/@deepseek-ai/dsh/lib/bin.js")
+        if (dshEntry.exists()) {
+            env["DSH_HOME"] = dshHome.absolutePath
+            env["TERMDESK_DSH"] = dshEntry.absolutePath
+            env.putAll(dshCredentials(dshHome))
+        }
+        return env
+    }
+
+    /**
+     * DSH provider rows name an environment variable (`apiKeyEnv: WOLFOX_API_KEY`)
+     * rather than a key, so the value has to be in the environment of the process
+     * that runs the kernel. On a desktop the app that starts DSH does that; here
+     * nobody did, and the result was the worst kind of failure: the turn ended
+     * with no answer and no error, because the request went out unauthenticated.
+     *
+     * Only \`NAME: value\` lines whose name is a plain env-style identifier are
+     * carried over; anything else in the file is left alone rather than guessed at.
+     */
+    private fun dshCredentials(dshHome: File): Map<String, String> {
+        val file = File(dshHome, ".credentials.yaml")
+        if (!file.exists()) return emptyMap()
+        val out = mutableMapOf<String, String>()
+        for (line in file.readLines()) {
+            val at = line.indexOf(':')
+            if (at <= 0) continue
+            val name = line.substring(0, at).trim()
+            val value = line.substring(at + 1).trim().trim('\'', '"')
+            if (name.matches(Regex("[A-Z][A-Z0-9_]*")) && value.isNotEmpty()) out[name] = value
+        }
+        return out
     }
 
     companion object {

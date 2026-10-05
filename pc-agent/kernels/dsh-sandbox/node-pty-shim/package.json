@@ -1,0 +1,7 @@
+{
+  "name": "node-pty",
+  "version": "1.1.0-android-pipes",
+  "description": "Pipe-based stand-in for node-pty on Android (no TTY).",
+  "main": "index.js",
+  "license": "MIT"
+}
