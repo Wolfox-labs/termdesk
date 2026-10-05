@@ -3,6 +3,7 @@ package dev.termdesk.app.ui
 import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import dev.termdesk.app.data.DeviceCredentials
 import dev.termdesk.app.data.AgentClient
 import dev.termdesk.app.data.ActionResult
@@ -33,9 +34,13 @@ import dev.termdesk.app.data.TextFile
 import dev.termdesk.app.data.TransferState
 import dev.termdesk.app.data.WorkspaceInfo
 import dev.termdesk.app.ui.theme.ThemeMode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Holds the long-lived connection to the PC and the last known host status.
@@ -247,14 +252,48 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _storage = MutableStateFlow<StorageUse?>(null)
     val storage: StateFlow<StorageUse?> = _storage.asStateFlow()
 
+    /**
+     * Recount on a background thread.
+     *
+     * The local sandbox is 72,405 files and 5,630 symlinks - about 1.9 GB.
+     * Walking it inside composition froze Settings and then crashed the app: the
+     * ANR trace ended in Storage.kt's recursion. Measurement is I/O, so it runs
+     * on IO, the screen says "正在统计…" meanwhile, and a fresh answer is reused
+     * for a short while so reopening Settings does not re-walk the tree.
+     */
+    private var storageJob: Job? = null
+    private var storageCache: StorageUse? = null
+    private var storageCacheAt = 0L
+
     fun loadStorage() {
-        _storage.value = Storage.inspect(getApplication())
+        // Reopening Settings should not re-walk 72,405 files: the answer is
+        // good for a short while, and "正在统计…" on every visit is its own bug.
+        val cache = storageCache
+        if (cache != null && System.currentTimeMillis() - storageCacheAt < STORAGE_TTL_MS) {
+            _storage.value = cache
+            return
+        }
+        storageJob?.cancel()
+        _storage.value = null
+        storageJob = viewModelScope.launch {
+            val use = withContext(Dispatchers.IO) { Storage.inspect(getApplication()) }
+            storageCache = use
+            storageCacheAt = System.currentTimeMillis()
+            _storage.value = use
+        }
     }
 
     fun clearStorage(entry: StorageEntry) {
-        val freed = Storage.clear(entry)
-        loadStorage()
-        client.reportLocalMessage("已清理 ${entry.label}，释放 ${Storage.format(freed)}")
+        storageJob?.cancel()
+        storageCache = null
+        _storage.value = null
+        storageJob = viewModelScope.launch {
+            // Deleting a gigabyte is as blocking as counting it.
+            val freed = withContext(Dispatchers.IO) { Storage.clear(entry) }
+            client.reportLocalMessage("已清理 ${entry.label}，释放 ${Storage.format(freed)}")
+            val use = withContext(Dispatchers.IO) { Storage.inspect(getApplication()) }
+            _storage.value = use
+        }
     }
     fun writeFile(path: String, text: String) = client.writeFile(path, text)
     fun createEntry(dir: String, name: String, isDir: Boolean) = client.createEntry(dir, name, isDir)
@@ -318,6 +357,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_START_PATH = "startPath"
         const val KEY_THEME = "themeMode"
         const val KEY_ENGINE = "defaultEngine"
+
+        /** How long a storage measurement stays believable. */
+        const val STORAGE_TTL_MS = 30_000L
 
         /**
          * Loopback placeholder only: the real agent address is a deployment

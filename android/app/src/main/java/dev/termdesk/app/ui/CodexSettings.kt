@@ -247,13 +247,21 @@ fun SettingsSection(
                 Text("存储", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    storage?.let { Storage.format(it.totalBytes) } ?: "—",
+                    storage?.let { (if (it.truncated) "≥ " else "") + Storage.format(it.totalBytes) } ?: "—",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Spacer(Modifier.height(6.dp))
             val entries = storage?.entries.orEmpty()
+            if (storage?.truncated == true) {
+                Text(
+                    "文件太多，统计在时限内没走完，这里显示的是下限",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+            }
             if (entries.isEmpty()) {
                 Text(
                     "正在统计…",

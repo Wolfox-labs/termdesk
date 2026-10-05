@@ -1,0 +1,209 @@
+/**
+ * The whole phone path, with a stub kernel and no model call.
+ *
+ * Why this exists: the owner reported "I sent a message and the phone showed
+ * nothing". Every part had a unit test - the ACP mapping, the stream merge, the
+ * approval broker - and none of them covered the thing that broke, which is the
+ * assembled route: real server process -> real WebSocket -> real frames -> what
+ * the phone renders from them. This test drives that route with
+ * tools/fake-acp-agent.mjs, so it costs nothing and can run on every change.
+ *
+ * It asserts what a person would check by hand:
+ *   - the kernel shows up in /kernels.json (the phone's picker reads this)
+ *   - a turn produces assistant text that stays on screen, and the last frame
+ *     for it says the text is final rather than a replaceable preview
+ *   - the tool call is visible as an item, not swallowed
+ *   - the permission question reaches the phone and the answer resumes the turn
+ *   - a second message in the same conversation also answers (the failure that
+ *     looked like "it only works once")
+ */
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import WebSocket from 'ws';
+
+const ROOT = path.resolve(import.meta.dirname, '..');
+const PORT = Number(process.env.TERMDESK_E2E_PORT ?? 7431);
+const BASE = `http://127.0.0.1:${PORT}`;
+const TOKEN = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+
+let failures = 0;
+const check = (label, ok, detail = '') => {
+  if (!ok) failures += 1;
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${label}${detail ? `  [${detail}]` : ''}`);
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const env = {
+  ...process.env,
+  TERMDESK_ACP_KERNELS: JSON.stringify([
+    {
+      id: 'stub',
+      label: 'Stub kernel (free)',
+      bin: process.execPath,
+      args: [path.join(ROOT, 'tools', 'fake-acp-agent.mjs')],
+    },
+  ]),
+};
+
+const server = spawn(
+  process.execPath,
+  ['src/server.js', '--host', '127.0.0.1', '--port', String(PORT)],
+  { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] },
+);
+let serverLog = '';
+server.stdout.on('data', (d) => { serverLog += d.toString(); });
+server.stderr.on('data', (d) => { serverLog += d.toString(); });
+
+const shutdown = (code) => {
+  try { server.kill(); } catch {}
+  process.exit(code);
+};
+
+async function waitForHealth(ms = 15000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${BASE}/healthz`);
+      if (res.ok) return true;
+    } catch {}
+    await sleep(200);
+  }
+  return false;
+}
+
+/** A client that keeps every frame, so assertions never depend on timing. */
+function connect() {
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
+  const frames = [];
+  ws.on('message', (raw) => {
+    try { frames.push(JSON.parse(String(raw))); } catch {}
+  });
+  return new Promise((resolve, reject) => {
+    ws.once('open', () => resolve({ ws, frames }));
+    ws.once('error', reject);
+  });
+}
+
+async function waitFrame(client, pred, ms, label) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    const hit = client.frames.find(pred);
+    if (hit) return hit;
+    await sleep(50);
+  }
+  throw new Error(`timeout waiting for ${label} (${ms} ms); server log: ${serverLog.slice(-400)}`);
+}
+
+const items = (client, chatId) =>
+  client.frames
+    .filter((f) => f.type === 'chat.event' && f.chatId === chatId && f.item)
+    .map((f) => f.item);
+
+try {
+  check('server starts', await waitForHealth());
+
+  const kernelsRes = await fetch(`${BASE}/kernels.json`);
+  const kernelsBody = await kernelsRes.json();
+  const stub = (kernelsBody.kernels ?? []).find((k) => k.id === 'stub');
+  check('the stub kernel is offered to the phone', Boolean(stub), stub ? `tier=${stub.tier}` : 'missing');
+
+  const client = await connect();
+  client.ws.send(JSON.stringify({ type: 'auth', token: TOKEN }));
+  await waitFrame(client, (f) => f.type === 'auth.ok', 8000, 'auth.ok');
+
+  client.ws.send(JSON.stringify({ type: 'chat.create', engine: 'stub', cwd: ROOT.replace(/\\/g, '/') }));
+  const chat = await waitFrame(client, (f) => f.type === 'chat' && f.id, 15000, 'chat frame');
+  const chatId = chat.id;
+  check('the conversation opens on the stub kernel', chat.engine === 'stub', `engine=${chat.engine}`);
+
+  // ---- turn 1 --------------------------------------------------------------
+  const ask = '走一遍完整链路';
+  client.ws.send(JSON.stringify({ type: 'chat.send', chatId, text: ask }));
+
+  const permission = await waitFrame(
+    client,
+    (f) => f.type === 'chat.approval' && f.chatId === chatId && f.state !== 'resolved',
+    30000,
+    'the permission question',
+  );
+  check('the permission question reaches the phone', Boolean(permission.requestId));
+  check(
+    'the question offers real choices',
+    (permission.options ?? []).some((o) => o.id === 'allow_once'),
+    (permission.options ?? []).map((o) => o.id).join(','),
+  );
+
+  client.ws.send(JSON.stringify({ type: 'chat.approve', requestId: permission.requestId, optionId: 'allow_once' }));
+  const approved = await waitFrame(
+    client,
+    (f) => f.type === 'action.result' && f.action === 'chat.approve' && f.target === permission.requestId,
+    10000,
+    'the approve ack',
+  );
+  check('the phone answer is accepted', approved.ok === true, approved.code);
+
+  await waitFrame(
+    client,
+    (f) => f.type === 'chat.turn' && f.chatId === chatId && ['ended', 'failed'].includes(f.state),
+    60000,
+    'the turn to end',
+  );
+
+  const after = items(client, chatId);
+  const assistant = after.filter((i) => i.kind === 'message' && i.role === 'assistant');
+  const answerText = assistant.map((i) => i.text).join('');
+  check('the answer is on screen', answerText.includes('Stub kernel received'), answerText.slice(0, 60));
+  check('the answer is not a replaceable preview', assistant.some((i) => i.streaming === false));
+  check('the tool call is visible', after.some((i) => i.kind === 'tool'), `${after.filter((i) => i.kind === 'tool').length} tool item(s)`);
+  // ACP concludes a turn with the chat.turn frame (the DSH/Codex path also
+  // writes a `turn` transcript item; ACP does not, and inventing one here would
+  // be asserting a shape the phone never sees).
+  check(
+    'the turn ends cleanly',
+    client.frames.some((f) => f.type === 'chat.turn' && f.chatId === chatId && f.state === 'ended'),
+  );
+  check(
+    'the approval is written into the transcript',
+    after.some((i) => String(i.name ?? '') === 'permission'),
+  );
+
+  // ---- turn 2: the same conversation, one more message ---------------------
+  // Asked and answered the way turn 1 was, because "it only answered the first
+  // time" is exactly the shape of the bug this test exists for.
+  const before = client.frames.length;
+  const secondPermission = () =>
+    client.frames
+      .slice(before)
+      .find((f) => f.type === 'chat.approval' && f.chatId === chatId && f.state !== 'resolved');
+
+  client.ws.send(JSON.stringify({ type: 'chat.send', chatId, text: '再来一条' }));
+  await waitFrame(client, () => Boolean(secondPermission()), 30000, 'the second permission question');
+  client.ws.send(
+    JSON.stringify({ type: 'chat.approve', requestId: secondPermission().requestId, optionId: 'allow_once' }),
+  );
+  await waitFrame(
+    client,
+    (f) => client.frames.indexOf(f) >= before && f.type === 'chat.turn' && f.chatId === chatId && f.state === 'ended',
+    60000,
+    'the second turn to end',
+  );
+  const second = items(client, chatId).filter((i) => i.kind === 'message' && i.role === 'assistant');
+  check('a second message also answers', second.length >= 2, `${second.length} assistant message(s)`);
+
+  // ---- what the phone would draw -------------------------------------------
+  console.log('\ntranscript the phone renders:');
+  for (const item of items(client, chatId)) {
+    const text = String(item.text ?? '').replace(/\s+/g, ' ').slice(0, 70);
+    console.log(`  ${String(item.kind).padEnd(12)} ${String(item.role ?? '').padEnd(9)} ${text}`);
+  }
+
+  client.ws.close();
+  console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
+  shutdown(failures === 0 ? 0 : 1);
+} catch (error) {
+  console.log(`FAIL ${error.message}`);
+  console.log(serverLog.slice(-2000));
+  shutdown(1);
+}
