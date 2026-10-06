@@ -53,6 +53,33 @@ data class ChatTerminal(
 }
 
 /**
+ * One terminal the agent is holding, for the switcher.
+ *
+ * The agent keeps a shell per session and its scrollback with it, so the phone
+ * can hold several terminals open and look at one at a time without any of them
+ * stopping. Switching replays that session's scrollback.
+ */
+data class TerminalInfo(
+    val id: String,
+    val running: Boolean,
+    val pid: Int?,
+) {
+    companion object {
+        fun list(array: JSONArray?): List<TerminalInfo> {
+            if (array == null) return emptyList()
+            return (0 until array.length()).mapNotNull { index ->
+                val o = array.optJSONObject(index) ?: return@mapNotNull null
+                TerminalInfo(
+                    id = o.optString("id"),
+                    running = o.optBoolean("running", false),
+                    pid = if (o.isNull("pid")) null else o.optInt("pid"),
+                )
+            }
+        }
+    }
+}
+
+/**
  * What the terminal panel is showing.
  *
  * The output is kept here rather than in the transcript: a command's output is

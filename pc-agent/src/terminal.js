@@ -114,6 +114,9 @@ class TerminalSession {
     this.lastActivity = Date.now();
     this.closed = false;
     this.currentCommand = null;
+    // Last directory this shell reported. Kept so a phone that switches back to
+    // this terminal can be told where it is without running a command first.
+    this.lastCwd = null;
     // Incremented on every (re)start. Handlers from a previous child compare
     // against this so a superseded process cannot mark the live session dead.
     this.generation = 0;
@@ -194,14 +197,20 @@ class TerminalSession {
 
       if (output.length > 0) this.emit(output, 'stdout');
 
+      const decodedCwd = decodeBase64(cwdB64);
+      if (decodedCwd) this.lastCwd = decodedCwd;
+
       const waiter = this.listeners.shift();
       const result = {
         output: output.replace(/\r?\n$/, ''),
         code: Number(code),
         id: Number(id),
-        cwd: decodeBase64(cwdB64),
+        cwd: decodedCwd,
       };
       this.currentCommand = null;
+    // Last directory this shell reported. Kept so a phone that switches back to
+    // this terminal can be told where it is without running a command first.
+    this.lastCwd = null;
       if (waiter) waiter(result);
     }
 
@@ -277,6 +286,9 @@ class TerminalSession {
   restart() {
     this.buffer = '';
     this.currentCommand = null;
+    // Last directory this shell reported. Kept so a phone that switches back to
+    // this terminal can be told where it is without running a command first.
+    this.lastCwd = null;
     const old = this.child;
     // start() bumps the generation, so the old child's exit handler becomes a
     // no-op instead of marking the fresh session as ended.

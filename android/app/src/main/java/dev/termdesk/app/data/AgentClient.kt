@@ -127,6 +127,10 @@ class AgentClient(
     private val _termCwd = MutableStateFlow<String?>(null)
     val termCwd: StateFlow<String?> = _termCwd.asStateFlow()
 
+    /** Every terminal the agent is holding, for the switcher. */
+    private val _termSessions = MutableStateFlow<List<TerminalInfo>>(emptyList())
+    val termSessions: StateFlow<List<TerminalInfo>> = _termSessions.asStateFlow()
+
     /** True while a command is executing, so the UI can show a spinner. */
     private val _termBusy = MutableStateFlow(false)
     val termBusy: StateFlow<Boolean> = _termBusy.asStateFlow()
@@ -516,10 +520,28 @@ class AgentClient(
         disconnect()
     }
 
-    /** Open a terminal session, or reuse the existing one. */
+    /**
+     * Open ONE MORE terminal.
+     *
+     * This no longer refuses when a session already exists: the agent keeps a
+     * shell per session and its scrollback with it, and holding several is the
+     * point. The pane still calls this the first time it is shown - that is just
+     * no longer the same thing as "the only terminal there will ever be".
+     */
     fun openTerminal() {
-        if (_termSession.value != null) return
         sendFrame(JSONObject().put("type", "term.open"))
+    }
+
+    /** Show a terminal that already exists; its scrollback comes back with it. */
+    fun attachTerminal(sessionId: String) {
+        if (sessionId == _termSession.value) return
+        _termBusy.value = false
+        sendFrame(JSONObject().put("type", "term.open").put("sessionId", sessionId))
+    }
+
+    /** Ask the agent which terminals it is holding, for the switcher. */
+    fun listTerminals() {
+        sendFrame(JSONObject().put("type", "term.list"))
     }
 
     fun runCommand(command: String) {
@@ -556,6 +578,9 @@ class AgentClient(
         _termCwd.value = null
         _termLines.value = emptyList()
         _termBusy.value = false
+        // Ask what is left: the "term.list" handler picks the next one, or makes
+        // a fresh shell when this was the last.
+        listTerminals()
     }
 
     fun clearTerminal() {
@@ -1475,10 +1500,14 @@ class AgentClient(
                 "term.opened" -> {
                     _termSession.value = frame.optString("sessionId")
                     _termUnavailable.value = null
-                    // Replay scrollback so a reconnect does not lose history.
+                    // REPLACE the scrollback, never merge it. Opening a terminal
+                    // now also means "show me this one", and the scrollback that
+                    // comes back is the whole truth about it. Merging is exactly
+                    // what made switching impossible: the first terminal's lines
+                    // were already there, so the second's were discarded.
                     val sb = frame.optJSONArray("scrollback")
-                    if (sb != null && _termLines.value.isEmpty()) {
-                        val restored = buildList {
+                    val restored = buildList {
+                        if (sb != null) {
                             for (i in 0 until sb.length()) {
                                 val o = sb.optJSONObject(i) ?: continue
                                 add(
@@ -1489,7 +1518,22 @@ class AgentClient(
                                 )
                             }
                         }
-                        _termLines.value = restored.takeLast(MAX_TERM_LINES)
+                    }
+                    _termLines.value = restored.takeLast(MAX_TERM_LINES)
+                    // Where that shell was last seen. The agent remembers it, so a
+                    // switch shows the directory without running a command first.
+                    val at = if (frame.isNull("cwd")) null else frame.optString("cwd")
+                    _termCwd.value = at?.takeIf { it.isNotBlank() }
+                    _termBusy.value = false
+                }
+                "term.list" -> {
+                    val sessions = TerminalInfo.list(frame.optJSONArray("sessions"))
+                    _termSessions.value = sessions
+                    // Closing the last one leaves nothing on screen, so pick up
+                    // whichever session survives - or make one, if none did. The
+                    // phone always has a terminal to show.
+                    if (_termSession.value == null) {
+                        if (sessions.isNotEmpty()) attachTerminal(sessions.first().id) else openTerminal()
                     }
                 }
                 "term.output" -> {
@@ -1498,7 +1542,10 @@ class AgentClient(
                         appendTerm(frame.optString("text"), TermLine.Stream.fromWire(frame.optString("stream")))
                     }
                 }
-                "term.exit" -> {
+                "term.exit" -> if (frame.optString("sessionId") == _termSession.value) {
+                    // Only the terminal on screen has a busy flag to clear. A
+                    // result for another session is not this screen's news: its
+                    // output is already in that session's scrollback, waiting.
                     _termBusy.value = false
                     // The shell reports where it ended up; a blank or missing cwd
                     // (an older agent) leaves the previous one rather than showing

@@ -57,6 +57,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.termdesk.app.data.TermLine
+import dev.termdesk.app.data.TerminalInfo
 import dev.termdesk.app.ui.theme.Semantic
 
 /** Commands worth one tap on a phone keyboard, per backend: the two machines
@@ -105,6 +106,10 @@ fun TerminalSection(
     busy: Boolean,
     sessionId: String?,
     cwd: String?,
+    sessions: List<TerminalInfo>,
+    onSwitch: (String) -> Unit,
+    onNewTerminal: () -> Unit,
+    onListTerminals: () -> Unit,
     unavailable: String?,
     onOpen: () -> Unit,
     onRun: (String) -> Unit,
@@ -117,6 +122,7 @@ fun TerminalSection(
     var history by remember { mutableStateOf(listOf<String>()) }
     var historyIndex by remember { mutableStateOf(-1) }
     var cwdDialog by remember { mutableStateOf(false) }
+    var terminalList by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     // Open the session lazily, the first time this pane is shown - for whichever
@@ -151,6 +157,9 @@ fun TerminalSection(
                 .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Tapping the name opens the terminal list. The phone holds several
+            // shells at once (the agent keeps one per session, scrollback and all),
+            // so this is the way between them - and the way to start another.
             Text(
                 text = when {
                     kernel == "local" -> (sessionId?.let { "$it · bash" } ?: "本地内核 · bash")
@@ -161,7 +170,12 @@ fun TerminalSection(
                 style = MaterialTheme.typography.labelMedium,
                 color = if (unavailable != null) MaterialTheme.colorScheme.error
                 else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable(enabled = unavailable == null) {
+                        terminalList = true
+                        onListTerminals()
+                    },
             )
             if (busy) {
                 CircularProgressIndicator(
@@ -222,6 +236,64 @@ fun TerminalSection(
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
+        }
+
+        if (terminalList) {
+            AlertDialog(
+                onDismissRequest = { terminalList = false },
+                title = { Text("终端") },
+                text = {
+                    Column {
+                        if (sessions.isEmpty()) {
+                            Text(
+                                "还没有其它终端。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        sessions.forEach { s ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        terminalList = false
+                                        onSwitch(s.id)
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    s.id,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = if (s.id == sessionId) FontWeight.SemiBold else FontWeight.Normal,
+                                    color = if (s.id == sessionId) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    when {
+                                        s.running -> "运行中"
+                                        s.id == sessionId -> "当前"
+                                        else -> "空闲"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        terminalList = false
+                        onNewTerminal()
+                    }) { Text("新建终端") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { terminalList = false }) { Text("取消") }
+                },
+            )
         }
 
         if (cwdDialog) {

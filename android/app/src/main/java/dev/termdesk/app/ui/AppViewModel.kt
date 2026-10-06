@@ -12,6 +12,7 @@ import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.ChatTerminal
+import dev.termdesk.app.data.TerminalInfo
 import dev.termdesk.app.data.TerminalView
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
@@ -85,11 +86,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Where the shell currently is; null until it reports one. */
     val termCwd: StateFlow<String?> = client.termCwd
+
+    /** Every terminal the agent holds, for the switcher. */
+    val termSessions: StateFlow<List<TerminalInfo>> = client.termSessions
     val termBusy: StateFlow<Boolean> = client.termBusy
     val kernelTarget: StateFlow<String> = client.kernelTarget
     val termUnavailable: StateFlow<String?> = client.termUnavailable
 
     fun openTerminal() = client.openTerminal()
+    fun attachTerminal(sessionId: String) = client.attachTerminal(sessionId)
+    fun listTerminals() = client.listTerminals()
     fun runCommand(command: String) = client.runCommand(command)
     /** One kernel for the whole app: chosen in Settings, obeyed everywhere. */
     fun setKernelTarget(target: String) {

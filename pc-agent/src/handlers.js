@@ -323,13 +323,28 @@ export function createFrameHandler(ctx) {
           });
           break;
         }
-        const session = terminals.create();
+        // `sessionId` attaches to a terminal that already exists; without one a
+        // new shell is created. Switching back therefore re-sends the whole
+        // scrollback, so output produced while the phone was looking at another
+        // terminal is not lost - it was accumulating in the session, which is the
+        // thing that outlives the view.
+        const wanted = typeof frame.sessionId === 'string' && frame.sessionId ? frame.sessionId : null;
+        const existing = wanted ? terminals.get(wanted) : null;
+        if (wanted && existing === null) {
+          send(S2C.TERM_EXIT, { sessionId: wanted, code: -1, error: 'no_such_session' });
+          break;
+        }
+        const session = existing ?? terminals.create();
         terminals.attach((sid, text, stream) => {
           if (socket.readyState === socket.OPEN) {
             socket.send(encodeFrame(S2C.TERM_OUTPUT, { sessionId: sid, text, stream }));
           }
         });
-        send(S2C.TERM_OPENED, { sessionId: session.id, scrollback: session.snapshot().scrollback });
+        send(S2C.TERM_OPENED, {
+          sessionId: session.id,
+          scrollback: session.snapshot().scrollback,
+          cwd: session.lastCwd,
+        });
         break;
       }
 
