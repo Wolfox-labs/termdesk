@@ -19,6 +19,11 @@ jobs:
           node-version: '20'
       - name: Install dependencies
         run: npm install --no-audit --no-fund
+      - name: Install relay dependencies
+        # `npm test` also runs the relay's own suite and the relay-backed end-to-end
+        # check, and the relay package carries its own dependency (ws).
+        working-directory: relay
+        run: npm install --no-audit --no-fund
       - name: Syntax + protocol consistency
         run: npm test
 
