@@ -407,18 +407,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Unbind one computer.
      *
      * Order matters: tell the far side while the connection is still up, then
-     * forget locally. Over a relay this is what removes the phone from that
-     * computer's list; a direct agent has no list and nothing to tell.
+     * forget locally. Over a relay that is what removes the phone from the
+     * computer's list — and when the phone is not connected, the frame cannot go
+     * anywhere, so the user is told the list will still show it rather than being
+     * left to discover that later.
      */
     fun forgetComputer(id: String) {
         val target = computers.list().firstOrNull { it.id == id } ?: return
         val isActive = computers.activeId() == id
-        if (isActive) client.unpairSelf(target.relay)
+        val told = if (isActive) client.unpairSelf(target.relay) else false
         computers.forget(id)
         refreshComputers()
-        val next = computers.active() ?: run { client.disconnect(); null }
-        if (next != null) selectComputer(next.id)
-        client.reportLocalMessage("已解除与 ${target.name} 的绑定")
+        val next = computers.active()
+        if (next != null) selectComputer(next.id) else client.disconnect()
+        val tail = when {
+            !target.relay -> ""
+            told -> "，电脑那边的名单里也删掉了"
+            else -> "（刚才没连上，电脑那边的名单还留着它：在电脑上打开 /devices 点“移除”）"
+        }
+        client.reportLocalMessage("已解除与 ${target.name} 的绑定$tail")
     }
 
     init {

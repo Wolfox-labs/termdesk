@@ -528,6 +528,7 @@ const server = http.createServer((req, res) => {
     }
     (async () => {
       const revoke = url.searchParams.get('revoke');
+      const remove = url.searchParams.get('remove');
       let status = null;
       if (revoke && relayConnector) {
         try {
@@ -535,6 +536,14 @@ const server = http.createServer((req, res) => {
           status = '已吊销这台手机：它下次连接会被拒绝，其他手机不受影响。';
         } catch (err) {
           status = '吊销失败：' + String(err?.message ?? err);
+        }
+      }
+      if (remove && relayConnector) {
+        try {
+          await relayConnector.remove(remove);
+          status = '已从名单里移除。如果那台手机还留着凭据，它下次连接会被拒绝。';
+        } catch (err) {
+          status = '移除失败：' + String(err?.message ?? err);
         }
       }
       const devices = relayConnector ? await relayConnector.devices().catch(() => []) : [];

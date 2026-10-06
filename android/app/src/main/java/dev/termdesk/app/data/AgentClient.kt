@@ -421,16 +421,20 @@ class AgentClient(
      *
      * Only a relay keeps a list of phones, so `viaRelay` decides whether there is
      * anything to tell: sending it to a direct agent would just earn an
-     * "unknown frame" error. The frame goes out before the socket closes, and the
-     * local record is removed by the caller either way — a phone that lost its
-     * network must not stay listed as paired because the goodbye did not arrive.
+     * "unknown frame" error. Returns whether the far side was actually told — a
+     * phone that is already disconnected cannot announce anything, and the caller
+     * has to say so instead of pretending the other side noticed.
      */
-    fun unpairSelf(viaRelay: Boolean) {
+    fun unpairSelf(viaRelay: Boolean): Boolean {
+        var told = false
         if (viaRelay) {
             val current = socket
-            runCatching { current?.send(JSONObject().put("type", "device.unpair").toString()) }
+            if (current != null) told = runCatching {
+                current.send(JSONObject().put("type", "device.unpair").toString())
+            }.getOrDefault(false)
         }
         disconnect()
+        return told
     }
 
     // ---- P1: inventory and actions ----

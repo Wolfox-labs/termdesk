@@ -225,6 +225,30 @@ test('codes expire, and an unauthenticated caller cannot mint one', async t => {
   node.ws.close();
 });
 
+test('a computer can remove a phone that unbound itself while it had no connection', async t => {
+  // The real sequence: the phone is offline when the user unbinds, so its goodbye
+  // never arrives and the name stays behind with nothing able to use it.
+  const { url, relay } = await bare(t, [{ id: 'pc', keyHash: digest('node-key') }, { id: 'other', keyHash: digest('other-key') }]);
+  const node = await asNode(url);
+  const { token } = await pairPhone(url, node, '旧手机');
+  const [device] = relay.store.devicesOf('pc');
+  assert.equal(relay.store.devicesOf('pc').length, 1);
+
+  send(node.ws, { type: 'relay.devices.remove', requestId: 3, deviceId: device.id });
+  assert.deepEqual((await node.read('relay.devices', f => f.requestId === 3)).devices, []);
+
+  // The credential went with the record: a phone still holding it is out.
+  const stale = await connect(url + '/client');
+  send(stale.ws, { type: 'auth', token });
+  assert.equal((await stale.read('auth.fail')).reason, 'invalid credentials');
+
+  // And another node cannot remove this node's phones.
+  const other = await asNode(url, 'other', 'other-key');
+  send(other.ws, { type: 'relay.devices.remove', deviceId: device.id });
+  assert.deepEqual((await other.read('relay.devices')).devices, []);
+  node.ws.close(); other.ws.close();
+});
+
 test('the agent-side connector mints, lists and revokes over its own channel', async t => {
   // This is the path the PC agent actually uses: nothing here talks to the relay
   // as anything other than the node itself.

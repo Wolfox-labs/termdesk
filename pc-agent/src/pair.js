@@ -130,7 +130,10 @@ export function devicesPage({ devices = [], hostname, relayUrl = null, status = 
         <div class="label">${d.revoked ? '已吊销' : '在用'}</div>
         <div class="value">${escapeHtml(d.label || '未命名手机')}
           <div class="muted">配对于 ${escapeHtml(when(d.createdAt))} · 上次连接 ${escapeHtml(when(d.lastSeenAt))}</div>
-          ${d.revoked ? '' : `<a href="?revoke=${encodeURIComponent(d.id)}">吊销这台</a>`}
+          ${d.revoked
+            ? `<a href="?remove=${encodeURIComponent(d.id)}">从名单里移除</a>`
+            : `<a href="?revoke=${encodeURIComponent(d.id)}">吊销这台</a>
+               <a href="?remove=${encodeURIComponent(d.id)}">移除</a>`}
         </div>
       </div>`).join('');
 
@@ -169,7 +172,9 @@ export function devicesPage({ devices = [], hostname, relayUrl = null, status = 
   <div class="note">
     这个页面只在本机可访问（127.0.0.1）。<br>
     再加一台手机：打开 <a href="/pair">/pair</a> 扫码（每次都会生成一个新的配对码）。<br>
-    手机自己在 App 里解绑也会从这份名单里消失，并同时作废它的凭据。
+    <b>吊销</b>＝这台手机的凭据立刻作废（手机下次连接会被拒），记录留着好认；<b>移除</b>＝把它从名单里删掉，
+    用在手机已经自己解绑、或者手机丢了不想再看见它的时候。<br>
+    手机自己在 App 里解绑时，如果当时连不上这台电脑，那边的名单不会跟着变——那种情况就在这里"移除"。
   </div>
 </main>
 </body>

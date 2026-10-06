@@ -184,5 +184,7 @@ export function startRelayConnector({ config, port, token, accessKey = '', log =
     /** The phones paired to this computer, as the relay knows them. */
     async devices() { const reply = await request({ type: 'relay.devices.list' }); return reply.devices ?? []; },
     async revoke(deviceId) { const reply = await request({ type: 'relay.devices.revoke', deviceId }); return reply.devices ?? []; },
+    /** Forget a phone that is gone for good, so the list stops claiming it exists. */
+    async remove(deviceId) { const reply = await request({ type: 'relay.devices.remove', deviceId }); return reply.devices ?? []; },
   };
 }

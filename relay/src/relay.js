@@ -123,10 +123,16 @@ export function createRelay({ config, configFile = null }) {
             : { type: 'relay.pair.denied', requestId: f.requestId ?? null, reason: '待用配对码已达上限' });
           return;
         }
-        if (f.type === 'relay.devices.list' || f.type === 'relay.devices.revoke') {
+        if (f.type === 'relay.devices.list' || f.type === 'relay.devices.revoke' || f.type === 'relay.devices.remove') {
           if (f.type === 'relay.devices.revoke' && typeof f.deviceId === 'string') {
             try { store.revokeDevice(identity.id, f.deviceId); }
             catch { send(ws, { type: 'error', code: 'storage_unavailable', message: '吊销失败：凭据存储不可写' }); return; }
+          }
+          // Removing is for a phone that is gone: it unbound itself while it had no
+          // connection, so the name stayed behind with nothing able to use it.
+          if (f.type === 'relay.devices.remove' && typeof f.deviceId === 'string') {
+            try { store.removeDevice(identity.id, f.deviceId); }
+            catch { send(ws, { type: 'error', code: 'storage_unavailable', message: '移除失败：凭据存储不可写' }); return; }
           }
           send(ws, { type: 'relay.devices', requestId: f.requestId ?? null, devices: store.devicesOf(identity.id) });
           return;

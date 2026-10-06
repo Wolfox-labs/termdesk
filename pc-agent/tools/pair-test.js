@@ -181,7 +181,9 @@ check('an empty answer is not', !healthIsOurs(''));
   check('the phone list names each phone', page.includes('小米 15') && page.includes('旧手机'));
   check('an active phone can be revoked from it', page.includes('?revoke=d-1'));
   check('a revoked phone cannot be revoked twice', !page.includes('?revoke=d-2'));
+  check('a phone that is gone can be removed outright', page.includes('?remove=d-1') && page.includes('?remove=d-2'));
   check('and the list says phones may unbind themselves', page.includes('解绑'));
+  check('and explains what to do when a phone unbound while offline', page.includes('移除'));
 }
 
 {
