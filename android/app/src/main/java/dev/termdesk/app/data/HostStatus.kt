@@ -17,6 +17,18 @@ data class HostStatus(
     val memoryTotalBytes: Long = 0,
     val memoryUsedPercent: Double = 0.0,
     val disks: List<DiskStatus> = emptyList(),
+    /**
+     * The sandbox's own footprint, present only when this status came from the
+     * phone's own agent. On a PC these are zero: there the machine's numbers are
+     * the interesting ones.
+     *
+     * Why it exists: Android denies an app /proc/stat, so a phone cannot report
+     * the machine's CPU at all. What it CAN see is its own process tree, which is
+     * exactly what the sandbox is - so this is both the only number available and
+     * the more useful one ("how much is the sandbox eating").
+     */
+    val sandboxRssBytes: Long = 0,
+    val sandboxProcessCount: Int = 0,
 )
 
 data class DiskStatus(

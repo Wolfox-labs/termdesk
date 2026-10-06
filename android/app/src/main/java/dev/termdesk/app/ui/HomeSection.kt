@@ -48,6 +48,7 @@ import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.HostStatus
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.SessionInfo
+import dev.termdesk.app.data.Storage
 import dev.termdesk.app.data.WorkspaceInfo
 import dev.termdesk.app.ui.theme.MeterChars
 
@@ -130,7 +131,14 @@ fun HomeSection(
                     maxLines = 2,
                 )
             }
-            if (status != null && connected && !local) {
+            // Shown for BOTH hosts, and the second line says which one you are
+            // looking at. On the PC these are the machine's numbers; in the
+            // sandbox they are the sandbox's own, because Android denies an app
+            // the system-wide view (measured: /proc/stat -> Permission denied,
+            // os.cpus() empty, while /proc/<own pid>/stat and /proc/meminfo are
+            // readable). So "内存 61%" and "内存 52.0 MB" mean different things
+            // on purpose, and neither is a guess.
+            if (status != null && connected) {
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
                         "CPU ${status.cpuUsagePercent?.let { "%.0f%%".format(it) } ?: "—"}",
@@ -138,7 +146,8 @@ fun HomeSection(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        "内存 ${"%.0f%%".format(status.memoryUsedPercent)}",
+                        if (local && status.sandboxRssBytes > 0) "内存 ${Storage.format(status.sandboxRssBytes)}"
+                        else "内存 ${"%.0f%%".format(status.memoryUsedPercent)}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

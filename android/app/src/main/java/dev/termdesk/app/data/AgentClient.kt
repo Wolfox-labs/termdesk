@@ -2246,6 +2246,7 @@ class AgentClient(
                 }
             }
         }
+        val sandbox = obj.optJSONObject("sandbox")
         return HostStatus(
             hostname = obj.optString("hostname"),
             platform = obj.optString("platform"),
@@ -2258,6 +2259,8 @@ class AgentClient(
             memoryTotalBytes = mem?.optLong("totalBytes") ?: 0,
             memoryUsedPercent = mem?.optDouble("usedPercent", 0.0) ?: 0.0,
             disks = disks,
+            sandboxRssBytes = sandbox?.optLong("rssBytes") ?: 0,
+            sandboxProcessCount = sandbox?.optInt("processCount") ?: 0,
         )
     }
 }

@@ -55,3 +55,7 @@ android/app/src/main/assets/local-agent/
 # per-file limit, and it is a build product rather than source. The payload is
 # reproduced by pc-agent/tools/build-local-kernel.mjs.
 local-sandbox-*.zip
+# Hand-made release bundles (0.31.0.zip and friends): ~100 MB each, over Gitee's
+# per-file limit, and they are distributed out of band rather than versioned.
+# A build product, not source - the same reason local-sandbox-*.zip is ignored.
+/[0-9]*.zip

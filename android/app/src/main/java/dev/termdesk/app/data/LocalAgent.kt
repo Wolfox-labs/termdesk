@@ -258,6 +258,13 @@ class LocalAgent(private val context: Context) {
             "PREFIX" to usr,
             "HOME" to home,
             "TMPDIR" to File(usr, "tmp").apply { mkdirs() }.absolutePath,
+            // A ceiling on the sandbox's V8 heap. Android names no such limit, and
+            // without one a runaway script - or a long conversation holding a whole
+            // harness runtime - grows until the low-memory killer takes the app,
+            // sandbox and all, mid-task. NODE_OPTIONS is inherited, so this single
+            // line also covers every child Node process the agent spawns (the DSH
+            // runtimes), not just the agent itself.
+            "NODE_OPTIONS" to "--max-old-space-size=$SANDBOX_HEAP_MB",
             "TERM" to "xterm-256color",
             "LANG" to "en_US.UTF-8",
             "TERMDESK_ROOTS" to "$home;$usr",
@@ -315,6 +322,17 @@ class LocalAgent(private val context: Context) {
     companion object {
         /** Loopback only, and unusual enough not to collide with the debug agent. */
         const val PORT = 7431
+
+        /**
+         * V8 old-space ceiling for every Node process in the sandbox, in MB.
+         *
+         * 512 is deliberately generous: a runtime holding a long conversation must
+         * not die of this, while a runaway allocation dies here instead of taking
+         * the whole app with it. It caps the JS heap only - native buffers, and
+         * non-Node programs run from the terminal, are not covered (measured
+         * idle cost of the sandbox agent: ~52 MB RSS).
+         */
+        private const val SANDBOX_HEAP_MB = 512
         private const val TAG = "TermDeskLocalAgent"
         private const val READY_TIMEOUT_MS = 30_000L
     }
