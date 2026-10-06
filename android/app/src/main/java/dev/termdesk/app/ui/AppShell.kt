@@ -59,6 +59,8 @@ import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.ChatModels
+import dev.termdesk.app.data.ChatTerminal
+import dev.termdesk.app.data.TerminalView
 import dev.termdesk.app.data.UploadedFile
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
@@ -193,6 +195,14 @@ fun AppShell(
     roots: List<String>,
     /** Create a conversation right now, on the kernel chosen on the home page. */
     onNewChatNow: () -> Unit,
+    /** The command lines each conversation ran, and the one being viewed. */
+    chatTerminals: Map<String, List<ChatTerminal>>,
+    terminalView: TerminalView?,
+    onLoadTerminals: (String) -> Unit,
+    onOpenTerminal: (ChatTerminal) -> Unit,
+    onTerminalInput: (String) -> Unit,
+    onStopTerminal: (String) -> Unit,
+    onCloseTerminalView: () -> Unit,
 ) {
     var panelOpen by remember { mutableStateOf(false) }
     // Sections live in a drawer rather than a permanent rail: a phone is about
@@ -328,6 +338,13 @@ fun AppShell(
                     roots = roots,
                     onNewChatNow = onNewChatNow,
                     onGoto = onSectionChange,
+                    chatTerminals = chatTerminals,
+                    terminalView = terminalView,
+                    onLoadTerminals = onLoadTerminals,
+                    onOpenTerminal = onOpenTerminal,
+                    onTerminalInput = onTerminalInput,
+                    onStopTerminal = onStopTerminal,
+                    onCloseTerminalView = onCloseTerminalView,
                 )
             }
         }
@@ -656,6 +673,13 @@ private fun SectionBody(
     roots: List<String>,
     onNewChatNow: () -> Unit,
     onGoto: (Section) -> Unit,
+    chatTerminals: Map<String, List<ChatTerminal>>,
+    terminalView: TerminalView?,
+    onLoadTerminals: (String) -> Unit,
+    onOpenTerminal: (ChatTerminal) -> Unit,
+    onTerminalInput: (String) -> Unit,
+    onStopTerminal: (String) -> Unit,
+    onCloseTerminalView: () -> Unit,
 ) {
     when (section) {
         // The landing page: where this phone is pointed, what a new conversation
@@ -765,6 +789,13 @@ private fun SectionBody(
             onOpenSession = onOpenSession,
                         onResumeSession = onResumeSession,
                         connected = connected,
+            terminals = activeChat?.let { chatTerminals[it.id] }.orEmpty(),
+            terminalView = terminalView,
+            onLoadTerminals = onLoadTerminals,
+            onOpenTerminal = onOpenTerminal,
+            onTerminalInput = onTerminalInput,
+            onStopTerminal = onStopTerminal,
+            onCloseTerminalView = onCloseTerminalView,
         )
         Section.Settings -> SettingsSection(
             kernelTarget = kernelTarget,

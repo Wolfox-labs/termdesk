@@ -230,9 +230,25 @@ class AgentClient(
     private val _chatModels = MutableStateFlow<Map<String, ChatModels>>(emptyMap())
     val chatModels: StateFlow<Map<String, ChatModels>> = _chatModels.asStateFlow()
 
+    /**
+     * The command lines each conversation ran, keyed by chat id.
+     *
+     * Kept out of [ChatInfo] for the same reason the model list is: a chat
+     * summary is a summary, and a build can run dozens of commands.
+     */
+    private val _chatTerminals = MutableStateFlow<Map<String, List<ChatTerminal>>>(emptyMap())
+    val chatTerminals: StateFlow<Map<String, List<ChatTerminal>>> = _chatTerminals.asStateFlow()
+
+    /** The terminal the panel is showing, with the output collected so far. */
+    private val _terminalView = MutableStateFlow<TerminalView?>(null)
+    val terminalView: StateFlow<TerminalView?> = _terminalView.asStateFlow()
+
     private companion object {
         const val PREFS = "termdesk"
         const val KEY_KERNEL_TARGET = "kernelTarget"
+
+        /** Characters of one command's output the panel keeps in memory. */
+        const val TERMINAL_TEXT_LIMIT = 48 * 1024
     }
 
     /** The last upload that finished, so `+` can attach it to the next message. */
@@ -695,6 +711,66 @@ class AgentClient(
      */
     fun requestChatModels(chatId: String) {
         sendFrame(JSONObject().put("type", "chat.models").put("chatId", chatId))
+    }
+
+    /**
+     * Which command lines this conversation ran.
+     *
+     * Asking is also what tells the PC somebody is watching, so live output
+     * starts flowing only while the panel is actually in use.
+     */
+    fun loadChatTerminals(chatId: String) {
+        sendFrame(JSONObject().put("type", "chat.terminals").put("chatId", chatId))
+    }
+
+    /** Show one terminal: the output it already has, then whatever arrives. */
+    fun openChatTerminal(chatId: String, terminalId: String, command: String, origin: String, canWrite: Boolean) {
+        _terminalView.value = TerminalView(
+            chatId = chatId,
+            terminalId = terminalId,
+            command = command,
+            origin = origin,
+            state = "running",
+            canWrite = canWrite,
+            loading = true,
+        )
+        sendFrame(
+            JSONObject()
+                .put("type", "chat.terminal.read")
+                .put("chatId", chatId)
+                .put("terminalId", terminalId),
+        )
+    }
+
+    fun closeTerminalView() {
+        _terminalView.value = null
+    }
+
+    /**
+     * Type into a terminal we own.
+     *
+     * Nothing is drawn here: the PC echoes what was written back as
+     * `chat.terminal.input`, and drawing both copies would show every line
+     * twice — the same rule the transcript follows for the user's own messages.
+     */
+    fun sendTerminalInput(chatId: String, terminalId: String, data: String) {
+        if (data.isEmpty()) return
+        sendFrame(
+            JSONObject()
+                .put("type", "chat.terminal.input")
+                .put("chatId", chatId)
+                .put("terminalId", terminalId)
+                .put("data", data),
+        )
+    }
+
+    fun stopChatTerminal(chatId: String, terminalId: String) {
+        sendFrame(
+            JSONObject()
+                .put("type", "chat.terminal.stop")
+                .put("chatId", chatId)
+                .put("terminalId", terminalId),
+        )
     }
 
     /** Stop the current reply. The PC disposes the runtime; there is no per-turn cancel. */
@@ -1463,6 +1539,18 @@ class AgentClient(
                 }
                 "chat.approval" -> applyApproval(frame)
                 "chat.models" -> applyChatModels(frame)
+                // ---- a conversation's command lines ----
+                "chat.terminals" -> {
+                    val chatId = frame.optString("chatId")
+                    if (chatId.isNotBlank()) {
+                        _chatTerminals.value = _chatTerminals.value +
+                            (chatId to ChatTerminal.list(frame.optJSONArray("terminals")))
+                        refreshTerminalViewFromList(chatId)
+                    }
+                }
+                "chat.terminal" -> applyTerminalSnapshot(frame)
+                "chat.terminal.output" -> appendTerminalOutput(frame)
+                "chat.terminal.input" -> appendTerminalInput(frame)
                 "chat" -> {
                     _chatSending.value = false
                     val info = parseChatInfo(frame)
@@ -1514,6 +1602,8 @@ class AgentClient(
                     val chatId = frame.optString("chatId")
                     _chats.value = _chats.value.filterNot { it.id == chatId }
                     _chatModels.value = _chatModels.value - chatId
+                    _chatTerminals.value = _chatTerminals.value - chatId
+                    if (_terminalView.value?.chatId == chatId) _terminalView.value = null
                     _approvals.value = _approvals.value.filterNot { it.chatId == chatId }
                     if (_activeChat.value?.id == chatId) {
                         _activeChat.value = null
@@ -1741,8 +1831,100 @@ class AgentClient(
         ))
     }
 
-    private fun upsertChat(info: ChatInfo) {
-        val current = _chats.value
+    /**
+     * How much of one command's output the panel keeps.
+     *
+     * The PC already caps what it sends; this cap is for the phone's own memory
+     * when a command prints for a long time, and the tail is what matters.
+     */
+    private fun capTerminalText(text: String): String =
+        if (text.length <= TERMINAL_TEXT_LIMIT) text else text.takeLast(TERMINAL_TEXT_LIMIT)
+
+    /** The whole output of one terminal, as the PC has it now. */
+    private fun applyTerminalSnapshot(frame: JSONObject) {
+        val chatId = frame.optString("chatId")
+        val terminalId = frame.optString("terminalId")
+        val state = frame.optString("state", "running")
+        val canWrite = frame.optBoolean("canWrite", false)
+        val truncated = frame.optBoolean("truncated", false)
+        val output = capTerminalText(frame.optString("output"))
+        val view = _terminalView.value
+        if (view != null && view.chatId == chatId && view.terminalId == terminalId) {
+            _terminalView.value = view.copy(
+                output = output,
+                state = state,
+                canWrite = canWrite,
+                truncated = truncated,
+                loading = false,
+            )
+        }
+        updateTerminalInList(chatId, terminalId) {
+            it.copy(state = state, canWrite = canWrite, truncated = truncated, bytes = output.length)
+        }
+    }
+
+    /** Output that arrived while the panel is open. */
+    private fun appendTerminalOutput(frame: JSONObject) {
+        val chatId = frame.optString("chatId")
+        val terminalId = frame.optString("terminalId")
+        val chunk = frame.optString("chunk")
+        if (chunk.isEmpty()) return
+        val view = _terminalView.value
+        if (view != null && view.chatId == chatId && view.terminalId == terminalId) {
+            _terminalView.value = view.copy(output = capTerminalText(view.output + chunk))
+        }
+        updateTerminalInList(chatId, terminalId) { it.copy(bytes = it.bytes + chunk.length) }
+    }
+
+    /**
+     * What was typed into a terminal that belongs to us.
+     *
+     * Drawn from the PC's echo rather than when the key was pressed, so the
+     * panel can never show a line the PC did not actually receive.
+     */
+    private fun appendTerminalInput(frame: JSONObject) {
+        val chatId = frame.optString("chatId")
+        val terminalId = frame.optString("terminalId")
+        val data = frame.optString("data")
+        if (data.isEmpty()) return
+        val view = _terminalView.value
+        if (view != null && view.chatId == chatId && view.terminalId == terminalId) {
+            _terminalView.value = view.copy(
+                output = capTerminalText(view.output + "\n» " + data.trimEnd('\n')),
+            )
+        }
+    }
+
+    /** Follow a terminal's state in the list, so the panel's buttons stay honest. */
+    private fun updateTerminalInList(
+        chatId: String,
+        terminalId: String,
+        transform: (ChatTerminal) -> ChatTerminal,
+    ) {
+        val current = _chatTerminals.value[chatId] ?: return
+        if (current.none { it.id == terminalId }) return
+        _chatTerminals.value = _chatTerminals.value +
+            (chatId to current.map { if (it.id == terminalId) transform(it) else it })
+    }
+
+    /**
+     * Keep the open panel's state in step with the list the PC just sent.
+     *
+     * Without this the input box stays enabled after a command exits, and the
+     * phone would offer to type into something that is already gone.
+     */
+    private fun refreshTerminalViewFromList(chatId: String) {
+        val view = _terminalView.value ?: return
+        if (view.chatId != chatId) return
+        val listed = _chatTerminals.value[chatId]?.find { it.id == view.terminalId } ?: return
+        _terminalView.value = view.copy(
+            state = listed.state,
+            canWrite = listed.canWrite,
+            truncated = listed.truncated,
+        )
+    }
+
+    private fun upsertChat(info: ChatInfo) {        val current = _chats.value
         val idx = current.indexOfFirst { it.id == info.id }
         _chats.value = if (idx >= 0) {
             current.toMutableList().also { it[idx] = info }

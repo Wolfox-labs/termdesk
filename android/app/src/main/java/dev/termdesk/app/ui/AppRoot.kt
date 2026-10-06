@@ -69,6 +69,8 @@ fun AppRoot(
     val engines by vm.engines.collectAsState()
     val defaultEngine by vm.defaultEngine.collectAsState()
     val workingDirectory by vm.workingDirectory.collectAsState()
+    val chatTerminals by vm.chatTerminals.collectAsState()
+    val terminalView by vm.terminalView.collectAsState()
 
     /**
      * What a new conversation runs on.
@@ -285,6 +287,30 @@ fun AppRoot(
                     vm.createChat(cwd = vm.defaultCwd, engine = engineForNewChat)
                     section = Section.Sessions
                 },
+                chatTerminals = chatTerminals,
+                terminalView = terminalView,
+                onLoadTerminals = vm::loadChatTerminals,
+                onOpenTerminal = { terminal ->
+                    val chatId = activeChat?.id
+                    if (chatId != null) {
+                        vm.openChatTerminal(
+                            chatId = chatId,
+                            terminalId = terminal.id,
+                            command = terminal.command,
+                            origin = terminal.origin,
+                            canWrite = terminal.canWrite,
+                        )
+                    }
+                },
+                onTerminalInput = { data ->
+                    val chatId = activeChat?.id
+                    val terminalId = terminalView?.terminalId
+                    if (chatId != null && terminalId != null) vm.sendTerminalInput(chatId, terminalId, data)
+                },
+                onStopTerminal = { terminalId ->
+                    activeChat?.let { vm.stopChatTerminal(it.id, terminalId) }
+                },
+                onCloseTerminalView = vm::closeTerminalView,
             )
         }
 

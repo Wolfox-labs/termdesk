@@ -11,6 +11,8 @@ import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.ChatModels
+import dev.termdesk.app.data.ChatTerminal
+import dev.termdesk.app.data.TerminalView
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
@@ -225,6 +227,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Ask what the open conversation can switch to (no model runs for this). */
     fun requestChatModels(chatId: String) = client.requestChatModels(chatId)
+
+    // ---- the open conversation's command lines ----
+
+    /** What this conversation ran. Asking is also what starts live output. */
+    val chatTerminals: StateFlow<Map<String, List<ChatTerminal>>> = client.chatTerminals
+    val terminalView: StateFlow<TerminalView?> = client.terminalView
+
+    fun loadChatTerminals(chatId: String) = client.loadChatTerminals(chatId)
+    fun openChatTerminal(chatId: String, terminalId: String, command: String, origin: String, canWrite: Boolean) =
+        client.openChatTerminal(chatId, terminalId, command, origin, canWrite)
+    fun sendTerminalInput(chatId: String, terminalId: String, data: String) =
+        client.sendTerminalInput(chatId, terminalId, data)
+    fun stopChatTerminal(chatId: String, terminalId: String) = client.stopChatTerminal(chatId, terminalId)
+    fun closeTerminalView() = client.closeTerminalView()
 
     /** Switch the session's permission / agent mode (the kernel applies it now). */
     fun setChatMode(chatId: String, modeId: String) = client.setChatMode(chatId, modeId)

@@ -43,6 +43,7 @@ import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
@@ -86,6 +87,8 @@ import dev.termdesk.app.data.UploadedFile
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.ChatInfo
+import dev.termdesk.app.data.ChatTerminal
+import dev.termdesk.app.data.TerminalView
 import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
 import dev.termdesk.app.data.WorkspaceInfo
@@ -143,6 +146,14 @@ fun ChatSection(
     onOpenSession: (SessionInfo) -> Unit,
     onResumeSession: (SessionDetail) -> Unit,
     connected: Boolean,
+    /** The command lines the open conversation ran, and the one being viewed. */
+    terminals: List<ChatTerminal>,
+    terminalView: TerminalView?,
+    onLoadTerminals: (String) -> Unit,
+    onOpenTerminal: (ChatTerminal) -> Unit,
+    onTerminalInput: (String) -> Unit,
+    onStopTerminal: (String) -> Unit,
+    onCloseTerminalView: () -> Unit,
 ) {
     // 0 = live conversations, 1 = recorded history. One list, two states: there
     // is no separate drawer for history any more, because a phone-width screen
@@ -151,6 +162,9 @@ fun ChatSection(
     // Details are folded away by default: the bar stays one row, and the model /
     // directory / effort line only appears when the user asks for it.
     var detailOpen by remember { mutableStateOf(false) }
+    // The command lines of this conversation, shown over the conversation rather
+    // than beside it: output wants the whole 400dp.
+    var terminalsOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         onLoadChats()
@@ -170,7 +184,11 @@ fun ChatSection(
     }
 
     // A new subject always starts folded.
-    LaunchedEffect(activeChat?.id, recordedSession?.id) { detailOpen = false }
+    LaunchedEffect(activeChat?.id, recordedSession?.id) {
+        detailOpen = false
+        terminalsOpen = false
+        onCloseTerminalView()
+    }
 
     // A conversation's model list is the kernel's own declaration, and a kernel
     // only declares it once a session exists - so it is asked for as soon as a
@@ -185,10 +203,14 @@ fun ChatSection(
 
     val open = activeChat != null || recordedSession != null
 
-    // Back walks out of the conversation, not out of the app: fold the detail
-    // panel first, then return to the list (or close the recorded session).
-    BackHandler(enabled = open) {
+    // Back walks out of the conversation, not out of the app: the command lines
+    // first, then the detail panel, then the list.
+    BackHandler(enabled = open || terminalsOpen) {
         when {
+            terminalsOpen -> {
+                terminalsOpen = false
+                onCloseTerminalView()
+            }
             detailOpen -> detailOpen = false
             recordedSession != null -> onCloseRecorded()
             else -> onLeaveChat()
@@ -216,6 +238,10 @@ fun ChatSection(
             onNew = { onCreateChat(defaultCwd) },
             canResume = connected && recordedSession?.canResume == true && !sending,
             onResume = { recordedSession?.let(onResumeSession) },
+            onOpenTerminals = {
+                activeChat?.let { onLoadTerminals(it.id) }
+                terminalsOpen = true
+            },
         )
 
         AnimatedVisibility(
@@ -242,6 +268,20 @@ fun ChatSection(
 
         Box(Modifier.weight(1f)) {
             when {
+                // The command lines cover the conversation: they are the same
+                // subject seen from another angle, not a second screen beside it.
+                terminalsOpen && activeChat != null -> ChatTerminalsPanel(
+                    terminals = terminals,
+                    view = terminalView,
+                    onOpen = onOpenTerminal,
+                    onInput = onTerminalInput,
+                    onStop = onStopTerminal,
+                    onRefresh = { onLoadTerminals(activeChat.id) },
+                    onClose = {
+                        terminalsOpen = false
+                        onCloseTerminalView()
+                    },
+                )
                 recordedSession != null -> {
                     recordedSession.resumeNote?.let { note ->
                         Text(
@@ -415,6 +455,7 @@ private fun SessionBar(
     onNew: () -> Unit,
     canResume: Boolean,
     onResume: () -> Unit,
+    onOpenTerminals: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -443,6 +484,13 @@ private fun SessionBar(
             TextButton(onClick = onResume) { Text("继续对话") }
         }
         if (open) {
+            IconButton(onClick = onOpenTerminals) {
+                Icon(
+                    Icons.Outlined.Terminal,
+                    contentDescription = "命令行",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             IconButton(onClick = onToggleDetail) {
                 Icon(
                     imageVector = if (expanded) Icons.Outlined.KeyboardArrowUp
