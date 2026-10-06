@@ -183,6 +183,12 @@ class LocalAgent(private val context: Context) {
                     )
                     _state.value = state
                     Log.i(TAG, "local agent ready on port $PORT")
+                    // Off-screen survival: a foreground service lifts the app
+                    // process out of the cached bucket, which is what stops the
+                    // phantom-process killer from reaping the sandbox Node child.
+                    // The notification's "stop" comes back through stop().
+                    LocalAgentService.stopRequested = { stop() }
+                    LocalAgentService.start(context, state.note)
                     return@withContext state
                 }
             }
@@ -196,6 +202,9 @@ class LocalAgent(private val context: Context) {
     }
 
     fun stop() {
+        // The service exists only to keep the agent alive, so it must never
+        // outlive it: a notification over a dead sandbox would be a lie.
+        LocalAgentService.stop(context)
         val child = process ?: return
         process = null
         runCatching { child.destroy() }
@@ -205,6 +214,7 @@ class LocalAgent(private val context: Context) {
     }
 
     private fun fail(message: String): LocalAgentState {
+        LocalAgentService.stop(context)
         Log.w(TAG, message)
         _state.value = LocalAgentState(stage = LocalAgentStage.FAILED, note = message)
         return _state.value
@@ -256,8 +266,14 @@ class LocalAgent(private val context: Context) {
             // The sandbox routes to the free model by default. A desktop default of a
             // paid model is a cost decision that should not be inherited by a phone
             // someone taps at; the model can still be named per turn through the agent.
+            // The sandbox needs a model that actually answers. `mimo-v2.6-flash` is
+            // in the provider's catalogue but never returns - measured from this
+            // machine: 45 s timeout against /v1/chat/completions, HTTP 000 - and a
+            // turn that ends with no content is exactly the failure this default
+            // exists to avoid. `spe/deepseek-v4.1-flash` answers (HTTP 200) and is
+            // the same model the desktop profile defaults to.
             "TERMDESK_CHAT_PROVIDER" to "wolfox",
-            "TERMDESK_CHAT_MODEL" to "mimo-v2.6-flash",
+            "TERMDESK_CHAT_MODEL" to "spe/deepseek-v4.1-flash",
         )
         // DSH, when it has been installed into the sandbox. The kernel table asks
         // TERMDESK_DSH first, and DSH_HOME keeps its profiles, credentials and

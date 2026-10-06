@@ -191,11 +191,29 @@ fun HomeSection(
                 }
             }
         } else {
-            Text(
-                "对话跑在手机沙盒里；沙盒里没有 agent 内核时，这里会如实说没有。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // The sandbox is a kernel host of its own: the agent running inside it
+            // answers the same `kernels.list` as the PC, so whatever it reports
+            // selectable belongs here. This branch used to draw a fixed sentence
+            // instead, which hid a working DSH behind "there is no kernel here".
+            when {
+                selectable.isEmpty() -> Text(
+                    "沙盒里还没有可用的 agent 内核：把 opencode / dsh 之类装进文件系统，这里就会出现。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                else -> {
+                    selectable.forEach { kernel ->
+                        EngineRow(
+                            kernel = kernel,
+                            selected = kernel.id == chosen?.id,
+                            onClick = { onSetEngine(kernel.id) },
+                        )
+                    }
+                    if (unavailable.isNotEmpty()) {
+                        UnavailableEngines(unavailable)
+                    }
+                }
+            }
         }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
             Text(

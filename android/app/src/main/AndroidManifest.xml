@@ -4,6 +4,18 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!--
+      The phone-side sandbox runs as a child process of this app. A foreground
+      service is the only supported way to tell Android "do not reap this while
+      the app is in the background", which is what keeps long sandbox tasks
+      alive. FOREGROUND_SERVICE_SPECIAL_USE is only required from targetSdk 34;
+      it is declared now so raising targetSdk later does not silently break the
+      local kernel. POST_NOTIFICATIONS is likewise a no-op below targetSdk 33.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -43,5 +55,19 @@
                 <data android:scheme="termdesk" android:host="pair" />
             </intent-filter>
         </activity>
+        <!--
+          Keeps the sandbox agent alive off-screen. Started and stopped only by
+          LocalAgent, never exported, and it deliberately does not restart itself
+          (START_NOT_STICKY) so it can never show "running" over a dead sandbox.
+        -->
+        <service
+            android:name=".data.LocalAgentService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the user's on-device Termux sandbox agent running." />
+        </service>
+
     </application>
 </manifest>

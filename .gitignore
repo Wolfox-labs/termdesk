@@ -50,3 +50,8 @@ $d/
 # The local agent travels inside the APK so it can never drift from the app's
 # protocol version; the source of truth is pc-agent/.
 android/app/src/main/assets/local-agent/
+
+# Handoff bundle for the phone-side sandbox: 172 MB, over Gitee's 100 MB
+# per-file limit, and it is a build product rather than source. The payload is
+# reproduced by pc-agent/tools/build-local-kernel.mjs.
+local-sandbox-*.zip
