@@ -165,6 +165,34 @@ export async function verifyPublic({ url, timeoutMs = 12000 } = {}) {
   }
 }
 
+/**
+ * Is the agent answering at this public address actually us?
+ *
+ * A 200 is not proof: on this deployment the tunnel hostname is served by the
+ * VPS relay, which answers 200 with `termdesk-relay`. Anything that prints or
+ * encodes a public address has to check who is on the other end first, or a
+ * phone pairs with a stranger and is told "invalid credentials".
+ */
+export function healthIsOurs(body) {
+  try {
+    return JSON.parse(String(body ?? ''))?.service === 'termdesk-pc-agent';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Verify a public address end to end AND that this service is the one answering.
+ *
+ * `verifyPublic` alone only proves "something answered".
+ */
+export async function verifyOwnAgent({ url, timeoutMs = 12000 } = {}) {
+  const verdict = await verifyPublic({ url, timeoutMs });
+  if (!verdict.ok) return { ...verdict, ours: false, oursDetail: verdict.error ?? `HTTP ${verdict.status}` };
+  const ours = healthIsOurs(verdict.body);
+  return { ...verdict, ours, oursDetail: ours ? 'termdesk-pc-agent' : String(verdict.body ?? '').slice(0, 60) };
+}
+
 export class Tunnel {
   constructor() {
     this.child = null;

@@ -31,6 +31,39 @@ export function pairPayload({ wsUrl, token, name }) {
   return `termdesk://pair?${params.toString()}`;
 }
 
+/**
+ * Which address the QR code (and the pairing page) should carry.
+ *
+ * The rule is "an address that reaches THIS agent", not "the nicest address we
+ * know about". A named tunnel's hostname is a claim, not a fact: DNS can point
+ * it at a different machine entirely. Measured on this deployment — the hostname
+ * in the tunnel config answers as the VPS relay — so a phone that scanned the
+ * printed code sent our pairing token to somebody else and was told "invalid
+ * credentials", with nothing on screen to explain what had gone wrong.
+ *
+ * So the public address is advertised only when a self-check confirmed the agent
+ * answering there is us (`verifyOwnAgent`), and a LAN address is the fallback:
+ * it is the one address we cannot be wrong about, because we are listening on
+ * it. Loopback is the last resort, for a same-machine test.
+ */
+export function choosePairingUrl({ tunnelUrl = null, tunnelIsOurs = false, lanUrls = [], port = 7420 } = {}) {
+  if (tunnelUrl && tunnelIsOurs) return tunnelUrl.replace(/^https:\/\//, 'wss://');
+  const lan = (lanUrls ?? []).find((url) => typeof url === 'string' && /^wss?:\/\//.test(url));
+  if (lan) return lan;
+  return `ws://127.0.0.1:${port}`;
+}
+
+/**
+ * Why that address was chosen, so the page and the banner can say it out loud
+ * instead of leaving the user to guess why a scan did not work.
+ */
+export function pairingUrlReason({ tunnelUrl = null, tunnelIsOurs = false, lanUrls = [] } = {}) {
+  if (tunnelUrl && tunnelIsOurs) return 'public';
+  if (tunnelUrl && !tunnelIsOurs) return 'public_not_ours';
+  if ((lanUrls ?? []).length > 0) return 'lan';
+  return 'loopback';
+}
+
 /** SVG string, so the page needs no image encoding and scales on any screen. */
 export async function qrSvg(text, { width = 280 } = {}) {
   const QRCode = await qrCode();
@@ -83,7 +116,7 @@ function escapeHtml(value) {
  * Loopback only (the caller enforces it): it contains the token, so it must
  * never be reachable through the tunnel it is describing.
  */
-export async function pairPage({ payload, wsUrl, token, tunnel, lanUrls, appUrl, expiresAt }) {
+export async function pairPage({ payload, wsUrl, token, tunnel, urlReason = null, lanUrls, appUrl, expiresAt }) {
   const qr = await qrSvg(payload);
   const rows = [
     ['连接地址', wsUrl],
@@ -93,6 +126,17 @@ export async function pairPage({ payload, wsUrl, token, tunnel, lanUrls, appUrl,
         <div class="label">${escapeHtml(label)}</div>
         <div class="value">${escapeHtml(value)}</div>
       </div>`).join('');
+
+  // Why the code carries this address. "It scanned and said invalid
+  // credentials" is what the user sees when the printed hostname belongs to
+  // another machine, so the page says which case this is instead of leaving them
+  // to guess.
+  const reasonLine = urlReason === 'public_not_ours'
+    ? `<p class="warn">这个域名现在指向的不是本机代理，所以二维码用的是下面的局域网地址。
+       出门要用（手机流量 / 别的 Wi-Fi）之前，请先把 ${escapeHtml(tunnel?.url ?? '')} 指回这台电脑的隧道。</p>`
+    : urlReason === 'lan'
+      ? '<p class="sub">二维码用的是局域网地址：手机与这台电脑在同一个网络时可用。</p>'
+      : '';
 
   const tunnelLine = tunnel?.url
     ? `公网地址：${escapeHtml(tunnel.url)}（${tunnel.mode === 'named' ? '固定域名' : '临时地址，重启会变'}）`
@@ -118,6 +162,8 @@ export async function pairPage({ payload, wsUrl, token, tunnel, lanUrls, appUrl,
   .label { color: #a6a28c; min-width: 76px; }
   .value { font-family: ui-monospace, Consolas, monospace; word-break: break-all; }
   .note { margin-top: 18px; color: #a6a28c; font-size: 12px; line-height: 1.7; }
+  p.warn { margin: 0 0 14px; color: #f8f8f2; background: #5a3a1a; border-left: 3px solid #e6a54b;
+           padding: 10px 12px; border-radius: 8px; font-size: 13px; line-height: 1.7; }
 </style>
 </head>
 <body>
@@ -135,6 +181,7 @@ export async function pairPage({ payload, wsUrl, token, tunnel, lanUrls, appUrl,
   <div class="row"><div class="label">手机打开</div>
     <div class="value">用手机浏览器打开上面的安装地址即可</div></div>
   ${rows}
+  ${reasonLine}
   <div class="note">
     ${tunnelLine}<br>
     这个页面只在本机可访问（127.0.0.1），不会通过隧道暴露；离开本机请勿分享上面的令牌。

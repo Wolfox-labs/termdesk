@@ -29,8 +29,8 @@ import { TerminalManager } from './terminal.js';
 import { listKernels, probeKernels } from './kernels/registry.js';
 import { ChatManager } from './chat.js';
 import { loadRelayConfig, startRelayConnector } from './relay-client.js';
-import { Tunnel, findCloudflared, findTunnelConfig, verifyPublic } from './tunnel.js';
-import { pairPage, pairPayload, qrMatrix, qrTerminal } from './pair.js';
+import { Tunnel, findCloudflared, findTunnelConfig, verifyOwnAgent } from './tunnel.js';
+import { choosePairingUrl, pairPage, pairPayload, pairingUrlReason, qrMatrix, qrTerminal } from './pair.js';
 import { createFrameHandler, pushStatusFrame } from './handlers.js';
 
 const DEFAULT_PORT = 7420;
@@ -159,9 +159,50 @@ function ensureTunnel() {
 }
 
 /** The address the phone should use: the tunnel when up, else loopback. */
-function pairingUrl() {
-  if (tunnel.url) return `wss://${tunnel.url.replace(/^https:\/\//, '')}`;
-  return `ws://127.0.0.1:${args.port}`;
+/**
+ * The last verdict on the public address, and when it was taken.
+ *
+ * The check costs a round trip through Cloudflare, so it is cached: the pairing
+ * page can be reloaded freely without paying for one each time, and the entry
+ * expires quickly enough that a repaired DNS record is noticed.
+ */
+const PUBLIC_VERDICT_TTL_MS = 2 * 60 * 1000;
+let publicVerdict = { at: 0, url: null, ours: false, detail: '' };
+
+function rememberPublicVerdict(url, verdict) {
+  publicVerdict = {
+    at: Date.now(),
+    url: url ?? null,
+    ours: Boolean(verdict?.ours),
+    detail: verdict?.oursDetail ?? '',
+  };
+}
+
+/** Is the agent answering at this public address us? Cached for a short while. */
+async function publicAddressIsOurs(url) {
+  if (!url) return false;
+  if (publicVerdict.url === url && Date.now() - publicVerdict.at < PUBLIC_VERDICT_TTL_MS) {
+    return publicVerdict.ours;
+  }
+  const verdict = await verifyOwnAgent({ url }).catch((err) => ({ ours: false, oursDetail: String(err?.message ?? err) }));
+  rememberPublicVerdict(url, verdict);
+  return publicVerdict.ours;
+}
+
+/**
+ * The address the QR code should carry: one that reaches THIS agent.
+ *
+ * See `choosePairingUrl` for why a configured tunnel hostname is not enough.
+ */
+async function pairingUrl() {
+  const tunnelUrl = tunnel.url ?? null;
+  const ours = await publicAddressIsOurs(tunnelUrl);
+  return choosePairingUrl({
+    tunnelUrl,
+    tunnelIsOurs: ours,
+    lanUrls: lanAddresses().map((addr) => `ws://${addr}:${args.port}`),
+    port: args.port,
+  });
 }
 
 /**
@@ -456,13 +497,22 @@ const server = http.createServer((req, res) => {
     const respond = async () => {
       let status = tunnel.status();
       if (!status.running) status = await ensureTunnel().catch(() => tunnel.status());
-      const wsUrl = pairingUrl();
+      const wsUrl = await pairingUrl();
+      // Why this address: the page and the JSON both say it, so "the scan went to
+      // the wrong machine" is visible instead of mysterious.
+      const urlReason = pairingUrlReason({
+        tunnelUrl: tunnel.url ?? null,
+        tunnelIsOurs: publicVerdict.url === tunnel.url && publicVerdict.ours,
+        lanUrls: localAddresses().map((a) => `ws://${a}:${args.port}`),
+      });
       const payload = pairPayload({ wsUrl, token, name: os.hostname() });
       if (url.pathname === '/pair.json') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
           ok: true,
           url: wsUrl,
+          urlReason,
+          publicDetail: publicVerdict.detail,
           token,
           payload,
           tunnel: status,
@@ -484,6 +534,7 @@ const server = http.createServer((req, res) => {
         wsUrl,
         token,
         tunnel: status,
+        urlReason,
         lanUrls: localAddresses().map((a) => `ws://${a}:${args.port}`),
         appUrl,
         expiresAt: Date.now(),
@@ -763,20 +814,39 @@ server.listen(args.port, args.host, async () => {
     console.log('  公网   正在启动 cloudflared…' + (configFile ? '（使用已有配置 ' + configFile + '）' : '（临时地址模式）'));
     try {
       const status = await tunnel.start({ port: args.port });
-      const wsUrl = 'wss://' + status.url.replace(/^https:\/\//, '');
       console.log('  公网   ' + status.url + '   ' + (status.stable ? '固定域名' : '临时地址（重启会变）'));
-      // Registration is not proof: DNS route + ingress rule + proxy must all be
-      // right. One public request settles it before any QR code is printed.
-      const verdict = await verifyPublic({ url: status.url });
-      console.log(verdict.ok
-        ? '  自检   公网地址已验证可以访问'
-        : '  自检   公网地址暂时不可用：' + (verdict.error ?? verdict.status));
+      // Registration is not proof, and a 200 is not proof either: DNS route,
+      // ingress rule, proxy AND identity all have to be right. The hostname in
+      // the config can be served by a different machine - measured here, it was
+      // answered by the VPS relay, so a phone that scanned our code sent its
+      // token to a stranger. One request, asking "is that you?", settles it.
+      const verdict = await verifyOwnAgent({ url: status.url });
+      rememberPublicVerdict(status.url, verdict);
+      console.log(verdict.ours
+        ? '  自检   公网地址确认是本机代理'
+        : '  自检   这个地址现在不是本机（回的是：' + (verdict.oursDetail ?? '未知') + '）');
+      const lanUrls = lanAddresses().map((a) => `ws://${a}:${args.port}`);
+      const wsUrl = choosePairingUrl({
+        tunnelUrl: status.url,
+        tunnelIsOurs: verdict.ours,
+        lanUrls,
+        port: args.port,
+      });
+      if (!verdict.ours) {
+        console.log('  配对   二维码改用局域网地址；出门要用请先把这个域名指回本机隧道');
+      }
       console.log('');
-      console.log('  手机扫码配对（也可在 App 里手动填上面的 wss 地址 + 令牌）');
+      console.log('  手机扫码配对（也可在 App 里手动填上面的地址 + 令牌）');
       console.log(await qrTerminal(pairPayload({ wsUrl, token, name: os.hostname() })));
     } catch (err) {
       console.error('  公网   启动失败：' + (err?.message ?? err));
       console.error('  公网   ' + (findCloudflared() ? '检查网络后重试' : '把 cloudflared 放进 tools/ 或设置 TERMDESK_CLOUDFLARED'));
+      // A tunnel that will not start must not leave the user without a QR: the
+      // LAN address works for the phone in the same network.
+      const lanUrls = lanAddresses().map((a) => `ws://${a}:${args.port}`);
+      const wsUrl = choosePairingUrl({ tunnelUrl: null, tunnelIsOurs: false, lanUrls, port: args.port });
+      console.log('  配对   ' + wsUrl + '（局域网）');
+      console.log(await qrTerminal(pairPayload({ wsUrl, token, name: os.hostname() })).catch(() => ''));
     }
   } else if (!args.local) {
     // No tunnel line in local mode: the banner there already said 不适用.

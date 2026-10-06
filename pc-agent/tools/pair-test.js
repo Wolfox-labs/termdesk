@@ -9,8 +9,8 @@
  */
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
-import { pairPayload, qrSvg, qrTerminal, pairPage } from '../src/pair.js';
-import { findCloudflared, tunnelConfigPath, Tunnel } from '../src/tunnel.js';
+import { pairPayload, qrSvg, qrTerminal, pairPage, choosePairingUrl, pairingUrlReason } from '../src/pair.js';
+import { findCloudflared, tunnelConfigPath, Tunnel, healthIsOurs } from '../src/tunnel.js';
 
 let passes = 0;
 let failures = 0;
@@ -83,6 +83,48 @@ function matrixToRgba(matrix, scale = 4, quiet = 4) {
   check('page labels the tunnel mode', page.includes('临时地址'));
   check('page escapes the token', !page.includes('<script'), 'no injected markup');
 }
+
+// --- which address the code carries ---------------------------------------
+//
+// The failure this guards against is not cosmetic: the printed QR carried a
+// tunnel hostname that DNS pointed at the VPS relay, so the phone sent its
+// pairing token to a stranger and was told "invalid credentials". An address is
+// only advertised when the agent answering there proved to be us.
+
+check(
+  'a verified public address is used as-is (wss)',
+  choosePairingUrl({ tunnelUrl: 'https://term.example.com', tunnelIsOurs: true, lanUrls: ['ws://10.0.0.5:7420'] })
+    === 'wss://term.example.com',
+);
+check(
+  'an unverified public address is NOT advertised',
+  choosePairingUrl({ tunnelUrl: 'https://term.example.com', tunnelIsOurs: false, lanUrls: ['ws://10.0.0.5:7420'] })
+    === 'ws://10.0.0.5:7420',
+);
+check(
+  'with nothing verified, the LAN address wins over loopback',
+  choosePairingUrl({ tunnelUrl: null, tunnelIsOurs: false, lanUrls: ['ws://192.168.1.8:7420'], port: 7420 })
+    === 'ws://192.168.1.8:7420',
+);
+check(
+  'with no LAN address either, loopback is the honest last resort',
+  choosePairingUrl({ tunnelUrl: null, tunnelIsOurs: false, lanUrls: [], port: 7420 }) === 'ws://127.0.0.1:7420',
+);
+check(
+  'the reason names the awkward case',
+  pairingUrlReason({ tunnelUrl: 'https://term.example.com', tunnelIsOurs: false, lanUrls: ['ws://10.0.0.5:7420'] })
+    === 'public_not_ours',
+);
+check(
+  'and the happy case',
+  pairingUrlReason({ tunnelUrl: 'https://term.example.com', tunnelIsOurs: true, lanUrls: [] }) === 'public',
+);
+
+// Identity of the thing answering /healthz: a 200 from another service is not us.
+check('our own healthz is recognised', healthIsOurs('{"ok":true,"service":"termdesk-pc-agent","protocol":1}'));
+check('another service is not', !healthIsOurs('{"ok":true,"service":"termdesk-relay","protocol":1}'));
+check('a non-JSON answer is not', !healthIsOurs('<html>error 1033</html>'));
+check('an empty answer is not', !healthIsOurs(''));
 
 // --- tunnel plumbing ------------------------------------------------------
 
