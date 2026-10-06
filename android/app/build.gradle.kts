@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -66,9 +68,36 @@ android {
         versionName = "0.3.0-demo"
     }
 
+    /**
+     * Release signing, with the key kept outside the repository.
+     *
+     * `~/.termdesk/keystore/termdesk-release.properties` names the keystore and
+     * its passwords; nothing secret is committed. Without that file a release
+     * build would come out unsigned — an APK nobody can install — so the build
+     * says so instead of producing one (see documents/打包与试用.md for how the
+     * key was made and why losing it matters).
+     */
+    val signingProps = file(
+        System.getProperty("user.home") + "/.termdesk/keystore/termdesk-release.properties",
+    )
+    signingConfigs {
+        if (signingProps.exists()) {
+            create("release") {
+                val props = Properties().apply {
+                    signingProps.inputStream().use { stream -> load(stream) }
+                }
+                storeFile = file(props.getProperty("storeFile"))
+                storePassword = props.getProperty("storePassword")
+                keyAlias = props.getProperty("keyAlias")
+                keyPassword = props.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
