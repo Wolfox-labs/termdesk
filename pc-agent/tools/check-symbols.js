@@ -94,6 +94,31 @@ check(
   readmeMissing.length ? `missing: ${readmeMissing.join(', ')}` : '',
 );
 
+// One version for the whole product.
+//
+// The phone, the desktop window and this agent have to agree, because "which
+// build is this?" is the first question a frozen version has to answer. The
+// number had already drifted once (the status route said 0.2.0 while the
+// handshake said 0.1.0), which is exactly why this is checked rather than
+// trusted.
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const androidGradle = fs.readFileSync(path.join(root, '..', 'android', 'app', 'build.gradle.kts'), 'utf8');
+const desktopGradle = fs.readFileSync(path.join(root, '..', 'desktop', 'build.gradle.kts'), 'utf8');
+const androidVersion = /versionName\s*=\s*"([^"]+)"/.exec(androidGradle)?.[1] ?? null;
+const desktopVersion = /packageVersion\s*=\s*"([^"]+)"/.exec(desktopGradle)?.[1] ?? null;
+// The installer format only accepts MAJOR.MINOR.BUILD, so the desktop window
+// declares the numeric core of the product version and nothing else.
+const numericCore = String(pkg.version).split('-')[0];
+check('the agent declares a version', typeof pkg.version === 'string' && pkg.version.length > 0, String(pkg.version));
+check('the phone declares the same version', androidVersion === pkg.version, `android=${androidVersion} agent=${pkg.version}`);
+check(
+  'the desktop window declares the same version',
+  desktopVersion === numericCore,
+  `desktop=${desktopVersion} expected=${numericCore}`,
+);
+check('the version is served, not just embedded', /\bversion:\s*AGENT_VERSION\b/.test(server), 'status route');
+check('and the handshake names it', /termdesk-pc-agent\/\$\{AGENT_VERSION\}/.test(server), 'auth.ok');
+
 if (failures.length > 0) {
   console.error(`\n${failures.length} check(s) failed`);
   process.exit(1);

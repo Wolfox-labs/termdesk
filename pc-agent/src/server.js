@@ -38,6 +38,19 @@ const DEFAULT_PORT = 7420;
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 
 /**
+ * What this build is.
+ *
+ * Read from package.json instead of typed here again: the phone, the desktop
+ * window and this agent have to agree on one number for a version to mean
+ * anything. It drifted once already — the status route said 0.2.0 while the
+ * handshake said 0.1.0 — and a frozen version that lies about itself is worse
+ * than no version at all.
+ */
+const AGENT_VERSION = JSON.parse(
+  fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version;
+
+/**
  * Arbitrary shell access is the most powerful thing this agent can expose, so
  * it is off unless explicitly enabled. Turn it on with `--enable-shell` or
  * TERMDESK_ENABLE_SHELL=1.
@@ -222,7 +235,7 @@ function printHeader({ args, token, apk, relay }) {
   const line = (label, value) => console.log('  ' + label.padEnd(7) + value);
   console.log('');
   if (args.local) {
-    console.log('  TermDesk 本地内核 — 跑在这台机器自己的沙盒里');
+    console.log(`  TermDesk 本地内核 ${AGENT_VERSION} — 跑在这台机器自己的沙盒里`);
     console.log('  ' + '-'.repeat(64));
     line('监听', args.host + ':' + args.port + '（只在本机回环，外部连不上）');
     line('shell', SHELL_ENABLED ? '已开启（可以执行命令、读写文件）' : '已关闭（加 --enable-shell 打开）');
@@ -232,7 +245,7 @@ function printHeader({ args, token, apk, relay }) {
     console.log('');
     return;
   }
-  console.log('  TermDesk PC — 手机远程指挥这台电脑上的 agent 内核');
+  console.log(`  TermDesk PC ${AGENT_VERSION} — 手机远程指挥这台电脑上的 agent 内核`);
   console.log('  ' + '-'.repeat(64));
   line('本机', os.hostname() + '   监听 ' + args.host + ':' + args.port);
   line('shell', SHELL_ENABLED ? '已开启（手机可执行任意命令、读写文件）' : '已关闭（加 --enable-shell 打开）');
@@ -300,7 +313,7 @@ const server = http.createServer((req, res) => {
       return;
     }
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, service: 'termdesk-pc-agent', protocol: PROTOCOL_VERSION }));
+    res.end(JSON.stringify({ ok: true, service: 'termdesk-pc-agent', version: AGENT_VERSION, protocol: PROTOCOL_VERSION }));
     return;
   }
 
@@ -415,7 +428,7 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       ok: true,
       service: 'termdesk-pc-agent',
-      version: '0.2.0',
+      version: AGENT_VERSION,
       protocol: PROTOCOL_VERSION,
       hostname: os.hostname(),
       platform: `${os.platform()} ${os.release()}`,
@@ -625,7 +638,7 @@ wss.on('connection', (socket, req) => {
       send(S2C.AUTH_OK, {
         hostname: os.hostname(),
         protocol: PROTOCOL_VERSION,
-        agent: 'termdesk-pc-agent/0.1.0',
+        agent: `termdesk-pc-agent/${AGENT_VERSION}`,
       });
       send(S2C.HELLO, { hostname: os.hostname(), platform: `${os.platform()} ${os.release()}` });
       routedSocket = socket;
