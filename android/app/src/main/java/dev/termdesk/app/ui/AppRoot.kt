@@ -165,7 +165,9 @@ fun AppRoot(
             connectionOpen -> ConnectionScreen(
                 link = link,
                 initialUrl = vm.savedUrl,
-                initialToken = vm.savedToken,
+                // Deliberately empty: the saved credential is used when the box is
+                // left alone, and typing over it must be a decision, not a default.
+                initialToken = "",
                 computers = vm.computerList.collectAsState().value,
                 activeId = vm.activeComputerId.collectAsState().value,
                 onSelect = { id -> connectionOpen = false; vm.selectComputer(id) },

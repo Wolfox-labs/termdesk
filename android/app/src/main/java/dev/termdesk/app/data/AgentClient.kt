@@ -1399,7 +1399,12 @@ class AgentClient(
                     _activeChat.value?.let { sendFrame(JSONObject().put("type", "chat.read").put("chatId", it.id)) }
                 }
                 "auth.fail" -> {
-                    _link.value = LinkState.Failed("鉴权失败：${frame.optString("reason", "token 无效")}")
+                    // Not a network problem, and not something retrying can fix: the
+                    // far side does not recognise this phone's credential — it was
+                    // revoked, or this address now belongs to a relay that never
+                    // issued it. Say what to do instead of only what happened.
+                    val reason = frame.optString("reason", "token 无效")
+                    _link.value = LinkState.Failed("这台电脑不认这个凭据（$reason）：可能已被吊销，或这个地址换了中转。请在电脑上打开 /pair 重新配对")
                     manuallyClosed = true // a bad token will never fix itself by retrying
                 }
                 "status" -> _status.value = parseStatus(frame.optJSONObject("status"))

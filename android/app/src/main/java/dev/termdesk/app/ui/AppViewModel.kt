@@ -474,10 +474,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun connect(url: String, token: String, relay: Boolean = url.startsWith("wss://")) {
-        val computer = computers.upsert(url = url, name = null, relay = relay)
-        computers.rememberCredential(computer.id, token)
+        // A blank code means "use the credential this computer already has". The
+        // screen used to pre-fill its field with the saved credential, so pressing
+        // 连接 a second time sent whatever was in the box — including a value that
+        // was already replaced by a fresh pairing, which overwrote the working
+        // credential with a dead one.
+        val existing = computers.list().firstOrNull { it.url == url }
+        val effective = token.ifBlank { existing?.let { computers.credentialFor(it.id) }.orEmpty() }
+        if (effective.isBlank()) {
+            client.reportLocalMessage("这台电脑还没有凭据：请在电脑上打开 /pair，用那个码配对")
+            return
+        }
+        val computer = computers.upsert(url = url, name = null, relay = relay, id = existing?.id)
+        computers.rememberCredential(computer.id, effective)
         refreshComputers()
-        client.connect(url, token, computer.id)
+        client.connect(computer.url, effective, computer.id)
     }
 
     fun disconnect() {

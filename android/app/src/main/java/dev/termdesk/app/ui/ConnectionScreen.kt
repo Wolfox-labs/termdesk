@@ -60,6 +60,8 @@ fun ConnectionScreen(
     var url by remember { mutableStateOf(initialUrl) }
     var token by remember { mutableStateOf(initialToken) }
     val connecting = link is LinkState.Connecting
+    // The address already has a credential on this phone, so the box can stay empty.
+    val knownCredential = computers.any { it.url == url.trim() }
 
     Column(
         modifier = Modifier
@@ -130,7 +132,7 @@ fun ConnectionScreen(
         OutlinedTextField(
             value = token,
             onValueChange = { token = it.trim() },
-            label = { Text("一次性配对码") },
+            label = { Text(if (knownCredential) "一次性配对码（留空＝用已保存的凭据）" else "一次性配对码") },
             visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
             enabled = !connecting,
@@ -143,7 +145,7 @@ fun ConnectionScreen(
 
         Button(
             onClick = { onConnect(url, token) },
-            enabled = !connecting && url.isNotBlank() && token.isNotBlank(),
+            enabled = !connecting && url.isNotBlank() && (token.isNotBlank() || knownCredential),
             shape = RoundedCornerShape(10.dp),
             modifier = Modifier
                 .fillMaxWidth()
