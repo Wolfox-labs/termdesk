@@ -82,6 +82,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---- P3 ----
     val termLines: StateFlow<List<TermLine>> = client.termLines
     val termSession: StateFlow<String?> = client.termSession
+
+    /** Where the shell currently is; null until it reports one. */
+    val termCwd: StateFlow<String?> = client.termCwd
     val termBusy: StateFlow<Boolean> = client.termBusy
     val kernelTarget: StateFlow<String> = client.kernelTarget
     val termUnavailable: StateFlow<String?> = client.termUnavailable

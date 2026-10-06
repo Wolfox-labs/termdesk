@@ -118,6 +118,15 @@ class AgentClient(
     private val _termSession = MutableStateFlow<String?>(null)
     val termSession: StateFlow<String?> = _termSession.asStateFlow()
 
+    /**
+     * Where the shell says it is, reported by the agent with every command result.
+     *
+     * It comes from the shell itself rather than from the phone remembering what
+     * was typed, so a `cd` performed inside a script moves this line too.
+     */
+    private val _termCwd = MutableStateFlow<String?>(null)
+    val termCwd: StateFlow<String?> = _termCwd.asStateFlow()
+
     /** True while a command is executing, so the UI can show a spinner. */
     private val _termBusy = MutableStateFlow(false)
     val termBusy: StateFlow<Boolean> = _termBusy.asStateFlow()
@@ -481,6 +490,7 @@ class AgentClient(
         _termLines.value = emptyList()
         _termBusy.value = false
         _termSession.value = null
+        _termCwd.value = null
     }
 
     /**
@@ -494,6 +504,7 @@ class AgentClient(
         val agent = localAgent ?: return null
         _termLines.value = emptyList()
         _termSession.value = null
+        _termCwd.value = null
         val state = agent.start()
         if (state.ready) connect(state.url, state.token) else _link.value = LinkState.Failed(state.note)
         return state
@@ -542,6 +553,7 @@ class AgentClient(
         val sid = _termSession.value ?: return
         sendFrame(JSONObject().put("type", "term.close").put("sessionId", sid))
         _termSession.value = null
+        _termCwd.value = null
         _termLines.value = emptyList()
         _termBusy.value = false
     }
@@ -1486,7 +1498,13 @@ class AgentClient(
                         appendTerm(frame.optString("text"), TermLine.Stream.fromWire(frame.optString("stream")))
                     }
                 }
-                "term.exit" -> {                    _termBusy.value = false
+                "term.exit" -> {
+                    _termBusy.value = false
+                    // The shell reports where it ended up; a blank or missing cwd
+                    // (an older agent) leaves the previous one rather than showing
+                    // an empty path.
+                    val reported = if (frame.isNull("cwd")) null else frame.optString("cwd")
+                    if (!reported.isNullOrBlank()) _termCwd.value = reported
                     val code = frame.optInt("code", 0)
                     val error = if (frame.isNull("error")) null else frame.optString("error")
                     when (error) {
@@ -1494,6 +1512,7 @@ class AgentClient(
                             _termUnavailable.value = "电脑端未启用终端，请用 --enable-shell 启动代理"
                         "no_such_session" -> {
                             _termSession.value = null
+                            _termCwd.value = null
                             appendTerm("[终端已关闭]", TermLine.Stream.SYSTEM)
                         }
                         "interrupted" -> appendTerm("[已中断]", TermLine.Stream.SYSTEM)

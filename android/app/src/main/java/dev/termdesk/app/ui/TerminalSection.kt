@@ -25,9 +25,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -35,6 +37,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -50,6 +53,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.termdesk.app.data.TermLine
@@ -80,11 +84,27 @@ private fun quickCommands(backend: String): List<Pair<String, String>> = if (bac
     )
 }
 
+/**
+ * `cd <dir>`, quoted for whichever shell is on the other end.
+ *
+ * The two backends really do quote differently, and not in a cosmetic way: a path
+ * with a space works in both once quoted, but a path containing a quote only
+ * works if it is escaped the way that shell expects. This is the difference
+ * between reaching a directory called `it's` and not reaching it.
+ */
+private fun cdCommand(dir: String, kernel: String): String =
+    if (kernel == "local") {
+        "cd '" + dir.replace("'", "'\\''") + "'"
+    } else {
+        "cd \"" + dir.replace("\"", "`\"") + "\""
+    }
+
 @Composable
 fun TerminalSection(
     lines: List<TermLine>,
     busy: Boolean,
     sessionId: String?,
+    cwd: String?,
     unavailable: String?,
     onOpen: () -> Unit,
     onRun: (String) -> Unit,
@@ -96,6 +116,7 @@ fun TerminalSection(
     var input by remember { mutableStateOf("" ) }
     var history by remember { mutableStateOf(listOf<String>()) }
     var historyIndex by remember { mutableStateOf(-1) }
+    var cwdDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     // Open the session lazily, the first time this pane is shown - for whichever
@@ -164,6 +185,81 @@ fun TerminalSection(
                 }
             }
         }
+
+        // Where the shell is, and the way to move it.
+        //
+        // The directory is the shell's own report - the agent sends it with every
+        // command's exit - so it stays right even when a command cd's by itself,
+        // instead of the phone remembering what it thinks it typed. Hidden when
+        // there is no shell to ask.
+        if (unavailable == null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .clickable { cwdDialog = true }
+                    .padding(start = 12.dp, end = 12.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Outlined.FolderOpen,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(13.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = cwd ?: "目录未知",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "切换",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+
+        if (cwdDialog) {
+            var path by remember(cwd) { mutableStateOf(cwd.orEmpty()) }
+            AlertDialog(
+                onDismissRequest = { cwdDialog = false },
+                title = { Text("切换工作目录") },
+                text = {
+                    Column {
+                        Text(
+                            "填一个目录，终端就切过去。相对路径以当前目录为基准；" +
+                                "目录不存在时 shell 会报错，位置不会变。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = path,
+                            onValueChange = { path = it },
+                            singleLine = true,
+                            label = { Text("目录") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val target = path.trim()
+                        cwdDialog = false
+                        if (target.isNotEmpty()) onRun(cdCommand(target, kernel))
+                    }) { Text("切换") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { cwdDialog = false }) { Text("取消") }
+                },
+            )
+        }
+
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
         // Output

@@ -27,6 +27,22 @@ const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // reap a session after 30 min idle
 const MAX_SCROLLBACK = 2000; // retained output lines per session
 const MAX_COMMAND_BYTES = 100_000;
 
+/**
+ * A base64 field from a sentinel, or null when the shell did not send one.
+ *
+ * Both loops now carry the shell's cwd this way. A shell that emits only two
+ * fields - an older build, or a platform we have not taught yet - yields null,
+ * and the phone shows no directory rather than a wrong one.
+ */
+function decodeBase64(value) {
+  if (!value) return null;
+  try {
+    return Buffer.from(value, 'base64').toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
 const LOOP_SCRIPT = `
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -55,7 +71,8 @@ while ($true) {
     [Console]::Out.WriteLine("ERR: " + $_.Exception.Message)
     $code = 1
   }
-  [Console]::Out.WriteLine("__TD_END_$($req.id)_" + $code + "__")
+  $cwdB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PWD.Path))
+  [Console]::Out.WriteLine("__TD_END_$($req.id)_" + $code + "_" + $cwdB64 + "__")
   [Console]::Out.Flush()
 }
 `;
@@ -76,7 +93,11 @@ while IFS='	' read -r __td_id __td_payload; do
   __td_cmd=\$(printf '%s' "\$__td_payload" | base64 -d 2>/dev/null)
   eval "\$__td_cmd"
   __td_code=\$?
-  printf '\\n__TD_END_%s_%s__\\n' "\$__td_id" "\$__td_code"
+  # $PWD rides along base64-encoded: a directory name may contain anything, and
+  # the sentinel is split on '_'. base64's alphabet has no '_', so the frame
+  # stays parseable whatever the directory is called.
+  __td_cwd=\$(printf '%s' "\$PWD" | base64 | tr -d '\\n')
+  printf '\\n__TD_END_%s_%s_%s__\\n' "\$__td_id" "\$__td_code" "\$__td_cwd"
 done
 `;
 
@@ -167,14 +188,19 @@ class TerminalSession {
     while ((idx = this.buffer.indexOf('__TD_END_')) !== -1) {
       const end = this.buffer.indexOf('__', idx + 9);
       if (end === -1) break;
-      const [id, code] = this.buffer.slice(idx + 9, end).split('_');
+      const [id, code, cwdB64] = this.buffer.slice(idx + 9, end).split('_');
       const output = this.buffer.slice(0, idx);
       this.buffer = this.buffer.slice(end + 2);
 
       if (output.length > 0) this.emit(output, 'stdout');
 
       const waiter = this.listeners.shift();
-      const result = { output: output.replace(/\r?\n$/, ''), code: Number(code), id: Number(id) };
+      const result = {
+        output: output.replace(/\r?\n$/, ''),
+        code: Number(code),
+        id: Number(id),
+        cwd: decodeBase64(cwdB64),
+      };
       this.currentCommand = null;
       if (waiter) waiter(result);
     }

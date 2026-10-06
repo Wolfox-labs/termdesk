@@ -352,6 +352,9 @@ export function createFrameHandler(ctx) {
           sessionId: frame.sessionId,
           code: result.code,
           error: result.error ?? null,
+          // Where the shell ended up: a command that cd's reports the new place,
+          // so the phone's directory line follows the shell instead of guessing.
+          cwd: result.cwd ?? null,
         });
         break;
       }

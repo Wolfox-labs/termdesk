@@ -51,6 +51,7 @@ fun AppRoot(
     val termLines by vm.termLines.collectAsState()
     val kernelTarget by vm.kernelTarget.collectAsState()
     val termSession by vm.termSession.collectAsState()
+    val termCwd by vm.termCwd.collectAsState()
     val termBusy by vm.termBusy.collectAsState()
     val termUnavailable by vm.termUnavailable.collectAsState()
     val codexConfig by vm.codexConfig.collectAsState()
@@ -216,6 +217,7 @@ fun AppRoot(
                 kernelTarget = kernelTarget,
                 termBusy = termBusy,
                 termSession = termSession,
+                termCwd = termCwd,
                 termUnavailable = termUnavailable,
                 onTermOpen = vm::openTerminal,
                 onSetKernelTarget = vm::setKernelTarget,
