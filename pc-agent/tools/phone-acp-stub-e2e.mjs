@@ -210,6 +210,104 @@ try {
   const second = items(client, chatId).filter((i) => i.kind === 'message' && i.role === 'assistant');
   check('a second message also answers', second.length >= 2, `${second.length} assistant message(s)`);
 
+  // ---- the conversation's command lines ------------------------------------
+  // An ACP kernel runs its commands through the client, so these terminals are
+  // ours and the phone must be able to list them, read them and type into them.
+  //
+  // Every assertion below looks only at frames that arrived AFTER its own
+  // request: the same list is pushed whenever a terminal changes, so scanning
+  // from the start of the connection finds the oldest copy — which is how a
+  // finished terminal got read as "still running".
+  const listFrom = client.frames.length;
+  client.ws.send(JSON.stringify({ type: 'chat.terminals', chatId }));
+  const terminalsFrame = await waitFrame(
+    client,
+    (f) => client.frames.indexOf(f) >= listFrom
+      && f.type === 'chat.terminals'
+      && f.chatId === chatId
+      && (f.terminals ?? []).length > 0,
+    15000,
+    'the terminal list',
+  );
+  const first = (terminalsFrame.terminals ?? [])[0];
+  check('the conversation lists the command it ran', Boolean(first), JSON.stringify(terminalsFrame.terminals).slice(0, 140));
+  check('the terminal belongs to us, so it can be driven', first?.origin === 'kernel', String(first?.origin));
+  check('it reports its own state', first?.state === 'exited', String(first?.state));
+
+  const readFrom = client.frames.length;
+  client.ws.send(JSON.stringify({ type: 'chat.terminal.read', chatId, terminalId: first.id }));
+  const readFrame = await waitFrame(
+    client,
+    (f) => client.frames.indexOf(f) >= readFrom && f.type === 'chat.terminal' && f.terminalId === first.id,
+    15000,
+    'the terminal output',
+  );
+  check(
+    'its output is readable',
+    String(readFrame.output ?? '').includes('stub terminal says hello'),
+    JSON.stringify(readFrame.output).slice(0, 80),
+  );
+
+  // ---- a terminal that is still running: the write path --------------------
+  const beforeLive = client.frames.length;
+  client.ws.send(JSON.stringify({ type: 'chat.send', chatId, text: 'long-terminal' }));
+  const livePermission = await waitFrame(
+    client,
+    (f) => client.frames.indexOf(f) >= beforeLive && f.type === 'chat.approval' && f.chatId === chatId && f.state !== 'resolved',
+    30000,
+    'the live terminal turn to ask permission',
+  );
+  client.ws.send(JSON.stringify({ type: 'chat.approve', requestId: livePermission.requestId, optionId: 'allow_once' }));
+  await waitFrame(
+    client,
+    (f) => client.frames.indexOf(f) >= beforeLive && f.type === 'chat.turn' && f.chatId === chatId && f.state === 'ended',
+    60000,
+    'the live terminal turn to end',
+  );
+
+  const runningFrom = client.frames.length;
+  client.ws.send(JSON.stringify({ type: 'chat.terminals', chatId }));
+  const runningFrame = await waitFrame(
+    client,
+    (f) => client.frames.indexOf(f) >= runningFrom
+      && f.type === 'chat.terminals'
+      && f.chatId === chatId
+      && (f.terminals ?? []).some((t) => t.state === 'running'),
+    20000,
+    'a terminal that is still running',
+  );
+  const live = (runningFrame.terminals ?? []).find((t) => t.state === 'running');
+  check('a still-running terminal is listed', Boolean(live), JSON.stringify(runningFrame.terminals).slice(0, 140));
+  check('and it is offered as writable', live?.canWrite === true);
+
+  client.ws.send(JSON.stringify({ type: 'chat.terminal.input', chatId, terminalId: live.id, data: 'ping\n' }));
+  const echoed = await waitFrame(
+    client,
+    (f) => f.type === 'chat.terminal.output' && f.terminalId === live.id && String(f.chunk ?? '').includes('echo:ping'),
+    20000,
+    'the terminal to echo what we typed',
+  );
+  check('typing reaches the process', String(echoed.chunk).includes('echo:ping'));
+
+  client.ws.send(JSON.stringify({ type: 'chat.terminal.stop', chatId, terminalId: live.id }));
+  const stopped = await waitFrame(
+    client,
+    (f) => f.type === 'action.result' && f.action === 'chat.terminal.stop' && f.target === live.id,
+    15000,
+    'the stop acknowledgement',
+  );
+  check('stopping it is acknowledged', stopped.ok === true, stopped.message ?? stopped.code);
+
+  // Writing to a terminal that is gone must say so, not pretend to have typed.
+  client.ws.send(JSON.stringify({ type: 'chat.terminal.input', chatId, terminalId: live.id, data: 'too late\n' }));
+  const refused = await waitFrame(
+    client,
+    (f) => f.type === 'action.result' && f.action === 'chat.terminal.input' && f.target === live.id,
+    15000,
+    'the refusal',
+  );
+  check('typing into a dead terminal is refused with a reason', refused.ok === false && Boolean(refused.message), refused.message);
+
   // ---- what the phone would draw -------------------------------------------
   console.log('\ntranscript the phone renders:');
   for (const item of items(client, chatId)) {

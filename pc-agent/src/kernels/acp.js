@@ -30,6 +30,7 @@
  */
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { AcpTerminals, ACP_TERMINAL_METHODS } from './acp-terminal.js';
 
 const PROTOCOL_VERSION = 1;
 /** Requests other than a prompt are answered quickly or not at all. */
@@ -229,6 +230,14 @@ export class AcpKernel extends EventEmitter {
     this.authMethods = [];
     /** What each live session offers (models / modes / config options). */
     this.sessionMeta = new Map();
+    /**
+     * Terminals this kernel asked us to run.
+     *
+     * ACP puts the command line on the client side, so a conversation's
+     * terminals are ours: the phone can list them, read them and type into them.
+     * See `acp-terminal.js` for why they are pipes and not a PTY.
+     */
+    this.terminals = new AcpTerminals({ onEvent: (event) => this.emit('terminal', event) });
     /** Allow tool permissions by default: the PC owner already opted into full
      *  control of this machine. Every decision is surfaced to the transcript. */
     this.approvalPolicy = process.env.TERMDESK_ACP_APPROVE === 'deny' ? 'deny' : 'allow';
@@ -277,10 +286,11 @@ export class AcpKernel extends EventEmitter {
 
       const result = await this.request('initialize', {
         protocolVersion: PROTOCOL_VERSION,
-        // TermDesk does not implement client-side fs or terminal delegation:
-        // the kernel keeps its own tools, and the phone's file browser talks to
-        // the agent's own fs frames instead.
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+        // fs stays on the kernel's side: the phone's file browser talks to the
+        // agent's own fs frames, so delegating file reads here would be a second
+        // owner for the same files. Terminals are different - they are the one
+        // thing the phone must own to be able to show and drive a command line.
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: true },
         clientInfo: { name: 'termdesk-pc-agent', title: 'TermDesk', version: '0.1' },
       }, { timeout: 30_000 });
 
@@ -373,8 +383,45 @@ export class AcpKernel extends EventEmitter {
       });
       return;
     }
-    // fs/*, terminal/* and anything unknown: we declared no support, so say so
-    // instead of hanging.
+    // The command line a conversation uses. The kernel asks, we run it, and the
+    // phone gets to see (and drive) the process — the VS Code + Copilot shape.
+    if (ACP_TERMINAL_METHODS.has(method)) {
+      const params = message.params ?? {};
+      const reply = (result) => this.send({ jsonrpc: '2.0', id: message.id, result });
+      const fail = (err) => this.send({
+        jsonrpc: '2.0',
+        id: message.id,
+        error: { code: -32603, message: String(err?.message ?? err) },
+      });
+      try {
+        switch (method) {
+          case 'terminal/create':
+            reply(this.terminals.create(params));
+            break;
+          case 'terminal/output':
+            reply(this.terminals.output(params));
+            break;
+          case 'terminal/wait_for_exit':
+            // Answered asynchronously: the kernel must not be blocked while a
+            // command runs, and it is the kernel that decides when to wait.
+            this.terminals.waitForExit(params).then(reply).catch(fail);
+            break;
+          case 'terminal/kill':
+            reply(this.terminals.kill(params));
+            break;
+          case 'terminal/release':
+            reply(this.terminals.release(params));
+            break;
+          default:
+            fail(new Error(`termdesk does not implement ${method}`));
+        }
+      } catch (err) {
+        fail(err);
+      }
+      return;
+    }
+    // fs/* and anything else unknown: we declared no support, so say so instead
+    // of hanging.
     this.emit('serverRequest', method, message.params ?? {});
     this.send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `termdesk does not implement ${method}` } });
   }
@@ -569,6 +616,8 @@ export class AcpKernel extends EventEmitter {
     this.disposed = true;
     for (const [, p] of this.pending) p.reject(new Error('ACP 内核已关闭'));
     this.pending.clear();
+    // The terminals are ours, so closing the kernel must close them too.
+    this.terminals.dispose();
     try { this.child?.kill(); } catch { /* already gone */ }
     this.child = null;
   }

@@ -97,6 +97,14 @@ function describeCodexRequest(params) {
 const MAX_CHATS = 8;
 const MAX_EVENTS_PER_CHAT = 1200;
 const MAX_PROMPT_CHARS = 24000;
+/**
+ * How much of one command's output the phone's copy keeps.
+ *
+ * The screen shows a few hundred lines; the cap is here so that a command which
+ * prints forever cannot grow this process's memory through the transcript copy.
+ * The tail is what is kept — that is where the answer usually is.
+ */
+const MAX_TERMINAL_OUTPUT_CHARS = 64 * 1024;
 const IDLE_TTL_MS = 45 * 60 * 1000;
 const INIT_TIMEOUT_MS = 120 * 1000;
 const PROMPT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -217,6 +225,14 @@ class Chat {
     this.kernelLive = false;
     this.events = [];
     this.seq = 0;
+    /**
+     * The command lines this conversation ran, keyed by the kernel's own id.
+     *
+     * Kept per conversation, not globally: "which terminal belongs to what I am
+     * doing right now" is the question the phone asks, and a session's terminals
+     * must not be mixed with another session's on the same kernel process.
+     */
+    this.terminals = new Map();
     this.lastError = null;
     this.usage = null;
     this.titleSource = 'prompt';
@@ -253,6 +269,92 @@ class Chat {
       this.events.splice(0, this.events.length - MAX_EVENTS_PER_CHAT);
     }
     return record;
+  }
+
+  /**
+   * Remember a command line this conversation is running.
+   *
+   * `origin` is the part that matters to the phone: `agent` means the kernel ran
+   * the command inside its own process (Codex) — we can list it, watch it and
+   * stop it, but the protocol has no way to type into it; `kernel` means the
+   * kernel asked this agent to run it (ACP) — that process is ours, so the
+   * phone can drive it. Saying which is which beats offering a dead input box.
+   */
+  startTerminal({ id, origin, command, cwd = null, processId = null }) {
+    const record = {
+      id,
+      origin,
+      command,
+      cwd,
+      processId,
+      state: 'running',
+      exitCode: null,
+      startedAt: Date.now(),
+      finishedAt: null,
+      output: '',
+      bytes: 0,
+      truncated: false,
+    };
+    this.terminals.set(id, record);
+    return record;
+  }
+
+  appendTerminal(id, chunk) {
+    const record = this.terminals.get(id);
+    if (!record || typeof chunk !== 'string' || !chunk) return record ?? null;
+    record.output += chunk;
+    record.bytes += Buffer.byteLength(chunk, 'utf8');
+    if (record.output.length > MAX_TERMINAL_OUTPUT_CHARS) {
+      record.output = record.output.slice(-MAX_TERMINAL_OUTPUT_CHARS);
+      record.truncated = true;
+    }
+    return record;
+  }
+
+  finishTerminal(id, { exitCode = null } = {}) {
+    const record = this.terminals.get(id);
+    if (!record) return null;
+    if (record.state !== 'exited') {
+      record.state = 'exited';
+      record.exitCode = exitCode;
+      record.finishedAt = Date.now();
+    }
+    return record;
+  }
+
+  /** The phone's view: no output bodies, just what exists and what it can do. */
+  terminalList() {
+    return [...this.terminals.values()]
+      .sort((a, b) => a.startedAt - b.startedAt)
+      .map((t) => ({
+        id: t.id,
+        origin: t.origin,
+        command: t.command,
+        cwd: t.cwd,
+        state: t.state,
+        exitCode: t.exitCode,
+        startedAt: t.startedAt,
+        finishedAt: t.finishedAt,
+        bytes: t.bytes,
+        truncated: t.truncated,
+        canWrite: t.origin === 'kernel' && t.state === 'running',
+      }));
+  }
+
+  terminalDetail(id) {
+    const t = this.terminals.get(id);
+    if (!t) return null;
+    return {
+      id: t.id,
+      origin: t.origin,
+      command: t.command,
+      cwd: t.cwd,
+      state: t.state,
+      exitCode: t.exitCode,
+      output: t.output,
+      truncated: t.truncated,
+      canWrite: t.origin === 'kernel' && t.state === 'running',
+    };
   }
 
   summary() {
@@ -320,11 +422,23 @@ export class ChatManager {
      */
     this.approvals = new ApprovalBroker();
     this.approvals.on('settled', (info) => this.noteApproval(info));
+    /**
+     * Conversations whose terminals the client is currently watching.
+     *
+     * Output is only forwarded while somebody is looking: a build printing
+     * thousands of lines must not be pushed at a phone that is on another
+     * screen. The list itself is always kept, so opening the panel shows the
+     * history either way.
+     */
+    this.terminalWatch = new Set();
   }
 
   /** Route chat events to the currently connected client. */
   attach(onEvent) {
     this.onEvent = onEvent;
+    // A new client has not opened any terminal panel yet; assuming otherwise
+    // would push a build log at a socket that never asked for it.
+    if (this.onEvent !== onEvent) this.terminalWatch.clear();
     // The broker sniffs for a client: with nobody attached it settles requests
     // immediately instead of waiting for a phone that may never come back.
     this.approvals.attach(onEvent);
@@ -652,6 +766,145 @@ export class ChatManager {
     return this.codex;
   }
 
+  // --- the conversation's command lines ------------------------------------
+
+  /**
+   * What this conversation has been running.
+   *
+   * Asking for the list is what tells the agent somebody is watching, so live
+   * output starts flowing; without it a build log would be pushed at a phone
+   * that is looking at another screen.
+   */
+  async chatTerminals(chatId) {
+    const chat = this.chats.get(chatId);
+    if (!chat) return null;
+    this.terminalWatch.add(chatId);
+    // Codex keeps the background terminals of a thread on its own side, so the
+    // kernel is asked. That is what makes the list "what is still running on the
+    // PC" instead of "what happened while this phone happened to be connected".
+    if (chat.engine === 'codex' && chat.threadId) {
+      await this.refreshCodexTerminals(chat).catch(() => {});
+    }
+    return { chatId, terminals: chat.terminalList() };
+  }
+
+  chatTerminalRead(chatId, terminalId) {
+    const chat = this.chats.get(chatId);
+    const record = chat?.terminalDetail(terminalId);
+    if (!chat || !record) return null;
+    this.terminalWatch.add(chatId);
+    // `terminalId` on the wire, `id` in the record: the field the client sent is
+    // the field it gets back, so a frame can never be matched against the wrong
+    // key (this was silently mismatched once already).
+    return { chatId, terminalId: record.id, ...record };
+  }
+
+  async chatTerminalWrite(chatId, terminalId, data) {
+    const chat = this.chats.get(chatId);
+    const record = chat?.terminals.get(terminalId);
+    if (!chat || !record) throw new Error('没有这个终端');
+    if (record.origin !== 'kernel') {
+      // The refusal has to be specific: "the kernel runs this one itself, and
+      // the protocol has no write channel for it" is something a user can act on.
+      throw new Error('这条命令由内核自己执行，协议没有提供写入通道；只能看输出或终止它');
+    }
+    const kernel = this.kernelFor(chat.engine);
+    const ok = kernel.terminals?.write?.(terminalId, String(data ?? ''));
+    if (!ok) throw new Error('终端已经结束了');
+    return { chatId, terminalId, wrote: true };
+  }
+
+  async chatTerminalStop(chatId, terminalId) {
+    const chat = this.chats.get(chatId);
+    const record = chat?.terminals.get(terminalId);
+    if (!chat || !record) throw new Error('没有这个终端');
+    if (record.state !== 'running') return { chatId, terminalId, stopped: false, reason: '已经结束' };
+    if (record.origin === 'kernel') {
+      this.kernelFor(chat.engine).terminals?.kill({ terminalId });
+      return { chatId, terminalId, stopped: true };
+    }
+    if (!chat.threadId || !record.processId) throw new Error('这条命令不在可终止的后台终端清单里');
+    await this.codexServer().call('thread/backgroundTerminals/terminate', {
+      threadId: chat.threadId,
+      processId: record.processId,
+    });
+    chat.finishTerminal(terminalId, { exitCode: null });
+    this.emitTerminalList(chat);
+    return { chatId, terminalId, stopped: true };
+  }
+
+  /** Merge Codex's own list of a thread's background terminals into the record. */
+  async refreshCodexTerminals(chat) {
+    const result = await this.codexServer().call('thread/backgroundTerminals/list', { threadId: chat.threadId });
+    const data = Array.isArray(result?.data) ? result.data : [];
+    let changed = false;
+    for (const entry of data) {
+      const id = entry?.itemId ?? entry?.processId;
+      if (!id) continue;
+      const existing = chat.terminals.get(id);
+      if (existing) {
+        if (!existing.processId && entry.processId) existing.processId = entry.processId;
+        continue;
+      }
+      chat.startTerminal({
+        id,
+        origin: 'agent',
+        command: entry.command ?? '',
+        cwd: entry.cwd ?? chat.cwd ?? null,
+        processId: entry.processId ?? null,
+      });
+      changed = true;
+    }
+    if (changed || data.length > 0) this.emitTerminalList(chat);
+    return data.length;
+  }
+
+  /**
+   * ACP terminal events: the kernel asked us to run something, or that process
+   * produced output / exited / was released.
+   */
+  handleAcpTerminal(engineId, event) {
+    const sessionId = event?.sessionId ?? event?.terminal?.sessionId ?? null;
+    const chat = sessionId ? this.acpSessions.get(sessionId) : null;
+    if (!chat) return;
+    if (event.type === 'created' && event.terminal?.id) {
+      chat.startTerminal({
+        id: event.terminal.id,
+        origin: 'kernel',
+        command: event.terminal.command ?? '',
+        cwd: event.terminal.cwd ?? chat.cwd ?? null,
+      });
+      this.emitTerminalList(chat);
+      return;
+    }
+    const terminalId = event.terminalId ?? event.terminal?.id;
+    if (!terminalId) return;
+    if (event.type === 'output') {
+      chat.appendTerminal(terminalId, event.chunk ?? '');
+      if (this.terminalWatch.has(chat.id)) {
+        this.emit({ event: 'chat.terminal.output', chatId: chat.id, terminalId, chunk: event.chunk ?? '' });
+      }
+      return;
+    }
+    if (event.type === 'input' && this.terminalWatch.has(chat.id)) {
+      this.emit({ event: 'chat.terminal.input', chatId: chat.id, terminalId, data: event.data ?? '' });
+      return;
+    }
+    if (event.type === 'exited') {
+      chat.finishTerminal(terminalId, { exitCode: event.exitCode ?? null });
+      this.emitTerminalList(chat);
+      return;
+    }
+    if (event.type === 'released') {
+      chat.terminals.delete(terminalId);
+      this.emitTerminalList(chat);
+    }
+  }
+
+  emitTerminalList(chat) {
+    this.emit({ event: 'chat.terminals', chatId: chat.id, terminals: chat.terminalList() });
+  }
+
   /**
    * Adopt a Codex thread: attach the kernel to it and load the transcript the
    * kernel already holds. This is what makes "打开历史" and "新建对话" the same
@@ -808,6 +1061,51 @@ export class ChatManager {
     if (method === 'turn/completed') { if (chat) this.finishCodexTurn(chat, params?.turn ?? {}); return; }
     if (!chat || chat.status === 'stopped') return;
 
+    // The command lines this conversation runs. Codex executes them inside its
+    // own process, so the honest offer is: listed, watchable while it runs,
+    // stoppable — but not typeable. `process/writeStdin` and `command/exec/write`
+    // both require a process this client created, and this one is not.
+    if (method === 'item/started' && params?.item?.type === 'commandExecution') {
+      const item = params.item;
+      if (item.id) {
+        chat.startTerminal({
+          id: item.id,
+          origin: 'agent',
+          command: item.command ?? '',
+          cwd: item.cwd ?? chat.cwd ?? null,
+        });
+        this.emitTerminalList(chat);
+      }
+    }
+    if (method === 'item/commandExecution/outputDelta') {
+      const id = params?.itemId;
+      if (id && chat.terminals.has(id)) {
+        const delta = typeof params?.delta === 'string' ? params.delta : '';
+        chat.appendTerminal(id, delta);
+        if (delta && this.terminalWatch.has(chat.id)) {
+          this.emit({ event: 'chat.terminal.output', chatId: chat.id, terminalId: id, chunk: delta });
+        }
+      }
+    }
+    if (method === 'item/completed' && params?.item?.type === 'commandExecution') {
+      const item = params.item;
+      const record = item.id ? chat.terminals.get(item.id) : null;
+      if (record) {
+        // The completed item carries the whole output; streamed deltas are the
+        // same bytes, so the aggregate is only used when nothing streamed.
+        const aggregated = String(item.aggregatedOutput ?? item.aggregated_output ?? '');
+        if (aggregated && record.bytes === 0) chat.appendTerminal(item.id, aggregated);
+        chat.finishTerminal(item.id, { exitCode: item.exitCode ?? item.exit_code ?? null });
+        this.emitTerminalList(chat);
+      }
+    }
+    if (method === 'item/commandExecution/terminalInteraction' && params?.itemId) {
+      // The agent answered a prompt in its own terminal. Recording it is how the
+      // phone can tell "waiting for input" apart from "just quiet".
+      const record = chat.terminals.get(params.itemId);
+      if (record) record.lastInputAt = Date.now();
+    }
+
     if (method === 'thread/tokenUsage/updated' && params?.usage) chat.usage = params.usage;
     for (const event of notificationToChatEvents(method, params)) {
       if (event.kind === 'turn') continue; // lifecycle handled above
@@ -912,6 +1210,9 @@ export class ChatManager {
     kernel = new AcpKernel({ id: engineId, bin: spec.bin, args: spec.args, log: (line) => console.log(line) });
     kernel.on('update', (sessionId, update) => this.handleAcpUpdate(engineId, sessionId, update));
     kernel.on('permission', (info) => this.handleAcpPermission(engineId, info));
+    // The kernel's command lines are ours (see kernels/acp-terminal.js), so what
+    // it runs shows up in the conversation it belongs to.
+    kernel.on('terminal', (event) => this.handleAcpTerminal(engineId, event));
     kernel.on('serverRequest', (method) => {
       console.error(`[acp:${engineId}] 引擎请求未实现，已拒绝：${method}`);
     });

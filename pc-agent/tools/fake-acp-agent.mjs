@@ -23,7 +23,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let sessionCounter = 0;
 const sessions = new Map();
 /**
- * requestId -> { resolve, timer } for permission questions awaiting an answer.
+ * requestId -> { resolve, unwrap, timer } for questions awaiting an answer.
+ *
+ * Two kinds of question go through here: `session/request_permission` (which
+ * answers with an option id) and the terminal calls (which answer with a result
+ * object). `unwrap` is what turns a JSON-RPC response into what the caller
+ * wanted, so one mechanism serves both.
  *
  * The deadline is generous on purpose: this stub is driven by hand during
  * interactive checks, and a two-minute window is the difference between testing
@@ -49,14 +54,13 @@ process.stdin.on('data', (chunk) => {
 const update = (sessionId, body) => write({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: body } });
 
 function handle(message) {
-  // A response to a permission question, not a request.
+  // A response to a request we made, not a request of our own.
   if (message.id !== undefined && message.method === undefined) {
     const pending = waiting.get(message.id);
     if (pending) {
       waiting.delete(message.id);
       clearTimeout(pending.timer);
-      const outcome = message.result?.outcome;
-      pending.resolve(outcome?.outcome === 'selected' ? outcome.optionId : null);
+      pending.resolve(pending.unwrap ? pending.unwrap(message) : (message.result ?? null));
     }
     return;
   }
@@ -198,11 +202,43 @@ async function runTurn(session, promptId, text) {
   const option = await askPermission(session, toolCallId);
   const verdict = option ? `allowed (${option})` : 'denied';
 
+  // A real kernel runs its execute tool in a terminal it asks the client for —
+  // that is the whole reason the phone can see a conversation's command lines.
+  // "long-terminal" asks for one that keeps running, so the write path can be
+  // exercised too (the phone typing into it).
+  let terminal = null;
+  let note = 'stub output';
+  if (option) {
+    const wantsLiveTerminal = /long-terminal/i.test(text);
+    const created = await callClient('terminal/create', {
+      sessionId: session.id,
+      command: process.execPath,
+      args: wantsLiveTerminal
+        ? ['-e', "process.stdin.on('data', (d) => process.stdout.write('echo:' + d.toString().trim() + '\\n'));"]
+        : ['-e', "process.stdout.write('stub terminal says hello\\n')"],
+      cwd: session.cwd,
+      outputByteLimit: 32768,
+    });
+    terminal = created?.terminalId ?? null;
+    if (terminal) {
+      if (!wantsLiveTerminal) {
+        const exit = await callClient('terminal/wait_for_exit', { sessionId: session.id, terminalId: terminal });
+        const out = await callClient('terminal/output', { sessionId: session.id, terminalId: terminal });
+        note = `exit ${exit?.exitCode} · ${String(out?.output ?? '').trim()}`;
+      } else {
+        note = `live terminal ${terminal}`;
+      }
+    }
+  }
+
   const result = {
     sessionUpdate: 'tool_call_update',
     toolCallId,
     status: option ? 'completed' : 'failed',
-    content: [{ type: 'content', content: { type: 'text', text: `echo stub → stub output (${verdict})` } }],
+    content: [
+      { type: 'content', content: { type: 'text', text: `echo stub → ${note} (${verdict})` } },
+      ...(terminal ? [{ type: 'terminal', terminalId: terminal }] : []),
+    ],
   };
   session.messages.push(result);
   update(session.id, result);
@@ -215,6 +251,32 @@ async function runTurn(session, promptId, text) {
   write({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
 }
 
+/**
+ * Ask the client for something and wait for its answer.
+ *
+ * Failures come back as a thrown error carrying the JSON-RPC message, because a
+ * stub that silently swallows "the client said no" would make a broken client
+ * look like a working one.
+ */
+function callClient(method, params, timeoutMs = 30_000) {
+  return new Promise((resolve, reject) => {
+    const requestId = 9000 + Math.floor(Math.random() * 1000);
+    const timer = setTimeout(() => {
+      waiting.delete(requestId);
+      reject(new Error(`${method} timed out`));
+    }, timeoutMs);
+    waiting.set(requestId, {
+      timer,
+      resolve: (result) => resolve(result),
+      unwrap: (message) => {
+        if (message.error) throw new Error(`${method}: ${message.error.message ?? 'error'}`);
+        return message.result ?? null;
+      },
+    });
+    write({ jsonrpc: '2.0', id: requestId, method, params });
+  });
+}
+
 /** Ask the client the way a real kernel does, and wait for exactly one answer. */
 function askPermission(session, toolCallId) {
   return new Promise((resolve) => {
@@ -223,7 +285,15 @@ function askPermission(session, toolCallId) {
       waiting.delete(requestId);
       resolve(null);
     }, 120_000);
-    waiting.set(requestId, { resolve, timer });
+    waiting.set(requestId, {
+      timer,
+      resolve,
+      // A permission answer is the option id, not the raw result object.
+      unwrap: (message) => {
+        const outcome = message.result?.outcome;
+        return outcome?.outcome === 'selected' ? outcome.optionId : null;
+      },
+    });
     write({
       jsonrpc: '2.0',
       id: requestId,

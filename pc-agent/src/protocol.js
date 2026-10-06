@@ -50,6 +50,12 @@ export const C2S = {
   CHAT_CANCEL: 'chat.cancel',
   CHAT_CLOSE: 'chat.close',
   CHAT_APPROVE: 'chat.approve',
+  // The command lines a conversation is running. Listing is also what starts
+  // live output flowing, so a phone that is not looking is not flooded.
+  CHAT_TERMINALS: 'chat.terminals',
+  CHAT_TERMINAL_READ: 'chat.terminal.read',
+  CHAT_TERMINAL_INPUT: 'chat.terminal.input',
+  CHAT_TERMINAL_STOP: 'chat.terminal.stop',
   PING: 'ping',
 };
 
@@ -84,6 +90,10 @@ export const S2C = {
   CHAT_SENT: 'chat.sent',
   CHAT_CLOSED: 'chat.closed',
   CHAT_APPROVAL: 'chat.approval',
+  CHAT_TERMINALS: 'chat.terminals',
+  CHAT_TERMINAL: 'chat.terminal',
+  CHAT_TERMINAL_OUTPUT: 'chat.terminal.output',
+  CHAT_TERMINAL_INPUT: 'chat.terminal.input',
   ACTION_RESULT: 'action.result',
   ERROR: 'error',
   PONG: 'pong',

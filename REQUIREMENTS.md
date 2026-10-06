@@ -282,13 +282,13 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 | C→S | `kernels.list`（内核表：唯一事实来源是 pc-agent 的 `kernels/registry.js`） |
 | C→S | `codex.get` · `codex.apply` · `codex.restore` |
 | C→S | `sessions.list` · `sessions.read`（磁盘上的历史会话，只读） |
-| C→S | `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` · `chat.config` · `chat.models` · `chat.approve` |
+| C→S | `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` · `chat.config` · `chat.models` · `chat.approve` · `chat.terminals` · `chat.terminal.read` · `chat.terminal.input` · `chat.terminal.stop` |
 | S→C | `auth.ok` · `auth.fail` · `hello` · `status` · `procs` · `services` |
 | S→C | `fs.listing` · `fs.file` · `fs.written` · `fs.roots` |
 | S→C | `term.opened` · `term.output` · `term.exit` · `term.list` |
 | S→C | `kernels`（内核表，含 tier / 是否可用 / 是否能续聊 / 真实原因） |
 | S→C | `codex.config` · `sessions` · `session` |
-| S→C | `chats` · `chat` · `chat.event` · `chat.status` · `chat.turn` · `chat.sent` · `chat.closed` · `chat.approval` |
+| S→C | `chats` · `chat` · `chat.event` · `chat.status` · `chat.turn` · `chat.sent` · `chat.closed` · `chat.approval` · `chat.terminals` · `chat.terminal` · `chat.terminal.output` · `chat.terminal.input` |
 | S→C | `action.result` · `error` · `pong` |
 
 **统一对话协议要点**（`chat.*`）：

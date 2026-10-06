@@ -651,6 +651,76 @@ export function createFrameHandler(ctx) {
         break;
       }
 
+      case C2S.CHAT_TERMINALS: {
+        const result = await chats.chatTerminals(frame.chatId);
+        if (result) {
+          send(S2C.CHAT_TERMINALS, result);
+        } else {
+          send(S2C.ACTION_RESULT, {
+            action: 'chat.terminals',
+            target: frame.chatId ?? '',
+            ok: false,
+            code: 'no_such_chat',
+            message: '没有这个会话',
+          });
+        }
+        break;
+      }
+
+      case C2S.CHAT_TERMINAL_READ: {
+        const result = chats.chatTerminalRead(frame.chatId, frame.terminalId);
+        if (result) {
+          send(S2C.CHAT_TERMINAL, result);
+        } else {
+          send(S2C.ACTION_RESULT, {
+            action: 'chat.terminal.read',
+            target: frame.terminalId ?? '',
+            ok: false,
+            code: 'no_such_terminal',
+            message: '没有这个终端',
+          });
+        }
+        break;
+      }
+
+      case C2S.CHAT_TERMINAL_INPUT: {
+        try {
+          await chats.chatTerminalWrite(frame.chatId, frame.terminalId, frame.data ?? '');
+        } catch (err) {
+          // The refusal is explained: "this kernel runs its own commands" and
+          // "the terminal is gone" must not look the same on the phone.
+          send(S2C.ACTION_RESULT, {
+            action: 'chat.terminal.input',
+            target: frame.terminalId ?? '',
+            ok: false,
+            code: 'terminal_refused',
+            message: String(err?.message ?? err),
+          });
+        }
+        break;
+      }
+
+      case C2S.CHAT_TERMINAL_STOP: {
+        try {
+          const result = await chats.chatTerminalStop(frame.chatId, frame.terminalId);
+          send(S2C.ACTION_RESULT, {
+            action: 'chat.terminal.stop',
+            target: frame.terminalId ?? '',
+            ok: true,
+            message: result?.stopped ? '已终止' : (result?.reason ?? '已经结束'),
+          });
+        } catch (err) {
+          send(S2C.ACTION_RESULT, {
+            action: 'chat.terminal.stop',
+            target: frame.terminalId ?? '',
+            ok: false,
+            code: 'terminal_refused',
+            message: String(err?.message ?? err),
+          });
+        }
+        break;
+      }
+
       case C2S.CHAT_MODELS: {
         const result = await chats.modelsFor(frame.chatId);
         if (result.ok) {

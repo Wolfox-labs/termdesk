@@ -640,6 +640,11 @@ wss.on('connection', (socket, req) => {
           'chat.turn': 'CHAT_TURN',
           'chat.closed': 'CHAT_CLOSED',
           'chat.approval': 'CHAT_APPROVAL',
+          // A conversation's command lines stream under their own names, so the
+          // phone can tell a terminal that changed apart from a transcript item.
+          'chat.terminals': 'CHAT_TERMINALS',
+          'chat.terminal.output': 'CHAT_TERMINAL_OUTPUT',
+          'chat.terminal.input': 'CHAT_TERMINAL_INPUT',
         }[event]] ?? S2C.CHAT_EVENT;
         socket.send(encodeFrame(type, rest));
       });
