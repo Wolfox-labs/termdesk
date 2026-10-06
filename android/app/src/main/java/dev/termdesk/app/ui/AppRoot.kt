@@ -40,7 +40,7 @@ fun AppRoot(
     val lastAction by vm.lastAction.collectAsState()
     val listing by vm.listing.collectAsState()
     // Collected so startPath recomputes once the agent reports its roots.
-    vm.fsRoots.collectAsState()
+    val roots by vm.fsRoots.collectAsState()
     val openFile by vm.openFile.collectAsState()
     val preview by vm.preview.collectAsState()
     val search by vm.search.collectAsState()
@@ -68,18 +68,24 @@ fun AppRoot(
     val themeMode by vm.themeMode.collectAsState()
     val engines by vm.engines.collectAsState()
     val defaultEngine by vm.defaultEngine.collectAsState()
+    val workingDirectory by vm.workingDirectory.collectAsState()
+
+    /**
+     * What a new conversation runs on.
+     *
+     * The kernel is a standing choice made on the home page, not a question asked
+     * at every "new conversation"; when nothing has been chosen yet, the first
+     * kernel this machine can actually drive is used instead of a guess.
+     */
+    val engineForNewChat = defaultEngine ?: engines.firstOrNull { it.selectable }?.id
 
 
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // New-chat picker: onCreateChat only requests the sheet with a suggested
-    // cwd; kernel/model/cwd stay explicit user choices inside NewChatSheet.
-    // Which section is open lives here, not inside AppShell: a file viewer (or
-    // the new-chat sheet) replaces the whole shell, and a section remembered
+    // Which section is open lives here, not inside AppShell: a file viewer
+    // replaces the whole shell, and a section remembered
     // inside it would silently reset to 会话 every time one was opened.
-    var section by rememberSaveable { mutableStateOf(Section.Sessions) }
-    var newChatSuggestedCwd by remember { mutableStateOf<String?>(null) }
-    var newChatOpen by remember { mutableStateOf(false) }
+    var section by rememberSaveable { mutableStateOf(Section.Home) }
     var connectionOpen by remember { mutableStateOf(vm.savedToken.isBlank()) }
 
 
@@ -96,8 +102,15 @@ fun AppRoot(
     val connected = link is LinkState.Connected
     // Kernel discovery is metadata only (it never runs a model), so it can be
     // refreshed on every connect: Settings and the new-chat sheet then show what
-    // this machine can actually talk to instead of a guessed list.
-    LaunchedEffect(connected) { if (connected) vm.loadEngines() }
+    // this machine can actually talk to instead of a guessed list. The recorded
+    // session index is read at the same moment because the home page shows it as
+    // "what was running on this machine".
+    LaunchedEffect(connected) {
+        if (connected) {
+            vm.loadEngines()
+            vm.loadSessions()
+        }
+    }
 
     // The conversation's own panel offers the model / effort pickers, so the
     // Codex catalog has to exist as soon as a Codex conversation is open.
@@ -130,13 +143,12 @@ fun AppRoot(
         vm.clearLastAction()
     }
 
-    // Back dismisses what is on top, in order: the new-chat sheet, then an open
-    // file. Deeper layers (drawer, conversation, section) register their own
-    // handlers and win by being composed later. Only when nothing is open does
-    // the press reach the OS and leave the app.
-    BackHandler(enabled = newChatOpen || openFile != null || preview != null) {
+    // Back dismisses what is on top, in order: an open file, then a preview.
+    // Deeper layers (drawer, conversation, section) register their own handlers
+    // and win by being composed later. Only when nothing is open does the press
+    // reach the OS and leave the app.
+    BackHandler(enabled = openFile != null || preview != null) {
         when {
-            newChatOpen -> newChatOpen = false
             preview != null -> vm.closePreview()
             else -> vm.closeOpenFile()
         }
@@ -224,12 +236,16 @@ fun AppRoot(
                 sessions = sessions,
                 recordedSession = sessionDetail,
                 onLoadChats = vm::loadChats,
-                // Opens the picker; ChatSection keeps calling onCreateChat(cwd).
+                // A new conversation starts immediately, on the kernel and in the
+                // directory the home page is already showing.
                 onCreateChat = { cwd ->
-                    newChatSuggestedCwd = cwd
-                    newChatOpen = true
+                    vm.createChat(cwd = cwd ?: vm.defaultCwd, engine = engineForNewChat)
+                    section = Section.Sessions
                 },
-                onOpenChat = vm::openChat,
+                onOpenChat = { id ->
+                    vm.openChat(id)
+                    section = Section.Sessions
+                },
                 onSendChat = vm::sendChatMessage,
                 onCancelChat = vm::cancelChat,
                 onCloseChat = vm::closeChat,
@@ -262,6 +278,13 @@ fun AppRoot(
                 onRemoveLocalKernel = vm::removeLocalKernel,
                 onLoadStorage = vm::loadStorage,
                 onClearStorage = vm::clearStorage,
+                workingDirectory = workingDirectory.ifBlank { vm.startPath },
+                onSetWorkingDirectory = vm::setWorkingDirectory,
+                roots = roots,
+                onNewChatNow = {
+                    vm.createChat(cwd = vm.defaultCwd, engine = engineForNewChat)
+                    section = Section.Sessions
+                },
             )
         }
 
@@ -275,30 +298,6 @@ fun AppRoot(
             ) {
                 Text(data.visuals.message, style = MaterialTheme.typography.bodySmall)
             }
-        }
-
-        if (newChatOpen) {
-            LaunchedEffect(Unit) {
-                vm.loadEngines()
-                vm.loadCodexConfig()
-            }
-            NewChatSheet(
-                engines = engines,
-                workspaces = workspaces,
-                codexConfig = codexConfig,
-                defaultEngine = defaultEngine,
-                suggestedCwd = newChatSuggestedCwd,
-                defaultCwd = vm.defaultCwd,
-                onCreateChat = { cwd, engine, provider, model, title, effort ->
-                    newChatOpen = false
-                    vm.createChat(cwd, engine, provider, model, title, effort)
-                },
-                onCreateDirectory = { parent, name ->
-                    vm.createEntry(parent, name, true)
-                    vm.loadSessions()
-                },
-                onDismiss = { newChatOpen = false },
-            )
         }
     }
 }

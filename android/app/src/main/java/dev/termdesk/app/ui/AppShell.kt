@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -80,8 +81,8 @@ import dev.termdesk.app.ui.theme.MeterChars
 import dev.termdesk.app.ui.theme.ThemeMode
 
 /** Sections of the app. */
-/** Sections of the app. */
 enum class Section(val label: String, val icon: ImageVector) {
+    Home("主页", Icons.Outlined.Home),
     Sessions("会话", Icons.Outlined.ChatBubbleOutline),
     Files("文件", Icons.Outlined.FolderOpen),
     Terminal("终端", Icons.Outlined.Terminal),
@@ -185,6 +186,13 @@ fun AppShell(
     onLoadLocalKernel: () -> Unit,
     onInstallLocalKernel: () -> Unit,
     onRemoveLocalKernel: () -> Unit,
+    /** The directory new conversations work in (the home page's standing choice). */
+    workingDirectory: String,
+    onSetWorkingDirectory: (String) -> Unit,
+    /** Directories the agent allows, offered as candidates on the home page. */
+    roots: List<String>,
+    /** Create a conversation right now, on the kernel chosen on the home page. */
+    onNewChatNow: () -> Unit,
 ) {
     var panelOpen by remember { mutableStateOf(false) }
     // Sections live in a drawer rather than a permanent rail: a phone is about
@@ -192,13 +200,13 @@ fun AppShell(
     var sectionDrawerOpen by remember { mutableStateOf(false) }
 
     // System back walks up the app before it leaves it: the drawer first, then
-    // the slide-over panel, then back to the conversation list. The conversation
+    // the slide-over panel, then back to the home page. The conversation
     // itself registers its own handler, which is composed later and wins.
-    BackHandler(enabled = sectionDrawerOpen || panelOpen || section != Section.Sessions) {
+    BackHandler(enabled = sectionDrawerOpen || panelOpen || section != Section.Home) {
         when {
             sectionDrawerOpen -> sectionDrawerOpen = false
             panelOpen -> panelOpen = false
-            else -> onSectionChange(Section.Sessions)
+            else -> onSectionChange(Section.Home)
         }
     }
 
@@ -308,11 +316,18 @@ fun AppShell(
                     onOpenSession = onOpenSession,
                     onResumeSession = onResumeSession,
                     connected = connected,
+                    hostname = hostname,
+                    connectionLabel = connectionLabel,
                     themeMode = themeMode,
                     onThemeModeChange = onThemeModeChange,
                     defaultEngine = defaultEngine,
                     onSetDefaultEngine = onSetDefaultEngine,
                     onRefreshEngines = onRefreshEngines,
+                    workingDirectory = workingDirectory,
+                    onSetWorkingDirectory = onSetWorkingDirectory,
+                    roots = roots,
+                    onNewChatNow = onNewChatNow,
+                    onGoto = onSectionChange,
                 )
             }
         }
@@ -602,7 +617,7 @@ private fun SectionBody(
     sessions: List<SessionInfo>,
     recordedSession: SessionDetail?,
     onLoadChats: () -> Unit,
-    // Opens NewChatSheet (suggested cwd); see the AppShell parameter docs.
+    // Starts a conversation right away on the kernel the home page shows.
     onCreateChat: (String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSendChat: (String, String) -> Unit,
@@ -614,6 +629,8 @@ private fun SectionBody(
     onOpenSession: (SessionInfo) -> Unit,
     onResumeSession: (SessionDetail) -> Unit,
     connected: Boolean,
+    hostname: String,
+    connectionLabel: String,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     engines: List<KernelInfo>,
@@ -634,8 +651,42 @@ private fun SectionBody(
     onLoadLocalKernel: () -> Unit,
     onInstallLocalKernel: () -> Unit,
     onRemoveLocalKernel: () -> Unit,
+    workingDirectory: String,
+    onSetWorkingDirectory: (String) -> Unit,
+    roots: List<String>,
+    onNewChatNow: () -> Unit,
+    onGoto: (Section) -> Unit,
 ) {
     when (section) {
+        // The landing page: where this phone is pointed, what a new conversation
+        // runs on, where it works, and how to get back into what was running.
+        Section.Home -> HomeSection(
+            hostname = hostname,
+            connected = connected,
+            connectionLabel = connectionLabel,
+            status = status,
+            kernelTarget = kernelTarget,
+            engines = engines,
+            currentEngine = defaultEngine,
+            onSetKernelTarget = onSetKernelTarget,
+            onSetEngine = onSetDefaultEngine,
+            onRefreshEngines = onRefreshEngines,
+            workingDirectory = workingDirectory,
+            onSetWorkingDirectory = onSetWorkingDirectory,
+            roots = roots,
+            workspaces = workspaces,
+            chats = chats,
+            sessions = sessions,
+            onNewChat = onNewChatNow,
+            onOpenChat = onOpenChat,
+            onOpenSession = { session ->
+                onOpenSession(session)
+                onGoto(Section.Sessions)
+            },
+            onBrowseFiles = { onGoto(Section.Files) },
+            onOpenTerminal = { onGoto(Section.Terminal) },
+            onOpenSystem = { onGoto(Section.System) },
+        )
         // No local gate here any more: the sandbox agent serves this section too.
         Section.System -> SystemSection(
             status = status,

@@ -156,6 +156,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putString(KEY_ENGINE, clean).apply()
     }
 
+    /**
+     * Where new conversations work, chosen on the home page.
+     *
+     * It is a standing choice like the kernel, not something asked per
+     * conversation: the home page shows it, tapping it changes it, and the file
+     * browser starts from the same place. Empty means "whatever the agent
+     * reports first" (see [startPath]).
+     */
+    private val _workingDir = MutableStateFlow(
+        prefs.getString(KEY_START_PATH, null)?.takeIf { it.isNotBlank() } ?: "",
+    )
+    val workingDirectory: StateFlow<String> = _workingDir.asStateFlow()
+
+    fun setWorkingDirectory(path: String) {
+        val clean = path.trim()
+        _workingDir.value = clean
+        prefs.edit().putString(KEY_START_PATH, clean).apply()
+    }
+
     /** Default working directory for a new conversation, mirroring the file browser. */
     val defaultCwd: String get() = startPath
 
@@ -181,7 +200,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Create an agent conversation. [engine] is the kernel (`codex` | `dsh`);
      * [provider]/[model] are optional and follow the kernel when omitted.
-     * Callers should go through NewChatSheet so the user picks these explicitly.
+     * The kernel comes from the home page's standing choice, so nothing is asked
+     * here; the model and the directory can still be changed once it is open.
      */
     fun createChat(
         cwd: String? = null,
@@ -249,7 +269,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * machine and would publish one user's home directory.
      */
     val startPath: String
-        get() = prefs.getString(KEY_START_PATH, null)?.takeIf { it.isNotBlank() }
+        get() = _workingDir.value.takeIf { it.isNotBlank() }
             ?: client.fsRoots.value.firstOrNull()
             ?: ""
 
