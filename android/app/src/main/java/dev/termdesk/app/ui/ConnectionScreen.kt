@@ -1,8 +1,10 @@
 package dev.termdesk.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -32,16 +34,24 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.termdesk.app.data.LinkState
+import dev.termdesk.app.data.PairedComputer
 
 /**
- * Pairing screen. Deliberately plain: enter the agent address and the token
- * printed by `node src/server.js --show-token` on the PC.
+ * Pairing screen, and the list of computers this phone already knows.
+ *
+ * The list comes first because it is the common case: with two computers paired,
+ * "connect to the other one" should be one tap, not a re-pairing with a fresh
+ * code. The manual fields below are for adding a computer.
  */
 @Composable
 fun ConnectionScreen(
     link: LinkState,
     initialUrl: String,
     initialToken: String,
+    computers: List<PairedComputer>,
+    activeId: String?,
+    onSelect: (String) -> Unit,
+    onForgetComputer: (String) -> Unit,
     onConnect: (String, String) -> Unit,
     onClose: () -> Unit,
     onDisconnect: () -> Unit,
@@ -67,12 +77,38 @@ fun ConnectionScreen(
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "一次绑定设备，之后自动连接 VPS 节点",
+            text = "每台电脑各配一次；换电脑不用重新配对",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
+        if (computers.isNotEmpty()) {
+            Spacer(Modifier.height(24.dp))
+            Text(
+                text = "已配对的电脑",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            computers.forEach { computer ->
+                ComputerRow(
+                    computer = computer,
+                    active = computer.id == activeId,
+                    busy = connecting && computer.id == activeId,
+                    onSelect = { onSelect(computer.id) },
+                    onForget = { onForgetComputer(computer.id) },
+                )
+            }
+        }
+
         Spacer(Modifier.height(28.dp))
+
+        Text(
+            text = if (computers.isEmpty()) "用电脑上 /pair 页面的二维码配对" else "再加一台电脑",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
 
         OutlinedTextField(
             value = url,
@@ -94,7 +130,7 @@ fun ConnectionScreen(
         OutlinedTextField(
             value = token,
             onValueChange = { token = it.trim() },
-            label = { Text("一次性绑定码 / 已保存的设备凭据") },
+            label = { Text("一次性配对码") },
             visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
             enabled = !connecting,
@@ -136,12 +172,67 @@ fun ConnectionScreen(
 
         TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("返回工作台 / 离线查看") }
         TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("暂时断开（保留绑定）") }
-        TextButton(onClick = onForget, modifier = Modifier.fillMaxWidth()) { Text("忘记此设备绑定") }
+        if (computers.isNotEmpty()) {
+            TextButton(
+                onClick = onForget,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("解绑当前电脑") }
+        }
         Spacer(Modifier.height(28.dp))
         Text(
-            text = "仅首次绑定需要节点地址和短时绑定码。设备凭据加密保存；断开连接不会取消绑定。",
+            text = "扫码配对时不需要手填地址。凭据加密保存在这台手机上，每台电脑一份；解绑其中一台不影响其他电脑。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/** One line of the computer list: who it is, how it is reached, and two actions. */
+@Composable
+private fun ComputerRow(
+    computer: PairedComputer,
+    active: Boolean,
+    busy: Boolean,
+    onSelect: () -> Unit,
+    onForget: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .border(
+                width = 1.dp,
+                color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                shape = RoundedCornerShape(10.dp),
+            )
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = computer.name,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+            )
+            Text(
+                text = buildString {
+                    append(if (computer.relay) "中转" else "直连")
+                    append(" · ")
+                    append(computer.url)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (active) {
+            Text(
+                text = if (busy) "连接中" else "当前",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            TextButton(onClick = onSelect) { Text("切换") }
+        }
+        TextButton(onClick = onForget) { Text("解绑") }
     }
 }

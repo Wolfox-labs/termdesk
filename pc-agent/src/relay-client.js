@@ -13,11 +13,27 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 
 const MAX_QUEUE = 16 * 1024 * 1024;
+
+/**
+ * The node's key is a bearer credential, so it only travels encrypted — with one
+ * exception: a relay on this very machine, which is how the whole relay path is
+ * tested without putting anything on the wire.
+ */
+function isSecureRelayUrl(url) {
+  if (typeof url !== 'string') return false;
+  if (url.startsWith('wss://')) return true;
+  if (!url.startsWith('ws://')) return false;
+  try {
+    const host = new URL(url).hostname;
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+  } catch { return false; }
+}
+
 export function loadRelayConfig() {
   const file = process.env.TERMDESK_RELAY_CONFIG || path.join(os.homedir(), '.termdesk', 'relay.json');
   if (!fs.existsSync(file)) return null;
   const config = JSON.parse(fs.readFileSync(file, 'utf8'));
-  if (!config.url?.startsWith('wss://') || !config.nodeId || !config.key) throw new Error('Invalid relay config: secure URL, nodeId and key required');
+  if (!isSecureRelayUrl(config.url) || !config.nodeId || !config.key) throw new Error('Invalid relay config: secure URL (wss://, or ws:// on loopback), nodeId and key required');
   return config;
 }
 function send(ws, value) {
@@ -25,14 +41,44 @@ function send(ws, value) {
   if (ws.bufferedAmount > MAX_QUEUE) { ws.terminate(); return false; }
   ws.send(JSON.stringify(value)); return true;
 }
-export function startRelayConnector({ config, port, token, accessKey = '', log = console.log }) {
+export function startRelayConnector({ config, port, token, accessKey = '', log = console.log, onReady = null, onDevicesChanged = null }) {
   let control = null, retry = null, heartbeat = null, stopped = false, failures = 0;
-  const localSockets = new Map(), transfers = new Set();
+  const localSockets = new Map(), transfers = new Set(), pending = new Map();
+  let nextRequestId = 1;
   const proxy = config.proxy
     ? new (require('socks-proxy-agent').SocksProxyAgent)(config.proxy)
     : undefined;
   const endpoint = route => { const url = new URL(config.url); url.pathname = route; url.search = ''; return url; };
   const localBase = `http://127.0.0.1:${port}`;
+  /**
+   * Ask the relay something and wait for its answer.
+   *
+   * Control questions (mint a pairing code, list this node's phones) travel on the
+   * node channel the relay already authenticated, so nothing new is exposed and
+   * the answer cannot be confused with an agent frame: agent frames carry no
+   * requestId.
+   */
+  function request(frame, { timeoutMs = 8000 } = {}) {
+    const ws = control;
+    if (stopped || !ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error('中转未连接'));
+    const requestId = nextRequestId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { pending.delete(requestId); reject(new Error('中转没有回应')); }, timeoutMs);
+      timer.unref?.();
+      pending.set(requestId, { resolve, reject, timer });
+      if (!send(ws, { ...frame, requestId })) { clearTimeout(timer); pending.delete(requestId); reject(new Error('中转未连接')); }
+    });
+  }
+  function settle(frame) {
+    const waiter = pending.get(frame.requestId);
+    if (!waiter) return false;
+    pending.delete(frame.requestId); clearTimeout(waiter.timer); waiter.resolve(frame);
+    return true;
+  }
+  function failPending(reason) {
+    for (const [, waiter] of pending) { clearTimeout(waiter.timer); waiter.reject(new Error(reason)); }
+    pending.clear();
+  }
   function dropLocals() {
     for (const ws of localSockets.values()) ws.terminate(); localSockets.clear();
     for (const ws of transfers) ws.terminate(); transfers.clear();
@@ -46,7 +92,9 @@ export function startRelayConnector({ config, port, token, accessKey = '', log =
     heartbeat = setInterval(() => { if (!alive) ws.terminate(); else if (ws.readyState === WebSocket.OPEN) { alive = false; ws.ping(); } }, 20_000);
     ws.on('message', raw => {
       let f; try { f = JSON.parse(raw.toString()); } catch { ws.terminate(); return; }
-      if (f.type === 'relay.ready') { failures = 0; log('[termdesk] VPS node connected'); }
+      if (typeof f.requestId === 'number' && settle(f)) return;
+      if (f.type === 'relay.ready') { failures = 0; log('[termdesk] VPS node connected'); onReady?.(); }
+      else if (f.type === 'relay.devices.changed') onDevicesChanged?.();
       else if (f.type === 'relay.open' && typeof f.connectionId === 'string') openLocal(f.connectionId, ws);
       else if (f.type === 'relay.close') { localSockets.get(f.connectionId)?.terminate(); localSockets.delete(f.connectionId); }
       else if (f.type === 'relay.frame') {
@@ -57,7 +105,7 @@ export function startRelayConnector({ config, port, token, accessKey = '', log =
     // Do not echo errors that could contain credentials/proxy URLs.
     ws.on('error', () => log('[termdesk] VPS transport unavailable; retrying'));
     ws.on('close', (code) => {
-      clearInterval(heartbeat); dropLocals();
+      clearInterval(heartbeat); dropLocals(); failPending('中转连接已断开');
       if (stopped) return;
       failures += 1;
       const ms = Math.min(30_000, 1000 * 2 ** Math.min(failures, 5));
@@ -123,5 +171,18 @@ export function startRelayConnector({ config, port, token, accessKey = '', log =
     ws.on('close', () => { transfers.delete(ws); req?.destroy(); response?.destroy(); });
   }
   connect();
-  return { stop() { stopped = true; clearTimeout(retry); clearInterval(heartbeat); dropLocals(); control?.terminate(); } };
+  return {
+    stop() { stopped = true; clearTimeout(retry); clearInterval(heartbeat); dropLocals(); failPending('中转已停止'); control?.terminate(); },
+    get connected() { return control?.readyState === WebSocket.OPEN; },
+    get url() { return config.url; },
+    /** A one-time code the phone scans or types. The relay keeps only its hash. */
+    async pairingCode({ label = null, ttlMs = 10 * 60_000 } = {}) {
+      const reply = await request({ type: 'relay.pair.create', label, ttlMs });
+      if (reply.type !== 'relay.pair.code' || !reply.code) throw new Error(reply.reason || '中转拒绝出码');
+      return { code: reply.code, expiresAt: reply.expiresAt ?? null };
+    },
+    /** The phones paired to this computer, as the relay knows them. */
+    async devices() { const reply = await request({ type: 'relay.devices.list' }); return reply.devices ?? []; },
+    async revoke(deviceId) { const reply = await request({ type: 'relay.devices.revoke', deviceId }); return reply.devices ?? []; },
+  };
 }

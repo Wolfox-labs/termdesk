@@ -9,7 +9,7 @@
  */
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
-import { pairPayload, qrSvg, qrTerminal, pairPage, choosePairingUrl, pairingUrlReason } from '../src/pair.js';
+import { pairPayload, qrSvg, qrTerminal, pairPage, devicesPage, choosePairingUrl, pairingUrlReason } from '../src/pair.js';
 import { findCloudflared, tunnelConfigPath, Tunnel, healthIsOurs } from '../src/tunnel.js';
 
 let passes = 0;
@@ -125,6 +125,69 @@ check('our own healthz is recognised', healthIsOurs('{"ok":true,"service":"termd
 check('another service is not', !healthIsOurs('{"ok":true,"service":"termdesk-relay","protocol":1}'));
 check('a non-JSON answer is not', !healthIsOurs('<html>error 1033</html>'));
 check('an empty answer is not', !healthIsOurs(''));
+
+// --- pairing through the relay -------------------------------------------
+//
+// Over the relay the QR carries a one-time code, not this machine's token, and
+// the page has to say so: a phone holding the token would be holding the key to
+// the agent itself, and "which phone is this?" would have no answer.
+
+{
+  const relayPayload = pairPayload({ wsUrl: 'wss://term.example.com', token: 'ABCD-EFGH-JKMN', name: 'yaosw', relay: true });
+  const page = await pairPage({
+    payload: relayPayload,
+    wsUrl: 'wss://term.example.com',
+    token: 'ABCD-EFGH-JKMN',
+    relay: { url: 'wss://term.example.com', expiresAt: Date.now() + 10 * 60_000 },
+    urlReason: 'relay',
+    lanUrls: [],
+    appUrl: 'http://10.0.0.5:7420/app.apk',
+    expiresAt: Date.now(),
+  });
+  check('the relay page carries the one-time code', page.includes('ABCD-EFGH-JKMN'));
+  check('and calls it a code, not a token', page.includes('配对码') && !page.includes('配对令牌'));
+  check('and says it expires', page.includes('一次性'));
+  check('and points at the phone list', page.includes('/devices'));
+  check('and says the install page is LAN-only', page.includes('局域网'));
+  check('the relay QR still decodes to termdesk://pair', relayPayload.startsWith('termdesk://pair?'));
+  check('and tells the phone the far side is a relay', new URL(relayPayload).searchParams.get('relay') === '1');
+  check('a direct payload carries no relay flag', !pairPayload({ wsUrl: 'ws://10.0.0.5:7420', token: 'x' }).includes('relay'));
+}
+
+{
+  const page = await pairPage({
+    payload: pairPayload({ wsUrl: 'ws://10.0.0.5:7420', token: 'x'.repeat(43), name: 'yaosw' }),
+    wsUrl: 'ws://10.0.0.5:7420',
+    token: 'x'.repeat(43),
+    tunnel: { url: null },
+    urlReason: 'lan',
+    relayError: '中转未连接',
+    lanUrls: ['ws://10.0.0.5:7420'],
+    appUrl: 'http://10.0.0.5:7420/app.apk',
+  });
+  check('a dead relay is admitted on the page, with the fallback named', page.includes('中转没连上') && page.includes('局域网'));
+  check('and the token path is unchanged when not going through a relay', page.includes('配对令牌'));
+}
+
+{
+  const page = devicesPage({
+    devices: [
+      { id: 'd-1', label: '小米 15', createdAt: Date.now(), lastSeenAt: Date.now(), revoked: false },
+      { id: 'd-2', label: '旧手机', createdAt: Date.now(), lastSeenAt: null, revoked: true },
+    ],
+    hostname: 'yaosw',
+    relayUrl: 'wss://term.example.com',
+  });
+  check('the phone list names each phone', page.includes('小米 15') && page.includes('旧手机'));
+  check('an active phone can be revoked from it', page.includes('?revoke=d-1'));
+  check('a revoked phone cannot be revoked twice', !page.includes('?revoke=d-2'));
+  check('and the list says phones may unbind themselves', page.includes('解绑'));
+}
+
+{
+  const page = devicesPage({ devices: [], hostname: 'yaosw', relayUrl: null });
+  check('without a relay, the page says per-phone revocation is unavailable', page.includes('没法单独吊销'));
+}
 
 // --- tunnel plumbing ------------------------------------------------------
 

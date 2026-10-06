@@ -90,8 +90,9 @@ export function createRelay({ config, configFile = null }) {
         } else {
           if (f.type !== 'auth') { reject(); return; }
           let device = store.device(f.token), paired = null;
+          if (device) store.touchDevice(device.id);
           if (!device) {
-            try { paired = store.pair(f.token); device = paired?.device; }
+            try { paired = store.pair(f.token, { name: f.device?.name }); device = paired?.device; }
             catch { ws.close(1011, 'credential storage unavailable'); return; }
           }
           if (!device || !nodeInfo(device.nodeId)) { reject(); return; }
@@ -101,6 +102,8 @@ export function createRelay({ config, configFile = null }) {
           identity = { role: 'client', id: c.id }; clients.set(c.id, c);
           clearTimeout(timeout); attempts.delete(peer);
           if (paired) send(ws, { type: 'device.paired', token: paired.token, deviceId: device.id });
+          // The computer's list of phones is now stale; tell it, so it can refresh.
+          if (paired) send(nodes.get(device.nodeId), { type: 'relay.devices.changed', nodeId: device.nodeId });
           const node = nodes.get(c.nodeId);
           nodeStatus(c, Boolean(node));
           if (node) openClient(c, node);
@@ -109,6 +112,25 @@ export function createRelay({ config, configFile = null }) {
         return;
       }
       if (identity.role === 'node') {
+        // The node's own control plane: minting a pairing code is the computer's
+        // right, and revoking a phone is the only way to take access away again.
+        if (f.type === 'relay.pair.create') {
+          let created = null;
+          try { created = store.createPairing({ nodeId: identity.id, label: f.label, ttlMs: f.ttlMs, max: config.maxPendingPairings }); }
+          catch { send(ws, { type: 'relay.pair.denied', requestId: f.requestId ?? null, reason: 'credential storage unavailable' }); return; }
+          send(ws, created
+            ? { type: 'relay.pair.code', requestId: f.requestId ?? null, code: created.formatted, expiresAt: created.expiresAt, label: created.label }
+            : { type: 'relay.pair.denied', requestId: f.requestId ?? null, reason: '待用配对码已达上限' });
+          return;
+        }
+        if (f.type === 'relay.devices.list' || f.type === 'relay.devices.revoke') {
+          if (f.type === 'relay.devices.revoke' && typeof f.deviceId === 'string') {
+            try { store.revokeDevice(identity.id, f.deviceId); }
+            catch { send(ws, { type: 'error', code: 'storage_unavailable', message: '吊销失败：凭据存储不可写' }); return; }
+          }
+          send(ws, { type: 'relay.devices', requestId: f.requestId ?? null, devices: store.devicesOf(identity.id) });
+          return;
+        }
         const c = clients.get(f.connectionId);
         if (!c || c.nodeId !== identity.id) return;
         if (f.type === 'relay.frame' && f.frame && typeof f.frame.type === 'string') send(c.ws, f.frame);
@@ -116,6 +138,15 @@ export function createRelay({ config, configFile = null }) {
       } else {
         const c = clients.get(identity.id), node = nodes.get(c.nodeId);
         if (f.type === 'auth') { ws.close(4400, 'already authenticated'); return; }
+        if (f.type === 'device.unpair') {
+          // The phone is giving up its own credential. Forget it here as well, so
+          // the computer's list does not keep a phone that no longer exists.
+          try { store.removeDevice(c.nodeId, c.deviceId); }
+          catch { send(ws, { type: 'error', code: 'storage_unavailable', message: '解绑失败：凭据存储不可写' }); return; }
+          send(ws, { type: 'device.unpaired' });
+          send(nodes.get(c.nodeId), { type: 'relay.devices.changed', nodeId: c.nodeId });
+          ws.close(1000, 'unpaired'); return;
+        }
         if (node && c.attached) send(node, { type: 'relay.frame', connectionId: c.id, frame: f });
         else send(ws, { type: 'error', code: 'node_offline', message: '电脑内核离线，客户端仍可查看已缓存内容；内核上线后自动恢复' });
       }

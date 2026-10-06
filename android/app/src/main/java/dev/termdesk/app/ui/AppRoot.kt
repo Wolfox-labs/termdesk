@@ -98,7 +98,7 @@ fun AppRoot(
         onPairHandled()
         if (!request.isUsable) return@LaunchedEffect
         connectionOpen = false
-        vm.connect(request.url, request.token)
+        vm.connect(request.url, request.token, request.relay)
         snackbarHostState.showSnackbar("已通过二维码配对 · ${request.name ?: request.url}")
     }
     val connected = link is LinkState.Connected
@@ -166,6 +166,10 @@ fun AppRoot(
                 link = link,
                 initialUrl = vm.savedUrl,
                 initialToken = vm.savedToken,
+                computers = vm.computerList.collectAsState().value,
+                activeId = vm.activeComputerId.collectAsState().value,
+                onSelect = { id -> connectionOpen = false; vm.selectComputer(id) },
+                onForgetComputer = vm::forgetComputer,
                 onConnect = { url, token -> connectionOpen = false; vm.connect(url, token) },
                 onClose = { connectionOpen = false },
                 onDisconnect = vm::disconnect,

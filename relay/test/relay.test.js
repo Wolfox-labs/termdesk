@@ -96,3 +96,173 @@ test('expired pairing code is refused, credential hash is not a credential', asy
   assert.equal(relay.store.pair('one-time'), null);
   assert.equal(relay.store.device(digest('device-key')), undefined);
 });
+
+/** A relay with no devices and no codes yet: the state a fresh deployment is in. */
+async function bare(t, nodes = [{ id: 'pc', label: 'Test PC', keyHash: digest('node-key') }]) {
+  const relay = createRelay({ config: { version: 1, nodes, devices: [], pairings: [] } });
+  const port = await listen(relay.server);
+  t.after(() => relay.close());
+  return { relay, port, url: `ws://127.0.0.1:${port}` };
+}
+async function asNode(url, id = 'pc', key = 'node-key') {
+  const node = await connect(url + '/agent');
+  send(node.ws, { type: 'relay.auth', nodeId: id, token: key });
+  await node.read('relay.ready');
+  return node;
+}
+/** Pair a phone the way the app does, and return the credential it keeps. */
+async function pairPhone(url, node, name) {
+  send(node.ws, { type: 'relay.pair.create', label: name });
+  const minted = await node.read('relay.pair.code');
+  const phone = await connect(url + '/client');
+  send(phone.ws, { type: 'auth', token: minted.code, device: { name } });
+  const token = (await phone.read('device.paired')).token;
+  // The relay never answers a client's auth itself: the computer's agent does,
+  // so being attached to an online node is what "connected" looks like here.
+  assert.equal((await phone.read('node.status')).online, true);
+  phone.ws.close(); await once(phone.ws, 'close');
+  return { token, minted };
+}
+
+test('a computer mints its own pairing code, and the phone it pairs shows up in its list', async t => {
+  const { url, relay } = await bare(t);
+  const node = await asNode(url);
+  send(node.ws, { type: 'relay.pair.create', requestId: 7, label: '备用手机' });
+  const minted = await node.read('relay.pair.code');
+  assert.equal(minted.requestId, 7);
+  assert.match(minted.code, /^[0-9A-Z]{4}(-[0-9A-Z]{4}){2}$/);
+  assert.ok(minted.expiresAt > Date.now() && minted.expiresAt <= Date.now() + 60 * 60_000);
+  assert.equal(relay.store.config.pairings.length, 1);
+  assert.ok(!JSON.stringify(relay.store.config.pairings).includes(minted.code.replace(/-/g, '')), 'only the hash is written down');
+
+  // Typed by hand: grouping dropped, and an O where the code has a zero.
+  const phone = await connect(url + '/client');
+  send(phone.ws, { type: 'auth', token: minted.code.replace(/-/g, '').replace(/0/g, 'O'), device: { name: '小米 15' } });
+  assert.ok((await phone.read('device.paired')).token.length >= 32);
+  assert.equal((await phone.read('node.status')).online, true);
+  await node.read('relay.devices.changed');
+
+  send(node.ws, { type: 'relay.devices.list', requestId: 8 });
+  const list = await node.read('relay.devices');
+  assert.equal(list.devices.length, 1);
+  assert.equal(list.devices[0].label, '小米 15');
+  assert.ok(list.devices[0].lastSeenAt);
+  // One-time: the same code cannot mint a second device.
+  assert.equal(relay.store.pair(minted.code), null);
+  phone.ws.close(); node.ws.close();
+});
+
+test('a computer cannot stockpile pairing codes', async t => {
+  const { url } = await bare(t);
+  const node = await asNode(url);
+  for (let i = 0; i < 5; i += 1) { send(node.ws, { type: 'relay.pair.create' }); assert.ok((await node.read('relay.pair.code')).code); }
+  send(node.ws, { type: 'relay.pair.create' });
+  assert.equal((await node.read('relay.pair.denied')).reason, '待用配对码已达上限');
+  node.ws.close();
+});
+
+test('revoking one phone leaves the others working, and another node cannot revoke it', async t => {
+  const { url, relay } = await bare(t, [{ id: 'pc', keyHash: digest('node-key') }, { id: 'other', keyHash: digest('other-key') }]);
+  const node = await asNode(url), other = await asNode(url, 'other', 'other-key');
+  const first = await pairPhone(url, node, 'A'), second = await pairPhone(url, node, 'B');
+  const [firstDevice] = relay.store.devicesOf('pc');
+
+  send(other.ws, { type: 'relay.devices.revoke', deviceId: firstDevice.id });
+  assert.deepEqual((await other.read('relay.devices')).devices, []);
+  assert.equal(relay.store.devicesOf('pc').filter(d => d.revoked).length, 0);
+
+  send(node.ws, { type: 'relay.devices.revoke', deviceId: firstDevice.id });
+  const after = await node.read('relay.devices');
+  assert.equal(after.devices.length, 2);
+  assert.deepEqual(after.devices.filter(d => d.revoked).map(d => d.id), [firstDevice.id]);
+
+  const revoked = await connect(url + '/client');
+  send(revoked.ws, { type: 'auth', token: first.token });
+  assert.equal((await revoked.read('auth.fail')).reason, 'invalid credentials');
+  const survivor = await connect(url + '/client');
+  send(survivor.ws, { type: 'auth', token: second.token });
+  assert.equal((await survivor.read('node.status')).online, true);
+  survivor.ws.close(); node.ws.close(); other.ws.close();
+});
+
+test('a phone can unbind itself: the credential is gone, not just forgotten', async t => {
+  const { url, relay } = await bare(t);
+  const node = await asNode(url);
+  send(node.ws, { type: 'relay.pair.create' });
+  const minted = await node.read('relay.pair.code');
+  const phone = await connect(url + '/client');
+  send(phone.ws, { type: 'auth', token: minted.code, device: { name: '旧手机' } });
+  const token = (await phone.read('device.paired')).token;
+  assert.equal((await phone.read('node.status')).online, true);
+
+  send(phone.ws, { type: 'device.unpair' });
+  await phone.read('device.unpaired');
+  await once(phone.ws, 'close');
+  assert.deepEqual(relay.store.devicesOf('pc'), []);
+  await node.read('relay.devices.changed');
+
+  const again = await connect(url + '/client');
+  send(again.ws, { type: 'auth', token });
+  assert.equal((await again.read('auth.fail')).reason, 'invalid credentials');
+  node.ws.close();
+});
+
+test('codes expire, and an unauthenticated caller cannot mint one', async t => {
+  const { url, relay } = await bare(t);
+  const node = await asNode(url);
+  send(node.ws, { type: 'relay.pair.create', ttlMs: 60_000 });
+  const minted = await node.read('relay.pair.code');
+  relay.store.config.pairings[0].expiresAt = Date.now() - 1;
+
+  const stranger = await connect(url + '/client');
+  send(stranger.ws, { type: 'relay.pair.create' });
+  assert.equal((await stranger.read('auth.fail')).reason, 'invalid credentials');
+  assert.equal(relay.store.config.pairings.filter(p => p.expiresAt > Date.now()).length, 0);
+
+  const late = await connect(url + '/client');
+  send(late.ws, { type: 'auth', token: minted.code });
+  assert.equal((await late.read('auth.fail')).reason, 'invalid credentials');
+  node.ws.close();
+});
+
+test('the agent-side connector mints, lists and revokes over its own channel', async t => {
+  // This is the path the PC agent actually uses: nothing here talks to the relay
+  // as anything other than the node itself.
+  const { url } = await bare(t);
+  const local = http.createServer(() => {});
+  const wss = new WebSocketServer({ server: local });
+  wss.on('connection', ws => ws.on('message', raw => {
+    const f = JSON.parse(raw);
+    if (f.type === 'auth') send(ws, { type: 'auth.ok', hostname: 'local-PC' });
+  }));
+  const localPort = await listen(local);
+  t.after(async () => { for (const ws of wss.clients) ws.terminate(); await new Promise(r => local.close(r)); });
+
+  let markReady; const ready = new Promise(resolve => { markReady = resolve; });
+  const connector = startRelayConnector({
+    config: { url, nodeId: 'pc', key: 'node-key' }, port: localPort, token: 'local-only-token', log: () => {}, onReady: () => markReady(),
+  });
+  t.after(() => connector.stop());
+  await ready;
+
+  const { code, expiresAt } = await connector.pairingCode({ label: 'yaosw' });
+  assert.match(code, /^[0-9A-Z]{4}(-[0-9A-Z]{4}){2}$/);
+  assert.ok(expiresAt > Date.now());
+
+  const phone = await connect(url + '/client');
+  send(phone.ws, { type: 'auth', token: code, device: { name: '小米 15' } });
+  const token = (await phone.read('device.paired')).token;
+  assert.equal((await phone.read('node.status')).online, true);
+
+  const listed = await connector.devices();
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].label, '小米 15');
+  const after = await connector.revoke(listed[0].id);
+  assert.deepEqual(after.filter(d => d.revoked).map(d => d.id), [listed[0].id]);
+
+  phone.ws.close(); await once(phone.ws, 'close');
+  const rejected = await connect(url + '/client');
+  send(rejected.ws, { type: 'auth', token });
+  assert.equal((await rejected.read('auth.fail')).reason, 'invalid credentials');
+  assert.deepEqual(await connector.devices().then(d => d.filter(x => !x.revoked)), []);
+});

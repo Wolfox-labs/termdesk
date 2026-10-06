@@ -30,7 +30,7 @@ import { listKernels, probeKernels } from './kernels/registry.js';
 import { ChatManager } from './chat.js';
 import { loadRelayConfig, startRelayConnector } from './relay-client.js';
 import { Tunnel, findCloudflared, findTunnelConfig, verifyOwnAgent } from './tunnel.js';
-import { choosePairingUrl, pairPage, pairPayload, pairingUrlReason, qrMatrix, qrTerminal } from './pair.js';
+import { choosePairingUrl, devicesPage, pairPage, pairPayload, pairingUrlReason, qrMatrix, qrTerminal } from './pair.js';
 import { createFrameHandler, pushStatusFrame } from './handlers.js';
 
 const DEFAULT_PORT = 7420;
@@ -157,6 +157,27 @@ function ensureTunnel() {
   }
   return tunnelStart;
 }
+
+/**
+ * Pairing through the relay.
+ *
+ * Two things differ from the direct path. The address is the relay's, because the
+ * phone may be anywhere; and what the phone gets is a one-time code, not this
+ * machine's token — the token is the key to the agent itself and has no business
+ * travelling to a phone that can only reach the relay anyway. The relay trades
+ * the code for a credential of the phone's own, which is what makes "revoke this
+ * one phone" possible without disturbing the others.
+ */
+async function relayPairing({ ttlMs } = {}) {
+  if (!relayConnector) throw new Error('中转未启用');
+  const name = os.hostname();
+  const { code, expiresAt } = await relayConnector.pairingCode({ label: name, ttlMs });
+  const wsUrl = relayConnector.url;
+  return { wsUrl, code, expiresAt, payload: pairPayload({ wsUrl, token: code, name, relay: true }) };
+}
+
+/** Why the last relay pairing attempt failed, so the page can say it. */
+let relayPairError = null;
 
 /** The address the phone should use: the tunnel when up, else loopback. */
 /**
@@ -298,8 +319,12 @@ function printHeader({ args, token, apk, relay }) {
   if (apk) line('安装页', 'http://127.0.0.1:' + args.port + '/app    手机还没装 App 时打开它');
   line('令牌', token.slice(0, 6) + '…   完整内容在 ' + tokenPath() + '（等于这台电脑的钥匙，不要外发）');
   line('中转', relay
-    ? '已启用 VPS 中转'
+    ? '已启用：' + relay.url + '（这台电脑主动拨出去，不需要域名和隧道）'
     : '未启用（内网或 Cloudflare 隧道即可；需要时设 TERMDESK_RELAY=1）');
+  if (relay) {
+    line('配对', 'http://127.0.0.1:' + args.port + '/pair   每次打开都会生成一个一次性的配对码');
+    line('名单', 'http://127.0.0.1:' + args.port + '/devices   已配对的手机，可单独吊销');
+  }
   console.log('');
 }
 
@@ -335,7 +360,8 @@ const server = http.createServer((req, res) => {
   // Local mode has no desktop-only surfaces. Checked here, before any route,
   // not inside one of them: the pairing page stayed reachable - and even started
   // a tunnel - because the guard sat inside the APK block.
-  if (args.local && (url.pathname === '/app' || url.pathname === '/app.apk' || url.pathname.startsWith('/pair'))) {
+  if (args.local && (url.pathname === '/app' || url.pathname === '/app.apk'
+    || url.pathname.startsWith('/pair') || url.pathname.startsWith('/devices'))) {
     res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
       ok: false,
@@ -487,6 +513,59 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  /**
+   * Who may connect to this computer, and the only place to take that away.
+   *
+   * Loopback only, like the pairing page. Every phone paired through the relay has
+   * its own credential there, so revoking one is a real, narrow action instead of
+   * "change the token and re-pair everything".
+   */
+  if (url.pathname === '/devices' || url.pathname === '/devices.json') {
+    if (!isLoopback(req)) {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, code: 'loopback_only', message: '这台电脑的手机名单只在本机可访问' }));
+      return;
+    }
+    (async () => {
+      const revoke = url.searchParams.get('revoke');
+      let status = null;
+      if (revoke && relayConnector) {
+        try {
+          await relayConnector.revoke(revoke);
+          status = '已吊销这台手机：它下次连接会被拒绝，其他手机不受影响。';
+        } catch (err) {
+          status = '吊销失败：' + String(err?.message ?? err);
+        }
+      }
+      const devices = relayConnector ? await relayConnector.devices().catch(() => []) : [];
+      if (url.pathname === '/devices.json') {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          ok: true,
+          relay: Boolean(relayConnector),
+          relayUrl: relayConnector?.url ?? null,
+          hostname: os.hostname(),
+          status,
+          devices,
+        }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(devicesPage({
+        devices,
+        hostname: os.hostname(),
+        relayUrl: relayConnector?.url ?? null,
+        status,
+      }));
+    })().catch((err) => {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, code: 'devices_failed', message: String(err?.message ?? err) }));
+      }
+    });
+    return;
+  }
+
   // Pairing: loopback only, because the page contains the token.
   if (url.pathname === '/pair' || url.pathname === '/pair.json') {
     if (!isLoopback(req)) {
@@ -495,6 +574,48 @@ const server = http.createServer((req, res) => {
       return;
     }
     const respond = async () => {
+      // Through the relay the QR carries a freshly minted one-time code instead of
+      // this machine's token, and the relay is the address. When the relay cannot
+      // answer, the direct path below still works — at home.
+      if (relayConnector) {
+        try {
+          const pairing = await relayPairing();
+          relayPairError = null;
+          if (url.pathname === '/pair.json') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({
+              ok: true,
+              relay: true,
+              url: pairing.wsUrl,
+              code: pairing.code,
+              token: pairing.code,
+              expiresAt: pairing.expiresAt,
+              payload: pairing.payload,
+              hostname: os.hostname(),
+              port: args.port,
+              qr: await qrMatrix(pairing.payload),
+            }));
+            return;
+          }
+          const html = await pairPage({
+            payload: pairing.payload,
+            wsUrl: pairing.wsUrl,
+            token: pairing.code,
+            relay: { url: pairing.wsUrl, expiresAt: pairing.expiresAt },
+            urlReason: 'relay',
+            lanUrls: lanAddresses().map((a) => `ws://${a}:${args.port}`),
+            // The install page is a plain HTTP file: the relay only forwards file
+            // requests from phones that already paired, so this one is for home.
+            appUrl: `http://${localAddresses()[0] ?? '127.0.0.1'}:${args.port}/app.apk`,
+            expiresAt: Date.now(),
+          });
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          res.end(html);
+          return;
+        } catch (err) {
+          relayPairError = String(err?.message ?? err);
+        }
+      }
       let status = tunnel.status();
       if (!status.running) status = await ensureTunnel().catch(() => tunnel.status());
       const wsUrl = await pairingUrl();
@@ -512,6 +633,7 @@ const server = http.createServer((req, res) => {
           ok: true,
           url: wsUrl,
           urlReason,
+          relayError: relayPairError,
           publicDetail: publicVerdict.detail,
           token,
           payload,
@@ -535,6 +657,7 @@ const server = http.createServer((req, res) => {
         token,
         tunnel: status,
         urlReason,
+        relayError: relayPairError,
         lanUrls: localAddresses().map((a) => `ws://${a}:${args.port}`),
         appUrl,
         expiresAt: Date.now(),
@@ -799,7 +922,28 @@ server.listen(args.port, args.host, async () => {
   // only added a reconnect loop nobody could explain. TERMDESK_RELAY=1 turns it
   // back on.
   const relayConfig = !args.local && process.env.TERMDESK_RELAY === '1' ? loadRelayConfig() : null;
-  if (relayConfig) relayConnector = startRelayConnector({ config: relayConfig, port: args.port, token, accessKey: ACCESS_KEY });
+  if (relayConfig) {
+    relayConnector = startRelayConnector({
+      config: relayConfig,
+      port: args.port,
+      token,
+      accessKey: ACCESS_KEY,
+      onDevicesChanged: () => { /* the list is read on demand from /devices */ },
+      onReady: () => {
+        // The relay is up, so a code can be minted: print one to scan now, and
+        // keep /pair for later — every visit there mints a fresh one.
+        relayPairing().then(async (pairing) => {
+          console.log('  中转   ' + relayConfig.url + ' 已连接（' + relayConfig.nodeId + ' 在线）');
+          console.log('  配对码 ' + pairing.code + '   10 分钟内有效，只能用一次');
+          console.log('  配对页 http://127.0.0.1:' + args.port + '/pair   名单 http://127.0.0.1:' + args.port + '/devices');
+          console.log('');
+          console.log(await qrTerminal(pairing.payload).catch(() => ''));
+        }).catch((err) => {
+          console.error('  中转   出码失败：' + String(err?.message ?? err));
+        });
+      },
+    });
+  }
   printHeader({ args, token, apk: findClientApk(), relay: Boolean(relayConfig) });
   // Printed before the tunnel on purpose: the kernel list is useful immediately,
   // while cloudflared may still be negotiating its connections.

@@ -4,7 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import dev.termdesk.app.data.DeviceCredentials
+import dev.termdesk.app.data.ComputerStore
 import dev.termdesk.app.data.AgentClient
 import dev.termdesk.app.data.ActionResult
 import dev.termdesk.app.data.ChatApproval
@@ -19,6 +19,7 @@ import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.LocalAgentState
 import dev.termdesk.app.data.LocalKernelState
+import dev.termdesk.app.data.PairedComputer
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.FilePreview
 import dev.termdesk.app.data.SearchResults
@@ -52,7 +53,9 @@ import kotlinx.coroutines.withContext
 class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val prefs = app.getSharedPreferences("termdesk", Context.MODE_PRIVATE)
-    private val credentials = DeviceCredentials(app.applicationContext)
+
+    /** The computers this phone is paired with, and their credentials. */
+    private val computers = ComputerStore(app.applicationContext)
     private val client = AgentClient(app.applicationContext)
 
     val link: StateFlow<LinkState> = client.link
@@ -370,13 +373,79 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun downloadFile(path: String, name: String) = client.downloadFile(path, name)
     fun uploadFile(uri: android.net.Uri, remoteDir: String) = client.uploadFile(uri, remoteDir)
 
-    val savedUrl: String get() = prefs.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL
-    val savedToken: String get() = credentials.read()
+    val savedUrl: String get() = computers.active()?.url ?: DEFAULT_URL
+    val savedToken: String get() = computers.activeCredential()
+
+    // ---- the computers this phone is paired with ----
+
+    private val _computerList = MutableStateFlow(computers.list())
+    val computerList: StateFlow<List<PairedComputer>> = _computerList.asStateFlow()
+
+    private val _activeComputerId = MutableStateFlow(computers.activeId())
+    val activeComputerId: StateFlow<String?> = _activeComputerId.asStateFlow()
+
+    private fun refreshComputers() {
+        _computerList.value = computers.list()
+        _activeComputerId.value = computers.activeId()
+    }
+
+    /** Switch to another computer that is already paired. */
+    fun selectComputer(id: String) {
+        val target = computers.list().firstOrNull { it.id == id } ?: return
+        computers.select(id)
+        refreshComputers()
+        val token = computers.credentialFor(id)
+        if (token.isBlank()) {
+            client.disconnect()
+            client.reportLocalMessage("${target.name} 的凭据不在了，请重新配对")
+            return
+        }
+        client.connect(target.url, token, id)
+    }
+
+    /**
+     * Unbind one computer.
+     *
+     * Order matters: tell the far side while the connection is still up, then
+     * forget locally. Over a relay this is what removes the phone from that
+     * computer's list; a direct agent has no list and nothing to tell.
+     */
+    fun forgetComputer(id: String) {
+        val target = computers.list().firstOrNull { it.id == id } ?: return
+        val isActive = computers.activeId() == id
+        if (isActive) client.unpairSelf(target.relay)
+        computers.forget(id)
+        refreshComputers()
+        val next = computers.active() ?: run { client.disconnect(); null }
+        if (next != null) selectComputer(next.id)
+        client.reportLocalMessage("已解除与 ${target.name} 的绑定")
+    }
 
     init {
         client.registerNetworkCallback()
-        // Auto-reconnect when we already have credentials, so returning to the
-        // app from a phone lock does not mean re-pairing every time.
+        computers.migrateLegacy()
+        refreshComputers()
+        // A credential the far side has just issued belongs to the computer we are
+        // connecting to, and only the list knows which one that is.
+        viewModelScope.launch {
+            client.issuedCredential.collect { token ->
+                if (token.isNullOrBlank()) return@collect
+                val id = activeComputerId.value ?: return@collect
+                computers.rememberCredential(id, token)
+                computers.markRelay(id)
+                refreshComputers()
+                client.clearIssuedCredential()
+            }
+        }
+        // The name a computer calls itself is the only honest label for the list.
+        viewModelScope.launch {
+            client.link.collect { state ->
+                if (state !is LinkState.Connected) return@collect
+                val id = activeComputerId.value ?: return@collect
+                computers.rename(id, state.hostname)
+                refreshComputers()
+            }
+        }
         // Debug-only deployment handoff from a trusted ADB session. Never an exported intent.
         val pairingFile = java.io.File(app.filesDir, "pairing.json")
         if (app.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 && pairingFile.exists()) {
@@ -384,8 +453,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val handoff = org.json.JSONObject(pairingFile.readText())
                 val url = handoff.getString("url")
                 require(url.startsWith("wss://"))
-                credentials.write(handoff.getString("token"))
-                prefs.edit().putString(KEY_URL, url).commit()
+                val computer = computers.upsert(url = url, name = null, relay = true)
+                computers.rememberCredential(computer.id, handoff.getString("token"))
+                refreshComputers()
             }
             pairingFile.delete()
         }
@@ -395,18 +465,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // writes it when it starts.
             viewModelScope.launch { client.connectLocal() }
         } else {
-            val url = savedUrl
-            val token = savedToken
-            if (url.isNotBlank() && token.isNotBlank()) {
-                client.connect(url, token)
+            val active = computers.active()
+            val token = computers.activeCredential()
+            if (active != null && token.isNotBlank()) {
+                client.connect(active.url, token, active.id)
             }
         }
     }
 
-    fun connect(url: String, token: String) {
-        credentials.write(token)
-        prefs.edit().putString(KEY_URL, url).apply()
-        client.connect(url, token)
+    fun connect(url: String, token: String, relay: Boolean = url.startsWith("wss://")) {
+        val computer = computers.upsert(url = url, name = null, relay = relay)
+        computers.rememberCredential(computer.id, token)
+        refreshComputers()
+        client.connect(url, token, computer.id)
     }
 
     fun disconnect() {
@@ -417,8 +488,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun retryNow() = client.retryNow()
 
     fun forgetDevice() {
+        val active = computers.active()
+        if (active != null) { forgetComputer(active.id); return }
         client.disconnect()
-        credentials.forget()
     }
 
     override fun onCleared() {

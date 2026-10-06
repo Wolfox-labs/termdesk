@@ -290,7 +290,7 @@ class AgentClient(
     val chatSending: StateFlow<Boolean> = _chatSending.asStateFlow()
 
 
-    private val credentials = appContext?.let { DeviceCredentials(it) }
+
     private var generation = 0
     /**
      * Total size the offline history snapshots may take on the phone.
@@ -345,6 +345,21 @@ class AgentClient(
     private var lastUrl: String? = null
     private var lastToken: String? = null
 
+    /** Which computer's credential slot this connection belongs to. */
+    private var lastCredentialId: String = DeviceCredentials.LEGACY_ID
+
+    /**
+     * A credential the far side has just issued in exchange for a pairing code.
+     *
+     * The storable secret is handed to the caller instead of being written here:
+     * which computer it belongs to is a question only the list can answer.
+     */
+    private val _issuedCredential = MutableStateFlow<String?>(null)
+    val issuedCredential: StateFlow<String?> = _issuedCredential.asStateFlow()
+
+    /** The issued credential has been stored; do not hand it out twice. */
+    fun clearIssuedCredential() { _issuedCredential.value = null }
+
     @Volatile
     private var manuallyClosed = false
 
@@ -369,10 +384,11 @@ class AgentClient(
         runCatching { cm.registerDefaultNetworkCallback(networkCallback) }
     }
 
-    fun connect(url: String, token: String) {
+    fun connect(url: String, token: String, computerId: String = DeviceCredentials.LEGACY_ID) {
         generation += 1
         lastUrl = url
         lastToken = token
+        lastCredentialId = computerId
         manuallyClosed = false
         reconnectJob?.cancel()
 
@@ -398,6 +414,23 @@ class AgentClient(
         socket?.close(1000, "client closing")
         socket = null
         _link.value = LinkState.Idle
+    }
+
+    /**
+     * Give up this phone's credential on the far side, best effort, then stop.
+     *
+     * Only a relay keeps a list of phones, so `viaRelay` decides whether there is
+     * anything to tell: sending it to a direct agent would just earn an
+     * "unknown frame" error. The frame goes out before the socket closes, and the
+     * local record is removed by the caller either way — a phone that lost its
+     * network must not stay listed as paired because the goodbye did not arrive.
+     */
+    fun unpairSelf(viaRelay: Boolean) {
+        if (viaRelay) {
+            val current = socket
+            runCatching { current?.send(JSONObject().put("type", "device.unpair").toString()) }
+        }
+        disconnect()
     }
 
     // ---- P1: inventory and actions ----
@@ -1333,7 +1366,9 @@ class AgentClient(
                 "device.paired" -> {
                     val permanent = frame.optString("token")
                     if (permanent.isNotBlank()) {
-                        credentials?.write(permanent)
+                        // Only a relay ever sends this frame, so it also answers
+                        // "is this binding a relay one?" without guessing.
+                        _issuedCredential.value = permanent
                         lastToken = permanent
                     }
                 }
@@ -1623,9 +1658,27 @@ class AgentClient(
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (epoch != generation) return
             socket = null
-            if (code == 4401 || code == 4409) manuallyClosed = true
-            if (!manuallyClosed) _link.value = LinkState.Failed("连接已断开 ($code $reason)")
-            scheduleReconnect()
+            when (code) {
+                // A bad credential will never fix itself by retrying.
+                4401 -> {
+                    manuallyClosed = true
+                    _link.value = LinkState.Failed("连接已断开 ($code $reason)")
+                }
+                /**
+                 * The relay allows one connected phone per computer, and says so
+                 * instead of letting the newcomer push the first one out. Nothing is
+                 * wrong with this phone, so keep trying: when the other phone
+                 * disconnects, this one comes back on its own.
+                 */
+                4409 -> {
+                    _link.value = LinkState.Failed("这台电脑已有另一台手机在线（同一时间只允许一台）；它断开后会自动重连")
+                    scheduleReconnect()
+                }
+                else -> {
+                    if (!manuallyClosed) _link.value = LinkState.Failed("连接已断开 ($code $reason)")
+                    scheduleReconnect()
+                }
+            }
         }
     }
 

@@ -23,11 +23,14 @@ async function qrCode() {
   }
 }
 
-export function pairPayload({ wsUrl, token, name }) {
+export function pairPayload({ wsUrl, token, name, relay = false }) {
   const params = new URLSearchParams();
   params.set('url', wsUrl);
   params.set('token', token);
   if (name) params.set('name', name);
+  // The phone has to know whether the far side keeps a list of phones: that is
+  // what makes "unbind this phone" mean anything after the local record is gone.
+  if (relay) params.set('relay', '1');
   return `termdesk://pair?${params.toString()}`;
 }
 
@@ -110,37 +113,114 @@ function escapeHtml(value) {
     .replace(/"/g, '&quot;');
 }
 
+const when = (value) => (value ? new Date(value).toLocaleString() : '—');
+
+/**
+ * The phones paired to this computer.
+ *
+ * Loopback only, like the pairing page: this is the list of who may connect, and
+ * the one place that access can be taken away again. Every phone has its own
+ * credential, so revoking one leaves the others alone.
+ */
+export function devicesPage({ devices = [], hostname, relayUrl = null, status = null }) {
+  const rows = devices.length === 0
+    ? '<p class="sub">还没有配对过手机。</p>'
+    : devices.map((d) => `
+      <div class="row">
+        <div class="label">${d.revoked ? '已吊销' : '在用'}</div>
+        <div class="value">${escapeHtml(d.label || '未命名手机')}
+          <div class="muted">配对于 ${escapeHtml(when(d.createdAt))} · 上次连接 ${escapeHtml(when(d.lastSeenAt))}</div>
+          ${d.revoked ? '' : `<a href="?revoke=${encodeURIComponent(d.id)}">吊销这台</a>`}
+        </div>
+      </div>`).join('');
+
+  const head = relayUrl
+    ? `<p class="sub">这些手机通过 ${escapeHtml(relayUrl)} 连到这台电脑（${escapeHtml(hostname)}）。每台手机各有自己的凭据，吊销一台不影响其他。</p>`
+    : `<p class="sub">这台电脑现在没有走中转，手机是直连的：直连模式下所有手机共用同一个令牌，没法单独吊销某一台。要按台管理，请看 /pair 上的中转说明。</p>`;
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TermDesk 已配对的手机</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: #272822; color: #f8f8f2; display: flex; justify-content: center; }
+  main { max-width: 640px; width: 100%; padding: 28px 20px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; color: #a6a28c; font-size: 13px; line-height: 1.7; }
+  .row { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid #3e3d32; font-size: 14px; }
+  .label { color: #a6a28c; min-width: 64px; font-size: 13px; }
+  .value { flex: 1; }
+  .muted { color: #75715e; font-size: 12px; margin-top: 4px; }
+  a { color: #66d9ef; }
+  .note { margin-top: 20px; color: #a6a28c; font-size: 12px; line-height: 1.7; }
+  ${status ? '.flash { margin: 0 0 16px; background: #21401f; border-left: 3px solid #a6e22e; padding: 9px 12px; border-radius: 8px; font-size: 13px; }' : ''}
+</style>
+</head>
+<body>
+<main>
+  <h1>已配对的手机</h1>
+  ${status ? `<p class="flash">${escapeHtml(status)}</p>` : ''}
+  ${head}
+  ${rows}
+  <div class="note">
+    这个页面只在本机可访问（127.0.0.1）。<br>
+    再加一台手机：打开 <a href="/pair">/pair</a> 扫码（每次都会生成一个新的配对码）。<br>
+    手机自己在 App 里解绑也会从这份名单里消失，并同时作废它的凭据。
+  </div>
+</main>
+</body>
+</html>`;
+}
+
 /**
  * The pairing page.
  *
  * Loopback only (the caller enforces it): it contains the token, so it must
  * never be reachable through the tunnel it is describing.
  */
-export async function pairPage({ payload, wsUrl, token, tunnel, urlReason = null, lanUrls, appUrl, expiresAt }) {
+export async function pairPage({ payload, wsUrl, token, tunnel, relay = null, urlReason = null, relayError = null, lanUrls, appUrl, expiresAt }) {
   const qr = await qrSvg(payload);
   const rows = [
     ['连接地址', wsUrl],
-    ['配对令牌', token],
+    [relay ? '配对码' : '配对令牌', token],
   ].map(([label, value]) => `
       <div class="row">
         <div class="label">${escapeHtml(label)}</div>
         <div class="value">${escapeHtml(value)}</div>
-      </div>`).join('');
+      </div>`).join('')
+    + (relay
+      ? `
+      <div class="row">
+        <div class="label">有效期</div>
+        <div class="value">一次性，${escapeHtml(new Date(relay.expiresAt).toLocaleTimeString())} 前有效</div>
+      </div>`
+      : '');
 
   // Why the code carries this address. "It scanned and said invalid
   // credentials" is what the user sees when the printed hostname belongs to
   // another machine, so the page says which case this is instead of leaving them
   // to guess.
-  const reasonLine = urlReason === 'public_not_ours'
-    ? `<p class="warn">这个域名现在指向的不是本机代理，所以二维码用的是下面的局域网地址。
+  const reasonLine = (relayError
+    ? `<p class="warn">中转没连上（${escapeHtml(relayError)}），所以这个二维码用的是局域网地址，只在家里能用。
+       中转恢复后重新打开本页，就会换成一次性的配对码。</p>`
+    : '') + (urlReason === 'relay'
+    ? '<p class="sub">走 VPS 中转：手机用流量或在别的网络下也能连上这台电脑，配对码只能用一次。</p>'
+    : urlReason === 'public_not_ours'
+      ? `<p class="warn">这个域名现在指向的不是本机代理，所以二维码用的是下面的局域网地址。
        出门要用（手机流量 / 别的 Wi-Fi）之前，请先把 ${escapeHtml(tunnel?.url ?? '')} 指回这台电脑的隧道。</p>`
-    : urlReason === 'lan'
-      ? '<p class="sub">二维码用的是局域网地址：手机与这台电脑在同一个网络时可用。</p>'
-      : '';
+      : urlReason === 'lan'
+        ? '<p class="sub">二维码用的是局域网地址：手机与这台电脑在同一个网络时可用。</p>'
+        : '');
 
-  const tunnelLine = tunnel?.url
-    ? `公网地址：${escapeHtml(tunnel.url)}（${tunnel.mode === 'named' ? '固定域名' : '临时地址，重启会变'}）`
-    : `未启动公网隧道。本机地址：${escapeHtml((lanUrls ?? []).join('  ·  ') || '—')}`;
+  const tunnelLine = relay
+    ? `中转地址：${escapeHtml(relay.url)}（手机在任何网络下都连它，由它转给这台电脑）`
+    : tunnel?.url
+      ? `公网地址：${escapeHtml(tunnel.url)}（${tunnel.mode === 'named' ? '固定域名' : '临时地址，重启会变'}）`
+      : `未启动公网隧道。本机地址：${escapeHtml((lanUrls ?? []).join('  ·  ') || '—')}`;
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -185,6 +265,7 @@ export async function pairPage({ payload, wsUrl, token, tunnel, urlReason = null
   <div class="note">
     ${tunnelLine}<br>
     这个页面只在本机可访问（127.0.0.1），不会通过隧道暴露；离开本机请勿分享上面的令牌。
+    ${relay ? '<br>再加一台手机：重新打开本页即可，每次都是一个新的一次性码。<br>已配对的手机在 <b>/devices</b> 页可以看到，并能单独吊销。<br>App 安装包只能在同一局域网内下载：中转只转发已配对手机的文件请求。' : ''}
     ${expiresAt ? `<br>页面生成于 ${escapeHtml(new Date(expiresAt).toLocaleString())}` : ''}
   </div>
 </main>
