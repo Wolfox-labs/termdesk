@@ -21,12 +21,14 @@
  */
 import {
   TURN_DRIVERS,
+  MODEL_ROUTES,
   transportOf,
   turnDriver,
   canResume,
   collectsLiveTerminals,
   ownsSessionStore,
   cancelStyle,
+  modelRoute,
   kernelCapabilities,
   unknownKernelMessage,
 } from '../src/kernels/contract.js';
@@ -152,10 +154,28 @@ check('no lookup at all is unknown rather than a crash',
   const caps = kernelCapabilities('codex', lookup);
   const keys = Object.keys(caps).sort().join(',');
   check('a capabilities object is complete, so nothing has to be re-derived by a caller',
-    keys === 'cancel,driver,id,known,liveTerminals,ownsSessionStore,resumable,transport',
+    keys === 'cancel,driver,id,known,liveTerminals,modelRoute,ownsSessionStore,resumable,transport',
     keys);
   check('the id survives the round trip', caps.id === 'codex', caps.id);
   check('and the transport is reported as declared', caps.transport === 'app-server', caps.transport);
+  check('and the model route is one the manager can honour',
+    MODEL_ROUTES.includes(caps.modelRoute), caps.modelRoute);
+}
+
+{
+  // The three model routes are genuinely different answers, so the table must not
+  // collapse them: Codex reads its own config, an ACP kernel has a pinnable default,
+  // and the SDK runtime has its own route.
+  const routes = {
+    codex: modelRoute('codex', lookup),
+    opencode: modelRoute('opencode', lookup),
+    dsh: modelRoute('dsh', lookup),
+  };
+  check('each family declares its own model route',
+    routes.codex === 'kernel-config' && routes.opencode === 'pinned' && routes.dsh === 'default',
+    JSON.stringify(routes));
+  check('and an unknown kernel falls back to the runtime default rather than to a guess',
+    modelRoute('made-up-kernel', lookup) === 'default');
 }
 
 {
