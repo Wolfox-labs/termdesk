@@ -209,7 +209,7 @@ private fun ExternalHeader(count: Int, note: String?) {
     }
 }
 
-/** One such process: what it is, which pid, how much memory. No action. */
+/** One such process, or one desktop app instance: what it is, which pid, how much. */
 @Composable
 private fun ExternalRunRow(run: KernelRun) {
     Row(
@@ -229,9 +229,30 @@ private fun ExternalRunRow(run: KernelRun) {
             )
             Spacer(Modifier.height(3.dp))
             Text(
-                // `formatBytes` is the one already in Components.kt: a second copy
-                // for this row would be a second answer to the same question.
-                text = "PID ${run.pid} · ${formatBytes(run.memBytes)} · 在电脑上运行，手机不能接管",
+                text = buildString {
+                    append("PID ")
+                    append(run.pid)
+                    // For a desktop app the memory is the whole process tree, so
+                    // saying how many processes it stands for is what stops "2.1 GB"
+                    // from looking like one runaway process. A plain process row has
+                    // no count, and inventing "1 个进程" there would say nothing.
+                    if (run.fromDesktopApp && (run.processCount ?: 0) > 1) {
+                        append(" · ")
+                        append(run.processCount)
+                        append(" 个进程")
+                    }
+                    append(" · ")
+                    // `formatBytes` is the one already in Components.kt: a second copy
+                    // for this row would be a second answer to the same question.
+                    append(formatBytes(run.memBytes))
+                    append(
+                        if (run.fromDesktopApp) {
+                            " · 桌面里在跑，手机不能接管"
+                        } else {
+                            " · 在电脑上运行，手机不能接管"
+                        },
+                    )
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,

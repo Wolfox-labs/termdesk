@@ -34,6 +34,7 @@ import {
 import { listSessions, readSession, sessionRoots } from './sessions.js';
 import { chatEngineIds, getKernel, isAdapterKernel, kernelTier, listKernels } from './kernels/registry.js';
 import { externalKernelRuns } from './kernelruns.js';
+import { detectDesktopAgentInstances } from './appagents.js';
 import { threadSummaryToSession, threadToSessionDetail, discoverThreadIdsFromDisk } from './kernels/codex.js';
 
 const STATUS_INTERVAL_MS = 2000;
@@ -440,11 +441,27 @@ export function createFrameHandler(ctx) {
           for (const chat of chats?.chats?.values?.() ?? []) remember(chat?.child?.pid);
 
           const runs = externalKernelRuns(processes.items, kernels, mine);
+
+          // Agents running INSIDE a desktop app are invisible to the name match above,
+          // and that is not hypothetical: the phone showed "还没有进行中的对话" while a
+          // DeepSeek Harness conversation was running, because the desktop build runs as
+          // `DeepSeek Harness.exe` with one runner child per session. See appagents.js
+          // for the measured tree and for why one conversation must report as ONE row.
+          //
+          // `mine` is deliberately NOT applied to these. It filters nothing today, but
+          // if a desktop instance's root pid ever coincided with one of our own
+          // children, filtering by pid alone would erase a real conversation: this
+          // query identifies an APP INSTANCE, which is not one of our spawns.
+          const desktop = await detectDesktopAgentInstances().catch(() => []);
+          for (const instance of desktop) runs.push({ ...instance, source: 'desktop-app' });
+          for (const run of runs) run.source ??= 'process';
+          runs.sort((a, b) => b.memBytes - a.memBytes);
+
           send(S2C.KERNEL_RUNS, {
             capturedAt: processes.capturedAt,
             runs,
             // Said explicitly so a client never has to infer it from an empty list.
-            note: runs.length === 0 ? '本机没有直接运行的 agent 进程' : null,
+            note: runs.length === 0 ? '本机没有检测到正在运行的 agent 进程' : null,
           });
         } catch (err) {
           send(S2C.ERROR, { code: 'kernel_runs_failed', message: String(err?.message ?? err) });

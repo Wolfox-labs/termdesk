@@ -54,10 +54,21 @@ data class KernelInfo(
  * invisible — they discovered it by trying to attach to its session and being
  * refused. These rows are that missing half: "an agent is running over there".
  *
- * What a row is NOT: a conversation. The match is by process name (two builds of
- * the same tool look identical here), and this agent holds no handle to the
- * process, so nothing can be opened or typed into. [attachable] carries that
- * verdict from the PC so the UI cannot offer an action that would fail.
+ * What a row is NOT: a conversation. This agent holds no handle to the process, so
+ * nothing can be opened or typed into. [attachable] carries that verdict from the PC
+ * so the UI cannot offer an action that would fail.
+ *
+ * [source] says how the row was found, because the two answers are not equally
+ * certain and the person can act on the difference:
+ *
+ *   process      matched by executable name. Two builds of the same tool look
+ *                identical here, so the row is "an agent process", never "your
+ *                conversation".
+ *   desktop-app  found by command line inside a desktop app. ONE row is one app
+ *                INSTANCE whose memory and process count are the whole tree — the
+ *                measured case was a single conversation spread over ten processes,
+ *                and the phone used to show nothing at all for it because the app
+ *                does not run under the kernel's own name.
  */
 data class KernelRun(
     val kernelId: String,
@@ -68,6 +79,18 @@ data class KernelRun(
     val memBytes: Long,
     /** False for every row today; a field rather than an assumption. */
     val attachable: Boolean = false,
+    /** process | desktop-app */
+    val source: String = "process",
+    /**
+     * How many OS processes this row stands for.
+     *
+     * Only meaningful for `desktop-app`, where one conversation is many processes.
+     * Null for a plain process row, where it would always be 1 and say nothing.
+     */
+    val processCount: Int? = null,
 ) {
     val displayName: String get() = label.ifBlank { kernelId }
+
+    /** True when the row is an instance of a desktop app rather than one process. */
+    val fromDesktopApp: Boolean get() = source == "desktop-app"
 }

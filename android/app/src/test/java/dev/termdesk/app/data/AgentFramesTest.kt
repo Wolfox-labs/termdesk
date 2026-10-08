@@ -175,6 +175,57 @@ class AgentFramesTest {
     }
 
     @Test
+    fun `a desktop app instance keeps its process count and is marked as such`() {
+        // The measured case this covers: one DeepSeek Harness conversation spread over
+        // ten processes, invisible to a name match, reported as ONE row whose memory is
+        // the whole tree. "2.1 GB" without "10 个进程" reads like one runaway process.
+        val frame = JSONArray().put(
+            JSONObject()
+                .put("kernelId", "dsh")
+                .put("label", "DeepSeek Harness")
+                .put("pid", 5668)
+                .put("name", "DeepSeek Harness.exe")
+                .put("memBytes", 2151L * 1024 * 1024)
+                .put("attachable", false)
+                .put("source", "desktop-app")
+                .put("processCount", 10),
+        )
+
+        val runs = parseKernelRuns(frame)
+
+        assertEquals(1, runs.size)
+        assertTrue("the row is an app instance, not one process", runs[0].fromDesktopApp)
+        assertEquals(10, runs[0].processCount)
+        assertEquals("DeepSeek Harness.exe", runs[0].name)
+    }
+
+    @Test
+    fun `a plain process row reports no count, so the two kinds stay distinguishable`() {
+        // Absent must stay absent: defaulting to 1 would make an ordinary name-matched
+        // process row render identically to an app instance.
+        val frame = JSONArray().put(
+            JSONObject().put("kernelId", "mimo").put("label", "MiMo Code").put("pid", 44280).put("name", "mimo"),
+        )
+
+        val runs = parseKernelRuns(frame)
+
+        assertEquals(1, runs.size)
+        assertFalse(runs[0].fromDesktopApp)
+        assertNull("no count is not the same as a count of one", runs[0].processCount)
+    }
+
+    @Test
+    fun `an older agent's rows read as plain processes rather than as app instances`() {
+        // `source` is a newer field. An agent that does not send it produced its rows by
+        // matching executable names, so that is what they must be taken for.
+        val frame = JSONArray().put(
+            JSONObject().put("kernelId", "codex").put("label", "Codex").put("pid", 99).put("name", "codex"),
+        )
+
+        assertEquals("process", parseKernelRuns(frame)[0].source)
+    }
+
+    @Test
     fun `a row without a pid is skipped instead of shown as a nameless process`() {
         // The pid is the only thing that makes such a row concrete. A row that
         // cannot name one would read as a conversation, and it is not one.

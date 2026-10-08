@@ -304,6 +304,13 @@ import org.json.JSONObject
                         // Defaults to false, which is the truthful default: this
                         // agent did not start the process and holds no handle to it.
                         attachable = o.optBoolean("attachable", false),
+                        // "process" is the default because that is what an older
+                        // agent's rows are: matched by executable name.
+                        source = o.optString("source").takeIf { it.isNotBlank() } ?: "process",
+                        // Null rather than 1 when absent: for a plain process row the
+                        // count says nothing, and inventing 1 would make the two kinds
+                        // of row indistinguishable in the UI.
+                        processCount = if (o.has("processCount")) o.optInt("processCount") else null,
                     ),
                 )
             }
