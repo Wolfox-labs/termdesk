@@ -89,6 +89,11 @@ function table() {
       tier: 'native',
       transport: 'app-server',
       resume: true,
+      // The model comes from config.toml, which codex.get / codex.apply manage:
+      // overriding it here would disagree with that page.
+      modelRoute: 'kernel-config',
+      // The only kernel that can narrate a session in flight (see the descriptor).
+      liveTerminals: true,
       detail: '官方 app-server：列表 / 读取 / 恢复 / fork / 打断都由内核提供',
       resolve: () => {
         if (process.env.TERMDESK_CODEX) return fileOrNull(process.env.TERMDESK_CODEX) ?? process.env.TERMDESK_CODEX;
@@ -108,6 +113,10 @@ function table() {
       label: 'DeepSeek Harness',
       tier: 'native',
       transport: 'sdk',
+      modelRoute: 'default',
+      // Authoritative, not a placeholder: the manager refuses resume from THIS flag
+      // (contract.canResume), so no list can offer a continue button that then
+      // fails. The sentence below says the same thing a second time on purpose.
       resume: false,
       detail: 'SDK 运行时：可连续对话；历史恢复尚未开放',
       resolve: () => {
@@ -128,6 +137,7 @@ function table() {
       label: 'OpenCode',
       tier: 'acp',
       transport: 'acp',
+      modelRoute: 'pinned',
       acpArgs: ['acp'],
       resume: true,
       detail: 'ACP：会话列表 / 恢复 / fork / 图片与内嵌上下文',
@@ -146,6 +156,7 @@ function table() {
       label: 'MiMo Code',
       tier: 'acp',
       transport: 'acp',
+      modelRoute: 'pinned',
       acpArgs: ['acp'],
       resume: true,
       detail: 'ACP（OpenCode 内核）：会话列表 / 恢复 / fork',
@@ -166,6 +177,7 @@ function table() {
       // pipeline says out loud instead of showing an empty conversation.
       resume: true,
       transport: 'cli',
+      modelRoute: 'pinned',
       detail: 'CLI 形状：协议已用真实 CLI 输出核对（v1.1.26），但本机 CLI 尚未登录，所以还不能跑通一轮',
       shim: {
         // Measured against qoderclicn 1.1.26, not the 0.15.x help text first
@@ -208,6 +220,7 @@ function table() {
       label: 'Command Code',
       tier: 'acp',
       transport: 'acp',
+      modelRoute: 'pinned',
       // --no-auto-update matters here: this CLI updates itself in the
       // background (it did so mid-session on 2026-10-05, 1.65.0 -> 1.74.1), and
       // an npm install rewriting the package under a live ACP server kills the
@@ -256,6 +269,7 @@ function envKernels() {
       label: typeof k.label === 'string' ? k.label : k.id,
       tier: 'acp',
       transport: 'acp',
+      modelRoute: 'pinned',
       acpArgs: Array.isArray(k.args) ? k.args : ['acp'],
       // ACP by construction, and ACP declares session capabilities, so the
       // default is "it can reopen a past conversation" unless the entry says
@@ -291,6 +305,7 @@ function envCliKernels() {
       label: k.label ?? k.id,
       tier: 'shim',
       transport: 'cli',
+      modelRoute: 'pinned',
       resume: k.resume !== false,
       detail: k.detail ?? '来自 TERMDESK_CLI_KERNELS 的 CLI 内核',
       shim: {
@@ -369,6 +384,14 @@ export function listKernels() {
       // no verified resume, and saying otherwise is what makes a phone offer a
       // button that cannot work.
       resume: Boolean(entry.resume),
+      // Whether a LIVE session can report work it is doing right now. Asked by
+      // "进行中", whose promise is "what is still running on the PC": only the
+      // app-server kernel exposes that, and asking the others buys a round trip
+      // that answers nothing.
+      liveTerminals: Boolean(entry.liveTerminals),
+      // Where a new conversation's default model comes from. Declared per kernel
+      // because the three answers are genuinely different - see kernels/contract.js.
+      modelRoute: entry.modelRoute ?? 'default',
     };
   });
 }

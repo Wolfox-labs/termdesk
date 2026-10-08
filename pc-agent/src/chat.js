@@ -75,7 +75,15 @@ import { Chat } from './chat/chat.js';
 import { decisionFor } from './kernels/codex.js';
 import { CliKernel } from './kernels/cli.js';
 import { ensureOverlay, routeConfig, runtimeArgs } from './kernels/dsh.js';
-import { chatEngineIds, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
+import { chatEngineIds, getKernel, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
+import {
+  canResume,
+  collectsLiveTerminals,
+  kernelCapabilities,
+  modelRoute,
+  turnDriver,
+  unknownKernelMessage,
+} from './kernels/contract.js';
 import { ApprovalBroker, OPTIONS } from './approvals.js';
 import { dshEventToChatEvent } from './sessions.js';
 
@@ -145,6 +153,38 @@ function modeLabel(chat, modeId) {
   return modes.find((m) => m.id === modeId)?.name ?? modeId;
 }
 
+/**
+ * Read a kernel descriptor for the contract to answer about.
+ *
+ * `getKernel` already returns the public shape (id, transport, resume,
+ * liveTerminals, modelRoute), so the contract needed no new lookup. It is named
+ * here because two callers need it and because a single place to change is the
+ * point of this refactor.
+ */
+function lookupKernel(id) {
+  return getKernel(id);
+}
+
+/**
+ * Turn a declared model route into the values a chat starts with.
+ *
+ * The declaration is the kernel's; this is the one place that knows what the three
+ * kinds MEAN, so a caller can never honour half of one.
+ */
+function routeForChain(kind) {
+  switch (kind) {
+    case 'kernel-config':
+      // The kernel reads its own config, which codex.get / codex.apply manage.
+      return { kind, provider: null, model: null };
+    case 'pinned':
+      // The runtime has a usable default, but the machine's owner may pin one:
+      // a cost decision belongs to whoever pays.
+      return { kind, provider: null, model: process.env.TERMDESK_ACP_MODEL || null };
+    default:
+      return { kind: 'default', ...defaultRoute() };
+  }
+}
+
 let chatCounter = 0;
 
 /**
@@ -201,8 +241,7 @@ export class ChatManager {
       broker: this.approvals,
       findChatByThread: (threadId) => (threadId ? this.codexThreads.get(threadId) ?? null : null),
       newestCodexChat: () =>
-        [...this.chats.values()].filter((c) => c.engine === 'codex')
-          .sort((a, b) => b.lastUsedAt - a.lastUsedAt)[0] ?? null,
+        this.newestCodexChat(),
       acpChatForSession: (sessionId) => (sessionId ? this.acpSessions.get(sessionId) : null),
       chatById: (id) => this.chats.get(id) ?? null,
       pushAndEmit: (chat, event) => this.pushAndEmit(chat, event),
@@ -293,11 +332,9 @@ export class ChatManager {
     // ACP kernels keep their own default model, which may be an expensive one.
     // TERMDESK_ACP_MODEL pins it (a cost decision belongs to the machine's owner),
     // and the phone's picker overrides it per conversation.
-    const route = eng === 'dsh'
-      ? defaultRoute()
-      : isAcpKernel(eng) || isCliKernel(eng)
-        ? { provider: null, model: process.env.TERMDESK_ACP_MODEL || null }
-        : { provider: null, model: null };
+    // Where the default model comes from is a property of the KERNEL, declared in
+    // the table, not something the manager infers from its name.
+    const route = routeForChain(modelRoute(eng, lookupKernel));
     const workdir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
     const chat = new Chat({
       id,
@@ -316,10 +353,10 @@ export class ChatManager {
         role: 'engine',
         text: `模型 ${chat.provider ?? '-'} / ${chat.model ?? '-'}`,
       });
-    } else if (eng === 'codex') {
-      // No explicit route: Codex uses whatever its config.toml selects, which
-      // is the same surface codex.get / codex.apply manage.
-      chat.push({ kind: 'local', role: 'engine', text: '模型 随 Codex 配置（codex.get / codex.apply）' });
+    } else if (route === 'kernel-config') {
+      // The kernel selects its own model from a config file this app also manages,
+      // which is why the note points at that surface instead of naming a kernel.
+      chat.push({ kind: 'local', role: 'engine', text: `模型 随 ${chat.engine} 配置（codex.get / codex.apply）` });
     }
     return { ok: true, chat: chat.summary() };
   }
@@ -332,14 +369,23 @@ export class ChatManager {
     }
     const existing = [...this.chats.values()].find(c => c.engine === engine && c.sessionId === id);
     if (existing) return { ok: true, chat: existing.detail() };
-    if (engine === 'dsh') return { ok: false, code: 'resume_unsupported', message: '当前 DSH SDK 尚未提供经过验证的原生恢复入口；为避免丢失上下文，本版不伪造续聊' };
-    if (engine === 'codex') return this.resumeCodex(id);
-    // ACP kernels own their session store, so "open history" is the same
-    // operation as "continue": the kernel replays it and the next message
-    // continues it. Nothing is reconstructed from display text.
-    if (isAcpKernel(engine) || isCliKernel(engine)) return this.resumeAcp(engine, id);
-    // Every resumable engine now goes through its own adapter; there is no
-    // generic fallback that reconstructs a session out of display text.
+    // Resumability is the table's answer, and when the table says no it also carries
+    // the sentence explaining why - so the refusal cannot drift from its reason.
+    if (!canResume(engine, lookupKernel)) {
+      const detail = getKernel(engine)?.detail;
+      return {
+        ok: false,
+        code: 'resume_unsupported',
+        message: detail
+          ? `${engine} 暂不支持恢复：${detail}`
+          : `${engine} 内核未提供经过验证的恢复接口`,
+      };
+    }
+    // ACP kernels own their session store, so "open history" is the same operation
+    // as "continue": the kernel replays it and the next message continues it.
+    // Nothing is ever reconstructed from display text.
+    if (turnDriver(engine, lookupKernel) === 'acp') return this.resumeAcp(engine, id);
+    if (turnDriver(engine, lookupKernel) === 'app-server') return this.resumeCodex(id);
     return { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
   }
   /**
@@ -433,9 +479,14 @@ export class ChatManager {
       }
     }
 
-    if (chat.engine === 'codex') return this.sendCodex(chat, message, userSeq);
-    if (isAcpKernel(chat.engine) || isCliKernel(chat.engine)) return this.sendAcp(chat, message, userSeq);
-    return this.sendDsh(chat, message, userSeq);
+    // One question, three answers. Before this the manager asked by name, so a
+    // kernel it had not been taught fell through to the SDK driver and talked a
+    // protocol it does not speak.
+    const driver = turnDriver(chat.engine, lookupKernel);
+    if (driver === 'app-server') return this.sendCodex(chat, message, userSeq);
+    if (driver === 'acp') return this.sendAcp(chat, message, userSeq);
+    if (driver === 'sdk') return this.sendDsh(chat, message, userSeq);
+    return this.failUnsupported(chat, userSeq);
   }
 
   /** One turn on the resident DSH SDK runtime. */
@@ -569,7 +620,10 @@ export class ChatManager {
     // Codex keeps the background terminals of a thread on its own side, so the
     // kernel is asked. That is what makes the list "what is still running on the
     // PC" instead of "what happened while this phone happened to be connected".
-    if (chat.engine === 'codex' && chat.threadId) {
+    // "进行中" promises what is STILL RUNNING on the PC. Only the app-server kernel
+    // can be asked that; asking the others would spend a round trip on an answer
+    // that does not exist.
+    if (collectsLiveTerminals(chat.engine, lookupKernel)) {
       await this.refreshCodexTerminals(chat).catch(() => {});
     }
     return { chatId, terminals: chat.terminalList() };
@@ -723,7 +777,9 @@ export class ChatManager {
     if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
       return { ok: false, code: 'missing_workspace', message: '原会话的工作目录不存在，不能静默切换到其他目录' };
     }
-    const adopted = [...this.chats.values()].find((c) => c.engine === 'codex' && c.sessionId === id);
+    const adopted = [...this.chats.values()].find(
+      (c) => c.sessionId === id && turnDriver(c.engine, lookupKernel) === 'app-server',
+    );
     if (adopted) return { ok: true, chat: adopted.detail() };
 
     this.dropIdleChat();
@@ -758,10 +814,16 @@ export class ChatManager {
     return this.codexThreads.get(threadId) ?? null;
   }
 
-  /** Fallback for a Codex request that does not name its thread. */
+  /**
+   * Fallback for an app-server request that does not name its thread.
+   *
+   * Kept as a method (the approval broker is wired to it) but no longer written in
+   * terms of one kernel's name: it is "the newest conversation on a driver that
+   * routes by thread".
+   */
   newestCodexChat() {
     const list = [...this.chats.values()]
-      .filter((c) => c.engine === 'codex')
+      .filter((c) => turnDriver(c.engine, lookupKernel) === 'app-server')
       .sort((a, b) => b.lastUsedAt - a.lastUsedAt);
     return list[0] ?? null;
   }
@@ -1118,6 +1180,20 @@ export class ChatManager {
   }
 
   /**
+   * Refuse a turn on a kernel this build cannot drive.
+   *
+   * Reached when the table has no driver for the engine — an id from a newer phone,
+   * or a typo. It fails the turn LOUDLY and names the engine: the alternative, which
+   * this replaced, was falling through to the SDK driver and talking a protocol the
+   * kernel may not speak, or doing nothing at all.
+   */
+  failUnsupported(chat, userSeq) {
+    const message = unknownKernelMessage(chat.engine, lookupKernel)
+      ?? `${chat.engine} 内核没有可用的驱动方式，请更新电脑端 TermDesk`;
+    return this.failAcp(chat, message, userSeq, 'unsupported_kernel');
+  }
+
+  /**
    * Open a past ACP session: the kernel replays its transcript as
    * session/update notifications and the next message continues it. This is
    * why history and live chat are one path — the same session id backs both.
@@ -1357,40 +1433,60 @@ export class ChatManager {
     if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
     if (chat.status !== 'running') return { ok: false, code: 'not_running', message: '当前没有进行中的回复' };
 
-    if (isAcpKernel(chat.engine) || isCliKernel(chat.engine)) {
-      // ACP cancel is a notification, so there is nothing to await: the turn is
-      // closed out here and the prompt response that follows is ignored
-      // (finishAcpTurn returns early once status is 'stopped').
-      // Anything the conversation was still asking for is settled as denied,
-      // because the kernel is waiting on those answers.
-      this.approvals.cancelForChat(chat.id);
-      const kernel = this.acp.get(chat.engine);
-      // A CLI kernel cancels its process, so it must be reachable even before it
-      // has named its session.
-      if (kernel && (chat.sessionId || isCliKernel(chat.engine))) kernel.cancel(chat.sessionId);
-      chat.status = 'stopped';
-      chat.push({ kind: 'error', role: 'engine', text: '已停止本轮回复' });
-      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'cancelled' });
-      this.emit({ event: 'chat.status', chatId: chat.id, status: 'stopped' });
-      return { ok: true };
-    }
+    // Anything the conversation was still asking for is settled as denied, for every
+    // driver: the kernel is waiting on those answers, and a turn that is over must not
+    // leave a permission prompt on the phone that nothing can resolve.
+    this.approvals.cancelForChat(chat.id);
 
-    if (chat.engine === 'codex') {
-      // The kernel cancels its own turn; the thread stays resumable.
-      chat.status = 'stopped';
-      if (chat.threadId) this.codex?.interruptTurn(chat.threadId).catch(() => {});
-      chat.push({ kind: 'error', role: 'engine', text: '已停止本轮回复' });
-      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'cancelled' });
-      this.emit({ event: 'chat.status', chatId: chat.id, status: 'stopped' });
-      return { ok: true };
-    }
+    // A shim kernel is an ACP kernel for driving purposes, and its process must be
+    // reachable even before it has named a session. Asked of the table rather than of
+    // a name; it is the same condition the old `isCliKernel` check expressed.
+    const cancellableWithoutSession = kernelTier(chat.engine) === 'shim';
 
-    this.dispose(chat, 'cancelled');
+    switch (this.capabilitiesOf(chat.engine).cancel) {
+      case 'ask-kernel': {
+        // The kernel cancels its own turn and the thread stays resumable, so there is
+        // nothing to kill locally.
+        if (chat.threadId) this.codex?.interruptTurn(chat.threadId).catch(() => {});
+        return this.stopTurn(chat);
+      }
+      case 'close-session': {
+        // ACP cancel is a notification, so there is nothing to await: the turn is
+        // closed out here and the prompt response that follows is ignored
+        // (finishAcpTurn returns early once status is 'stopped').
+        const kernel = this.acp.get(chat.engine);
+        if (kernel && (chat.sessionId || cancellableWithoutSession)) kernel.cancel(chat.sessionId);
+        return this.stopTurn(chat);
+      }
+      case 'kill-process': {
+        this.dispose(chat, 'cancelled');
+        return this.stopTurn(chat, '已停止（该内核协议无单轮取消，运行时已终止）');
+      }
+      default:
+        // Unreachable for a selectable kernel (the registry only offers kernels that
+        // have a driver), and said out loud rather than falling through to "stop the
+        // runtime" - which would be a guess about a kernel this build does not know.
+        return {
+          ok: false,
+          code: 'unsupported_kernel',
+          message: unknownKernelMessage(chat.engine, lookupKernel)
+            ?? `${chat.engine} 内核没有可用的停止方式`,
+        };
+    }
+  }
+
+  /** The part every stop shares: the note, the two events, and the answer. */
+  stopTurn(chat, note) {
     chat.status = 'stopped';
-    chat.push({ kind: 'error', role: 'engine', text: '已停止（DSH 协议无单轮取消，运行时已终止）' });
+    chat.push({ kind: 'error', role: 'engine', text: note ?? '已停止本轮回复' });
     this.emit({ event: 'chat.turn', chatId: chat.id, state: 'cancelled' });
     this.emit({ event: 'chat.status', chatId: chat.id, status: 'stopped' });
     return { ok: true };
+  }
+
+  /** The contract, for one engine, in the shape this file asks its questions in. */
+  capabilitiesOf(engine) {
+    return kernelCapabilities(engine, lookupKernel);
   }
 
   /** Forget a chat and release its runtime. */
@@ -1709,9 +1805,9 @@ export class ChatManager {
   /** Terminate a chat's runtime/turn and cancel its in-flight request. */
   dispose(chat, _reason) {
     this.failPending(chat, new Error('会话已结束'));
-    if (chat.engine === 'codex') {
-      // The kernel owns the session now: stop the in-flight turn and keep the
-      // thread resumable. Nothing to kill locally.
+    // A kernel that owns its session store is stopped by asking it to stop, and the
+    // conversation stays resumable: nothing of ours is running to kill.
+    if (this.capabilitiesOf(chat.engine).ownsSessionStore) {
       this.clearCodexWatchdog(chat);
       if (chat.threadId) {
         this.codexThreads.delete(chat.threadId);
@@ -1720,6 +1816,7 @@ export class ChatManager {
       chat.ready = false;
       return;
     }
+    // Everything below is the SDK runtime, which is a child process of ours.
     const child = chat.child;
     chat.child = null;
     chat.ready = false;
