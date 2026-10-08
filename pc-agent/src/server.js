@@ -34,6 +34,7 @@ import { loadRelayConfig, startRelayConnector } from './relay-client.js';
 import { Tunnel, findCloudflared, findTunnelConfig, verifyOwnAgent } from './tunnel.js';
 import { choosePairingUrl, devicesPage, pairPage, pairPayload, pairingUrlReason, qrMatrix, qrTerminal } from './pair.js';
 import { createFrameHandler, pushStatusFrame } from './handlers.js';
+import { reapOrphans, describeReap } from './spawnledger.js';
 
 const DEFAULT_PORT = 7420;
 /** Cap inbound frames: file writes are the largest legitimate payload (~2 MB text). */
@@ -303,9 +304,13 @@ function localAddresses() {
  */
 
 /** Where the agent is listening, and how to pair. */
-function printHeader({ args, token, apk, relay }) {
+function printHeader({ args, token, apk, relay, reap = null }) {
   const line = (label, value) => console.log('  ' + label.padEnd(7) + value);
   console.log('');
+  // Said out loud at startup, before anything else can be blamed: kernels left behind
+  // by a previous run are being killed, and that is why a process the person saw a
+  // moment ago is gone.
+  const reapLine = describeReap(reap ?? {});
   if (args.local) {
     console.log(`  TermDesk 本地内核 ${AGENT_VERSION} — 跑在这台机器自己的沙盒里`);
     console.log('  ' + '-'.repeat(64));
@@ -314,6 +319,7 @@ function printHeader({ args, token, apk, relay }) {
     line('目录', allowedRoots().join('   '));
     line('令牌', token.slice(0, 6) + '…   完整内容在 ' + tokenPath());
     line('公网', '不适用：本地内核不配对、不建隧道');
+    if (reapLine) line('回收', reapLine);
     console.log('');
     return;
   }
@@ -342,6 +348,7 @@ function printHeader({ args, token, apk, relay }) {
       port: args.port,
     })));
   }
+  if (reapLine) line('回收', reapLine);
   console.log('');
 }
 
@@ -994,7 +1001,7 @@ server.listen(args.port, args.host, async () => {
       },
     });
   }
-  printHeader({ args, token, apk: findClientApk(), relay: Boolean(relayConfig) });
+  printHeader({ args, token, apk: findClientApk(), relay: relayConfig, reap: await reapOrphans().catch(() => null) });
   // Printed before the tunnel on purpose: the kernel list is useful immediately,
   // while cloudflared may still be negotiating its connections.
   await printKernels().catch(() => {});

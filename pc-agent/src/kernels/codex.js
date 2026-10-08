@@ -25,6 +25,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { findCodex } from '../engines.js';
+import { kernelEnv, rememberSpawn, forgetSpawn } from '../spawnledger.js';
 
 const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_TEXT = 4000;
@@ -321,7 +322,11 @@ export class CodexAppServer extends EventEmitter {
         cwd: this.cwd ?? undefined,
         stdio: ['pipe', 'pipe', 'pipe'],
         shell,
+        env: kernelEnv(),
       });
+      this.child = child;
+      rememberSpawn(child.pid, 'codex');
+      child.once('exit', () => forgetSpawn(child.pid));
       this.child = child;
       this.buffer = '';
       child.stdout.setEncoding('utf8');

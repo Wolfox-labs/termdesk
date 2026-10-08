@@ -31,6 +31,7 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { AcpTerminals, ACP_TERMINAL_METHODS } from './acp-terminal.js';
+import { kernelEnv, rememberSpawn, forgetSpawn } from '../spawnledger.js';
 
 const PROTOCOL_VERSION = 1;
 /** Requests other than a prompt are answered quickly or not at all. */
@@ -257,7 +258,13 @@ export class AcpKernel extends EventEmitter {
         cwd: this.cwd ?? undefined,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        // Marked and recorded so a later run can clean up after a crash: on
+        // Windows a killed parent does not take its children with it.
+        env: kernelEnv(),
       });
+      this.child = child;
+      rememberSpawn(child.pid, `acp:${this.id}`);
+      child.once('exit', () => forgetSpawn(child.pid));
       this.child = child;
       this.buffer = '';
       this.stderrTail = '';

@@ -34,6 +34,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 
 import { killProcessTree } from '../engines.js';
+import { kernelEnv, rememberSpawn, forgetSpawn } from '../spawnledger.js';
 
 const MAX_PARTIAL = 4000;
 
@@ -255,7 +256,13 @@ export class CliKernel {
     return new Promise((resolve, reject) => {
       let child;
       try {
-        child = spawn(this.bin, [...this.preArgs, ...args], { cwd: this.cwd ?? undefined, windowsHide: true });
+        child = spawn(this.bin, [...this.preArgs, ...args], {
+          cwd: this.cwd ?? undefined,
+          windowsHide: true,
+          env: kernelEnv(),
+        });
+        rememberSpawn(child.pid, `cli:${this.id}`);
+        child.once('exit', () => forgetSpawn(child.pid));
       } catch (err) {
         reject(new Error(`无法启动 ${this.id}：${err?.message ?? err}`));
         return;
@@ -355,7 +362,15 @@ export class CliKernel {
   /** Run a short-lived command and collect its output (used for the index). */
   run(args, input, cwd) {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.bin, [...this.preArgs, ...args], { cwd: cwd ?? undefined, windowsHide: true });
+      // A short-lived command (the session index) is recorded too: a crash can
+      // orphan it just as easily as a long-lived kernel.
+      const child = spawn(this.bin, [...this.preArgs, ...args], {
+        cwd: cwd ?? undefined,
+        windowsHide: true,
+        env: kernelEnv(),
+      });
+      rememberSpawn(child.pid, `cli-run:${this.id}`);
+      child.once('exit', () => forgetSpawn(child.pid));
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', (d) => { stdout += d; });
