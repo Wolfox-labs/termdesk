@@ -268,6 +268,16 @@ class AgentClient(
     /** The address that last answered, so a working fallback is kept. */
     private var lastWorking: String? = null
 
+    /**
+     * Requests whose answers have not arrived yet.
+     *
+     * `requestId` on a chat message is about not losing words; this is about
+     * not showing the wrong thing. `fs.list A` then `fs.list B` over a slow
+     * link can answer in the other order, and without an id the screen showed
+     * A's contents under B's name - wrong, plausible, and unexplainable.
+     */
+    private val calls = PendingCalls()
+
     private val pendingSends = PendingSends(
         onChanged = { items -> persistPendingSends(items) },
     )
@@ -319,6 +329,15 @@ class AgentClient(
 
         /** Characters of one command's output the panel keeps in memory. */
         const val TERMINAL_TEXT_LIMIT = 48 * 1024
+
+        /**
+         * Request kinds for `PendingCalls`.
+         *
+         * A listing replaces whatever is on screen, so asking for another one
+         * abandons the first. A file read does not: it opens its own viewer.
+         */
+        const val CALL_FS_LIST = "fs.list"
+        const val CALL_FS_READ = "fs.read"
     }
 
     /** The last upload that finished, so `+` can attach it to the next message. */
@@ -1024,11 +1043,17 @@ class AgentClient(
 
     fun listDirectory(dirPath: String) {
         _loading.value = true
-        sendFrame(JSONObject().put("type", "fs.list").put("path", dirPath))
+        // One listing is on screen at a time, so asking again abandons the
+        // previous question: its late answer must not paint over this one.
+        val callId = calls.nextId(CALL_FS_LIST)
+        calls.trackLatest(callId, CALL_FS_LIST)
+        sendFrame(JSONObject().put("type", "fs.list").put("path", dirPath).put("callId", callId))
     }
 
     fun readFile(filePath: String) {
-        sendFrame(JSONObject().put("type", "fs.read").put("path", filePath))
+        val callId = calls.nextId(CALL_FS_READ)
+        calls.track(callId, CALL_FS_READ)
+        sendFrame(JSONObject().put("type", "fs.read").put("path", filePath).put("callId", callId))
     }
 
     fun closeOpenFile() {
@@ -1606,6 +1631,13 @@ class AgentClient(
                     _services.value = parseServices(frame.optJSONArray("items"))
                 }
                 "fs.listing" -> {
+                    // Claimed BEFORE anything is applied. An answer to a question
+                    // nobody is asking any more is not a slower answer, it is the
+                    // wrong one - and applying it is how the wrong directory got
+                    // shown. An agent too old to echo the id is refused the same
+                    // way, because guessing which question it answered is worse
+                    // than not showing it.
+                    if (!calls.claim(frame.optString("callId"))) return
                     _loading.value = false
                     _listing.value = parseListing(frame)
                 }
@@ -1634,6 +1666,7 @@ class AgentClient(
                     )
                 }
                 "fs.file" -> {
+                    if (!calls.claim(frame.optString("callId"))) return
                     _openFile.value = TextFile(
                         path = frame.optString("path"),
                         text = frame.optString("text"),

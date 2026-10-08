@@ -278,6 +278,8 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 | C→S | `auth` · `status.get` · `status.subscribe` · `status.unsubscribe` |
 | C→S | `procs.list` · `procs.kill` · `services.list` · `services.action` |
 | C→S | `fs.list` · `fs.read` · `fs.write` · `fs.mkdir` · `fs.delete` · `fs.rename` · `fs.roots` · `fs.search` · `fs.doctext` |
+| 约定 | 请求可带 `callId`（任意字符串，手机生成）；代理在**对应的应答或 `error`** 上原样回显。手机凭它判断"这个答案是不是我问的那个问题"——`fs.list A` 之后 `fs.list B`，慢网下响应可能乱序，没有这个字段就会把 A 的内容画在 B 的标题下。不带 `callId` 的旧客户端行为完全不变（应答里也不会多出这个字段） |
+| 约定 | `chat.send` 可带 `requestId`；代理在 `chat.sent` 与拒绝的 `action.result` 上原样回显。手机凭它把离线队列里的那条消息标记为"已送达"——回显而非去重：同一条消息发两次就是两条，队列的职责是**不**替人产生第二次发送 |
 | C→S | `term.open` · `term.run` · `term.interrupt` · `term.close` · `term.list` · `ping` |
 | C→S | `kernels.list`（内核表：唯一事实来源是 pc-agent 的 `kernels/registry.js`） |
 | C→S | `kernels.runs`（这台电脑上**本代理没有启动**的 agent 进程，即用户在终端里自己跑的） |

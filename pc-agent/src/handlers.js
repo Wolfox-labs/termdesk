@@ -9,6 +9,7 @@
 import path from 'node:path';
 
 import { C2S, S2C, encodeFrame } from './protocol.js';
+import { withCallId } from './callid.js';
 import { collectStatus } from './system.js';
 import { listProcesses, listServices, matchesQuery, invalidateInventory } from './inventory.js';
 import { killProcess, controlService } from './actions.js';
@@ -190,36 +191,36 @@ export function createFrameHandler(ctx) {
 
       case C2S.FS_LIST:
         try {
-          send(S2C.FS_LISTING, await listDirectory(frame.path));
+          send(S2C.FS_LISTING, withCallId(await listDirectory(frame.path), frame));
         } catch (err) {
-          send(S2C.ERROR, { code: err?.code ?? 'fs_failed', message: String(err?.message ?? err), path: frame.path });
+          send(S2C.ERROR, withCallId({ code: err?.code ?? 'fs_failed', message: String(err?.message ?? err), path: frame.path }, frame));
         }
         break;
 
       case C2S.FS_READ:
         try {
-          send(S2C.FS_FILE, await readTextFile(frame.path));
+          send(S2C.FS_FILE, withCallId(await readTextFile(frame.path), frame));
         } catch (err) {
-          send(S2C.ERROR, { code: err?.code ?? 'fs_failed', message: String(err?.message ?? err), path: frame.path });
+          send(S2C.ERROR, withCallId({ code: err?.code ?? 'fs_failed', message: String(err?.message ?? err), path: frame.path }, frame));
         }
         break;
 
       case C2S.FS_SEARCH:
         try {
-          send(S2C.FS_RESULTS, await searchFiles(frame.path, frame.query, {
+          send(S2C.FS_RESULTS, withCallId(await searchFiles(frame.path, frame.query, {
             limit: frame.limit,
             maxDepth: frame.maxDepth,
-          }));
+          }), frame));
         } catch (err) {
-          send(S2C.ERROR, { code: err?.code ?? 'search_failed', message: String(err?.message ?? err), path: frame.path });
+          send(S2C.ERROR, withCallId({ code: err?.code ?? 'search_failed', message: String(err?.message ?? err), path: frame.path }, frame));
         }
         break;
 
       case C2S.FS_DOCTEXT:
         try {
-          send(S2C.FS_DOCTEXT, await readDocxText(frame.path));
+          send(S2C.FS_DOCTEXT, withCallId(await readDocxText(frame.path), frame));
         } catch (err) {
-          send(S2C.ERROR, { code: err?.code ?? 'docx_failed', message: String(err?.message ?? err), path: frame.path });
+          send(S2C.ERROR, withCallId({ code: err?.code ?? 'docx_failed', message: String(err?.message ?? err), path: frame.path }, frame));
         }
         break;
 
