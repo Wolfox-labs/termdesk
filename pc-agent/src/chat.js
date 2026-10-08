@@ -69,42 +69,28 @@ import crypto from 'node:crypto';
 
 import { CodexAppServer, notificationToChatEvents, turnToChatEvents } from './kernels/codex.js';
 import { AcpKernel, acpUpdateToChatEvents, acpSessionToSessionInfo } from './kernels/acp.js';
+import { createApprovalHandlers } from './chat/approvals.js';
+import { Chat } from './chat/chat.js';
 import { decisionFor } from './kernels/codex.js';
 import { CliKernel } from './kernels/cli.js';
 import { ensureOverlay, routeConfig, runtimeArgs } from './kernels/dsh.js';
 import { chatEngineIds, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
-import { ApprovalBroker, OPTIONS, describe as describeApproval } from './approvals.js';
+import { ApprovalBroker, OPTIONS } from './approvals.js';
 import { dshEventToChatEvent } from './sessions.js';
 
 /** The only option ids an engine's answer may be translated into. */
-const KNOWN_OPTIONS = [OPTIONS.ALLOW_ONCE, OPTIONS.ALLOW_ALWAYS, OPTIONS.DENY];
 
 /** One line describing what Codex is asking for. */
-function describeCodexRequest(params) {
-  const command = params?.command ?? params?.commandLine?.[0] ?? null;
-  if (typeof command === 'string' && command.trim()) {
-    const args = Array.isArray(params?.commandLine) ? params.commandLine.slice(1).join(' ') : '';
-    return args ? `${command} ${args}` : command;
-  }
-  const changes = params?.changes ?? params?.fileChanges ?? null;
-  if (Array.isArray(changes) && changes.length > 0) {
-    return changes.map((c) => c?.path ?? c?.file ?? '').filter(Boolean).join(', ');
-  }
-  if (typeof params?.path === 'string') return params.path;
-  return '（内核没有说明具体内容）';
-}
-
 const MAX_CHATS = 8;
-const MAX_EVENTS_PER_CHAT = 1200;
 const MAX_PROMPT_CHARS = 24000;
 /**
- * How much of one command's output the phone's copy keeps.
+ * How long a conversation with no traffic keeps its runtime alive.
  *
- * The screen shows a few hundred lines; the cap is here so that a command which
- * prints forever cannot grow this process's memory through the transcript copy.
- * The tail is what is kept — that is where the answer usually is.
+ * Each live chat holds a full Node harness with an open provider route (DSH) or
+ * a kernel process (ACP), so an idle one is real memory on someone's desktop.
+ * The clock is the manager's, not a socket's: a phone that disconnects must not
+ * decide how long the conversation survives.
  */
-const MAX_TERMINAL_OUTPUT_CHARS = 64 * 1024;
 const IDLE_TTL_MS = 45 * 60 * 1000;
 const INIT_TIMEOUT_MS = 120 * 1000;
 const PROMPT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -170,223 +156,6 @@ let chatCounter = 0;
  * @param {object} ev parsed Codex JSONL event
  * @returns {{kind, role, text, name, meta}|null}
  */
-/** One live conversation: one engine runtime plus its transcript. */
-class Chat {
-  constructor({ id, title, cwd, engine, provider, model, effort = null, threadId = null, nativeSessionId = null }) {
-    this.id = id;
-    this.title = title;
-    this.cwd = cwd;
-    /** 'codex' | 'dsh' — which engine backs this conversation. */
-    this.engine = engine;
-    this.provider = provider;
-    this.model = model;
-    /**
-     * Reasoning effort (low / high / ...), engine specific. Null means the
-     * kernel default. The app-server documents effort as applying to the turn
-     * and subsequent turns, so this mirrors what the thread is actually using.
-     */
-    this.effort = effort;
-    this.createdAt = Date.now();
-    this.lastUsedAt = Date.now();
-    /** running | idle | stopped | failed */
-    this.status = 'idle';
-    /**
-     * True once the engine can accept prompts.
-     * dsh: initialize handshake finished. codex: no resident runtime, so this
-     * becomes true after the first successful spawn (there is nothing to
-     * handshake with before the first turn).
-     */
-    this.ready = false;
-    /**
-     * Durable conversation handle.
-     * dsh: the SDK wire session id (also the runtime's identity).
-     * codex: the Codex thread id used for `exec resume`; null until the first
-     * `thread.started` event. `sessionId` keeps the same wire field name so
-     * clients do not need an engine-specific key.
-     */
-    this.sessionId = nativeSessionId ?? threadId ?? `termdesk-${id}-${Date.now().toString(36)}`;
-    this.nativeResume = Boolean(nativeSessionId);
-    this.runtimeStarted = false;
-    /** Codex thread id (engine=codex only), kept separately for resume. */
-    this.threadId = threadId;
-    /** ACP: { current, models[] } as the kernel described the session. */
-    this.availableModels = null;
-    /** ACP: the model already pushed to the kernel, so it is pushed once. */
-    this.appliedModel = null;
-    /** ACP: the session's permission / agent mode, as the kernel named it. */
-    this.mode = null;
-    /** ACP: the modes this session declares (so the phone never guesses one). */
-    this.availableModes = null;
-    /**
-     * True while this chat's ACP session is backed by a live kernel process.
-     * ACP chats hold no child of their own (one process serves every session on
-     * that kernel), so liveness has to be recorded explicitly.
-     */
-    this.kernelLive = false;
-    this.events = [];
-    this.seq = 0;
-    /**
-     * The command lines this conversation ran, keyed by the kernel's own id.
-     *
-     * Kept per conversation, not globally: "which terminal belongs to what I am
-     * doing right now" is the question the phone asks, and a session's terminals
-     * must not be mixed with another session's on the same kernel process.
-     */
-    this.terminals = new Map();
-    this.lastError = null;
-    this.usage = null;
-    this.titleSource = 'prompt';
-    this.child = null;
-    this.pending = new Map();
-    this.nextRpcId = 1;
-    this.lineCount = 0;
-    /**
-     * Streamed assistant text events for the current turn, in order.
-     *
-     * Kept separately from `events` because `assistant/chunk` deltas are only a
-     * preview of the message the runtime sends when the block finishes. The
-     * previews must be removable once that authoritative message arrives,
-     * otherwise every answer would be stored twice.
-     */
-    this.previews = [];
-    /** The block currently receiving deltas, or null. */
-    this.streaming = null;
-    /**
-     * The user's optimistically-shown message awaiting the runtime's echo.
-     *
-     * Cleared once the runtime confirms it, so a later identical message from
-     * the user is not mistaken for the echo of this one. Only used on the DSH
-     * path, which echoes user messages back over the wire.
-     */
-    this.pendingUserEcho = null;
-  }
-
-  push(event) {
-    this.seq += 1;
-    const record = { seq: this.seq, at: Date.now(), ...event };
-    this.events.push(record);
-    if (this.events.length > MAX_EVENTS_PER_CHAT) {
-      this.events.splice(0, this.events.length - MAX_EVENTS_PER_CHAT);
-    }
-    return record;
-  }
-
-  /**
-   * Remember a command line this conversation is running.
-   *
-   * `origin` is the part that matters to the phone: `agent` means the kernel ran
-   * the command inside its own process (Codex) — we can list it, watch it and
-   * stop it, but the protocol has no way to type into it; `kernel` means the
-   * kernel asked this agent to run it (ACP) — that process is ours, so the
-   * phone can drive it. Saying which is which beats offering a dead input box.
-   */
-  startTerminal({ id, origin, command, cwd = null, processId = null }) {
-    const record = {
-      id,
-      origin,
-      command,
-      cwd,
-      processId,
-      state: 'running',
-      exitCode: null,
-      startedAt: Date.now(),
-      finishedAt: null,
-      output: '',
-      bytes: 0,
-      truncated: false,
-    };
-    this.terminals.set(id, record);
-    return record;
-  }
-
-  appendTerminal(id, chunk) {
-    const record = this.terminals.get(id);
-    if (!record || typeof chunk !== 'string' || !chunk) return record ?? null;
-    record.output += chunk;
-    record.bytes += Buffer.byteLength(chunk, 'utf8');
-    if (record.output.length > MAX_TERMINAL_OUTPUT_CHARS) {
-      record.output = record.output.slice(-MAX_TERMINAL_OUTPUT_CHARS);
-      record.truncated = true;
-    }
-    return record;
-  }
-
-  finishTerminal(id, { exitCode = null } = {}) {
-    const record = this.terminals.get(id);
-    if (!record) return null;
-    if (record.state !== 'exited') {
-      record.state = 'exited';
-      record.exitCode = exitCode;
-      record.finishedAt = Date.now();
-    }
-    return record;
-  }
-
-  /** The phone's view: no output bodies, just what exists and what it can do. */
-  terminalList() {
-    return [...this.terminals.values()]
-      .sort((a, b) => a.startedAt - b.startedAt)
-      .map((t) => ({
-        id: t.id,
-        origin: t.origin,
-        command: t.command,
-        cwd: t.cwd,
-        state: t.state,
-        exitCode: t.exitCode,
-        startedAt: t.startedAt,
-        finishedAt: t.finishedAt,
-        bytes: t.bytes,
-        truncated: t.truncated,
-        canWrite: t.origin === 'kernel' && t.state === 'running',
-      }));
-  }
-
-  terminalDetail(id) {
-    const t = this.terminals.get(id);
-    if (!t) return null;
-    return {
-      id: t.id,
-      origin: t.origin,
-      command: t.command,
-      cwd: t.cwd,
-      state: t.state,
-      exitCode: t.exitCode,
-      output: t.output,
-      truncated: t.truncated,
-      canWrite: t.origin === 'kernel' && t.state === 'running',
-    };
-  }
-
-  summary() {
-    return {
-      id: this.id,
-      title: this.title,
-      cwd: this.cwd,
-      engine: this.engine,
-      provider: this.provider,
-      model: this.model,
-      effort: this.effort,
-      status: this.status,
-      ready: this.ready,
-      sessionId: this.sessionId,
-      threadId: this.threadId,
-      mode: this.mode,
-      createdAt: this.createdAt,
-      lastUsedAt: this.lastUsedAt,
-      eventCount: this.events.length,
-      lastError: this.lastError,
-      usage: this.usage,
-      live: Boolean((this.child && this.child.exitCode === null) || this.kernelLive),
-    };
-  }
-
-  detail(afterSeq = 0) {
-    return {
-      ...this.summary(),
-      events: this.events.filter((e) => e.seq > afterSeq),
-    };
-  }
-}
 
 export class ChatManager {
   constructor() {
@@ -421,7 +190,24 @@ export class ChatManager {
      * phone answers in one place and every decision lands in the transcript.
      */
     this.approvals = new ApprovalBroker();
-    this.approvals.on('settled', (info) => this.noteApproval(info));
+    /**
+     * Every approval-facing method below is mixed in from `chat/approvals.js`,
+     * with its seams passed explicitly: which chat a Codex thread belongs to,
+     * which chat an ACP session belongs to, and how to write the decision back
+     * into that conversation's transcript.
+     */
+    const approvalHandlers = createApprovalHandlers({
+      broker: this.approvals,
+      findChatByThread: (threadId) => (threadId ? this.codexThreads.get(threadId) ?? null : null),
+      newestCodexChat: () =>
+        [...this.chats.values()].filter((c) => c.engine === 'codex')
+          .sort((a, b) => b.lastUsedAt - a.lastUsedAt)[0] ?? null,
+      acpChatForSession: (sessionId) => (sessionId ? this.acpSessions.get(sessionId) : null),
+      chatById: (id) => this.chats.get(id) ?? null,
+      pushAndEmit: (chat, event) => this.pushAndEmit(chat, event),
+    });
+    Object.assign(this, approvalHandlers);
+    approvalHandlers.watch();
     /**
      * Conversations whose terminals the client is currently watching.
      *
@@ -966,79 +752,6 @@ export class ChatManager {
   }
 
   // --- approvals -----------------------------------------------------------
-
-  /**
-   * One Codex approval request -> one question on the phone.
-   *
-   * The reason is taken from the request itself (the command, or the patch), so
-   * the phone shows what will actually run rather than "the agent wants
-   * permission".
-   */
-  async answerCodexApproval(method, params) {
-    const chat = this.findChatByThread(params?.threadId) ?? this.newestCodexChat();
-    const detail = describeCodexRequest(params);
-    const optionId = await this.approvals.request({
-      chatId: chat?.id ?? null,
-      engine: 'codex',
-      title: 'Codex 想要执行',
-      detail,
-      kind: /patch|filechange|file/i.test(method) ? 'file' : 'command',
-      fallback: OPTIONS.DENY,
-    }).catch(() => OPTIONS.DENY);
-    return decisionFor(optionId);
-  }
-
-  /**
-   * One ACP permission request -> one question on the phone.
-   *
-   * The kernel's own options are reused as the answer vocabulary when they match
-   * ours, so "always allow" means what the kernel means by it.
-   */
-  async handleAcpPermission(engineId, info) {
-    const chat = info.sessionId ? this.acpSessions.get(info.sessionId) : null;
-    const options = Array.isArray(info.options) ? info.options : [];
-    const ids = options
-      .map((o) => o?.optionId ?? o?.id)
-      .filter((id) => KNOWN_OPTIONS.includes(id));
-    // A kernel that offers something we do not speak (a "cancel" kind, say)
-    // still gets an answer: the vocabulary is ours, and anything unmapped is
-    // simply not offered.
-    const optionId = await this.approvals.request({
-      chatId: chat?.id ?? null,
-      engine: engineId,
-      title: info.toolCall?.title ? `内核想要执行 ${info.toolCall.title}` : '内核请求权限',
-      // The kind rides along as its own field, so repeating it here would only
-      // make the sentence longer without saying anything new.
-      detail: info.toolCall?.title ? '' : (info.toolCall?.kind ?? ''),
-      kind: info.toolCall?.kind === 'edit' || info.toolCall?.kind === 'write' ? 'file' : 'tool',
-      ids: ids.length > 0 ? ids : null,
-      fallback: KNOWN_OPTIONS.includes(info.defaultOptionId) ? info.defaultOptionId : OPTIONS.DENY,
-    }).catch(() => OPTIONS.DENY);
-    info.respond(optionId === OPTIONS.DENY ? null : optionId);
-  }
-
-  /**
-   * The phone's answer.
-   *
-   * Rejected rather than trusted when the request is unknown or already settled:
-   * an answer that is not currently pending must not be able to decide
-   * something else.
-   */
-  resolveApproval({ requestId, optionId }) {
-    if (!KNOWN_OPTIONS.includes(optionId)) {
-      return { ok: false, code: 'bad_option', message: `不认识的选项：${optionId}` };
-    }
-    return this.approvals.resolve({ requestId, optionId });
-  }
-
-  /** Write the decision into the conversation it belongs to. */
-  noteApproval({ request, optionId, by, note }) {
-    if (!note) return;
-    const chat = request.chatId ? this.chats.get(request.chatId) : null;
-    if (!chat) return;
-    this.pushAndEmit(chat, { kind: 'engine_note', role: 'engine', text: note, name: 'permission' });
-  }
-
   findChatByThread(threadId) {
     if (!threadId) return null;
     return this.codexThreads.get(threadId) ?? null;
@@ -2097,32 +1810,10 @@ export class ChatManager {
   }
 }
 
-/** Attach the per-chat JSON-RPC request helper. Kept out of the class body for readability. */
-Chat.prototype.request = function request(method, params, timeoutMs) {
-  const chat = this;
-  const child = chat.child;
-  if (!child || child.exitCode !== null) {
-    return Promise.reject(new Error('运行时未运行'));
-  }
-  const id = String(chat.nextRpcId++);
-  const frame = { jsonrpc: '2.0', id, method };
-  if (params !== undefined) frame.params = params;
-
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      chat.pending.delete(id);
-      reject(new Error(`${method} 超时`));
-    }, timeoutMs);
-    chat.pending.set(id, { resolve, reject, timer, method });
-    try {
-      child.stdin.write(`${JSON.stringify(frame)}\n`);
-    } catch (err) {
-      chat.pending.delete(id);
-      clearTimeout(timer);
-      reject(err);
-    }
-  });
-};
 
 export const CHAT_DEFAULTS = { MAX_CHATS, MAX_PROMPT_CHARS, IDLE_TTL_MS };
 export { findDsh as findChatDsh };
+// `Chat` moved to chat/chat.js; it is re-exported so this file stays the one
+// place callers import a conversation from — the split must not change the
+// facade (tools/chat-facade-test.js pins that).
+export { Chat };
