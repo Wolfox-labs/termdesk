@@ -1,0 +1,152 @@
+package dev.termdesk.app.data
+
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * The phone's first automated checks.
+ *
+ * Everything else on this side is verified by compiling and then by hand on a
+ * device, which is why the frame parsers were pulled out of `AgentClient` into
+ * `AgentFrames` in the first place: they are the part that can be pinned without
+ * one.
+ *
+ * What these tests are for. Each parser is the only place a frame's field names
+ * meet the models the UI reads, and the failures here are quiet ones: a renamed
+ * field shows as a blank row, an absent field shows as the literal word "null"
+ * (that happened — the transcript named a model `null`), a wrong default shows
+ * as a session that claims it can be resumed when it cannot.
+ *
+ * What they are NOT. They pin TermDesk's own handling of a frame — which fields
+ * it reads, which fallbacks it applies, what a payload missing a field produces
+ * — and not the agent's side of the protocol: no frame here comes from a running
+ * agent, and nothing checks that the agent sends these field names. That check
+ * lives on the PC side, where the frames are produced (`npm test`).
+ *
+ * `org.json` deserves a note: android.jar ships it as a stub for unit tests,
+ * where `put` returns null and `optString` returns defaults, so a JSONObject
+ * cannot even be built. `app/build.gradle.kts` therefore puts the REAL
+ * implementation on the unit-test classpath only (`testImplementation`) and
+ * leaves `isReturnDefaultValues` off, so these parsers run against behaviour
+ * that matches the device instead of a mock of it.
+ */
+class AgentFramesTest {
+
+    // ---- the session list's workspace index (what the sidebar groups by) ----
+
+    @Test
+    fun `no workspace payload is an empty index, not a crash`() {
+        assertEquals(emptyList<WorkspaceInfo>(), parseWorkspaces(null))
+        assertEquals(emptyList<WorkspaceInfo>(), parseWorkspaces(JSONArray()))
+    }
+
+    @Test
+    fun `a workspace carries its directory, session count, engines and latest time`() {
+        val engines = JSONArray().put("codex").put("dsh")
+        val entry = JSONObject()
+            .put("cwd", "E:\\aiPic\\termdesk")
+            .put("count", 7)
+            .put("engines", engines)
+            .put("latestAt", "2026-10-08T02:57:35.334Z")
+
+        val list = parseWorkspaces(JSONArray().put(entry))
+
+        assertEquals(1, list.size)
+        assertEquals("E:\\aiPic\\termdesk", list[0].cwd)
+        assertEquals(7, list[0].count)
+        assertEquals(listOf("codex", "dsh"), list[0].engines)
+        assertEquals("2026-10-08T02:57:35.334Z", list[0].latestAt)
+    }
+
+    @Test
+    fun `a workspace without engines or a time still arrives, so the group is not dropped`() {
+        val entry = JSONObject().put("cwd", "/home/x/project").put("count", 1)
+
+        val list = parseWorkspaces(JSONArray().put(entry))
+
+        assertEquals(1, list.size)
+        assertEquals(emptyList<String>(), list[0].engines)
+        assertNull("an absent time stays absent: the UI sorts by it, it must not invent one", list[0].latestAt)
+    }
+
+    // ---- a conversation, as the chats frame describes it --------------------
+
+    @Test
+    fun `a conversation without an id is skipped rather than shown as a blank row`() {
+        assertNull(parseChatInfo(JSONObject()))
+        val withoutId = JSONObject().put("title", "有标题但没 id")
+        assertNull(parseChatInfo(withoutId))
+        assertEquals(
+            emptyList<ChatInfo>(),
+            parseChatList(JSONArray().put(JSONObject().put("title", "同样没有 id"))),
+        )
+    }
+
+    @Test
+    fun `an absent field stays absent instead of becoming the word null`() {
+        // The regression this pins: optString() turns a JSON null into "null", and
+        // the transcript then called the model `null`.
+        val frame = JSONObject()
+            .put("id", "c-1")
+            .put("title", "检查本地情况")
+            .put("cwd", "E:\\aiPic\\termdesk")
+            .put("provider", JSONObject.NULL)
+            .put("model", JSONObject.NULL)
+            .put("effort", JSONObject.NULL)
+            .put("mode", JSONObject.NULL)
+
+        val chat = parseChatInfo(frame)
+
+        assertNotNull(chat)
+        assertEquals("", chat!!.model)
+        assertEquals("", chat.provider)
+        assertEquals("", chat.effort)
+        assertEquals("", chat.mode)
+        assertEquals("检查本地情况", chat.title)
+        assertFalse("an absent model must not read as the four-letter word", chat.model == "null")
+    }
+
+    @Test
+    fun `a conversation with nothing running is idle, on the default kernel`() {
+        val chat = parseChatInfo(JSONObject().put("id", "c-2"))
+
+        assertNotNull(chat)
+        assertEquals("idle", chat!!.status)
+        assertEquals("dsh", chat.engine)
+        assertFalse("a fresh conversation is not running", chat.isRunning)
+    }
+
+    // ---- file search results ------------------------------------------------
+
+    @Test
+    fun `a search result keeps the directory it was answered for`() {
+        val frame = JSONObject()
+            .put("path", "E:\\aiPic\\termdesk\\pc-agent")
+            .put("query", "chat")
+            .put("truncated", false)
+            .put("scannedDirs", 12)
+            .put(
+                "items",
+                JSONArray().put(
+                    JSONObject()
+                        .put("name", "chat.js")
+                        .put("path", "E:\\aiPic\\termdesk\\pc-agent\\src\\chat.js")
+                        .put("isDir", false)
+                        .put("sizeBytes", 90285L),
+                ),
+            )
+
+        val results = parseSearch(frame)
+
+        assertEquals("E:\\aiPic\\termdesk\\pc-agent", results.path)
+        assertEquals("chat", results.query)
+        assertEquals(1, results.items.size)
+        assertFalse("a found file is not a directory", results.items[0].isDir)
+    }
+}

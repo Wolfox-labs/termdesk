@@ -53,6 +53,12 @@ jobs:
       - name: Compile the phone app
         run: ./gradlew :app:assembleDebug --console=plain
         working-directory: android
+      - name: Run the phone's unit tests
+        # Compiling is not testing: `assembleDebug` does not run them. These are
+        # the frame parsers (the only device-free logic on this side) and JUnit
+        # fails the job on the first broken assertion.
+        run: ./gradlew :app:testDebugUnitTest --console=plain
+        working-directory: android
       - name: Compile the desktop shell
         # Same Gradle project as the phone app; this is what keeps the desktop
         # window from breaking silently while only the app is being built.

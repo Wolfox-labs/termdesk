@@ -113,6 +113,11 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // No `unitTests.isReturnDefaultValues`: it is deliberately left off. It would
+    // let a test call an unmocked Android API and read a silent default instead
+    // of failing, and the frame parsers do not need it — they get the real
+    // org.json from the test classpath (see the dependencies block).
 }
 
 dependencies {
@@ -130,4 +135,14 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // The phone side had no automated checks at all until now: every change was
+    // verified by compiling and then by hand on a device. The frame parsers are
+    // the first part that can be pinned without one.
+    testImplementation("junit:junit:4.13.2")
+    // `org.json` in android.jar is a stub for unit tests: `put` returns null and
+    // `optString` returns defaults, so a JSONObject cannot be built at all. This
+    // puts the real implementation on the unit-test classpath only, which is what
+    // makes the parsers testable; the app still uses the platform one.
+    testImplementation("org.json:json:20240303")
 }
