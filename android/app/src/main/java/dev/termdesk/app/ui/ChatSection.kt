@@ -316,19 +316,35 @@ fun ChatSection(
                         onSelect = { tab = it },
                     )
                     Box(Modifier.weight(1f)) {
+                        // One grouped list for both tabs: they differ in WHICH
+                        // conversations they hold, not in how a person finds one.
                         if (tab == 0) {
-                            ChatIndex(
+                            // "进行中" is what the agent is holding right now, so no
+                            // recorded sessions are passed: the history lives on the
+                            // other tab, and mixing them would quietly turn this one
+                            // into a second history list.
+                            GroupedSessionList(
                                 chats = chats,
-                                defaultCwd = defaultCwd,
+                                sessions = emptyList(),
+                                emptyTitle = "还没有进行中的对话",
+                                emptyHint = "在 $defaultCwd 中新建一个，就能在手机上和电脑里的助手连续对话。",
                                 onOpenChat = onOpenChat,
                                 onCloseChat = onCloseChat,
-                                onCreateChat = onCreateChat,
+                                onOpenSession = onOpenSession,
+                                onCreateChat = { onCreateChat(defaultCwd) },
                             )
                         } else {
-                            SessionIndex(
+                            GroupedSessionList(
+                                chats = chats,
                                 sessions = sessions,
+                                emptyTitle = "没有找到历史会话",
+                                emptyHint = "电脑上记录过的对话会出现在这里，点开即可阅读或继续。",
+                                onOpenChat = onOpenChat,
+                                onCloseChat = onCloseChat,
                                 onOpenSession = onOpenSession,
-                                onLoadSessions = onLoadSessions,
+                                onCreateChat = { onCreateChat(defaultCwd) },
+                                onScanSessions = onLoadSessions,
+                                allowClose = false,
                             )
                         }
                     }
@@ -873,81 +889,6 @@ private fun SessionTabs(tab: Int, chatCount: Int, sessionCount: Int, onSelect: (
 
 /** Recorded history, listed like conversations because that is what it is. */
 @Composable
-private fun SessionIndex(
-    sessions: List<SessionInfo>,
-    onOpenSession: (SessionInfo) -> Unit,
-    onLoadSessions: () -> Unit,
-) {
-    if (sessions.isEmpty()) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Text("没有找到历史会话", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "电脑上记录过的对话会出现在这里，点开即可阅读或继续。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(14.dp))
-            TextButton(onClick = onLoadSessions) { Text("重新扫描") }
-        }
-        return
-    }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items(sessions, key = { "${it.engine}-${it.id}" }) { session ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(11.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable { onOpenSession(session) }
-                    .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        sessionTitle(session),
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Spacer(Modifier.height(3.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        KernelBadge(session.engine)
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = buildString {
-                                session.cwd?.takeIf { it.isNotBlank() }?.let { append(workspaceShortName(it)) }
-                                if (isNotEmpty()) append(" · ")
-                                append(formatRelativeTime(session.updatedAt))
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                Icon(
-                    Icons.Outlined.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun RecordedTranscript(session: SessionDetail) {
     if (session.events.isEmpty()) {
         Text(
@@ -994,7 +935,7 @@ private fun RecordedTranscript(session: SessionDetail) {
 }
 
 @Composable
-private fun KernelBadge(engine: String?) {
+internal fun KernelBadge(engine: String?) {
     val text = when (engine?.lowercase()) {
         null, "" -> return
         "codex" -> "CODEX"
@@ -1022,59 +963,20 @@ private fun KernelBadge(engine: String?) {
  * separately so the distinction stays visible.
  */
 @Composable
-private fun ChatIndex(
-    chats: List<ChatInfo>,
-    defaultCwd: String,
-    onOpenChat: (String) -> Unit,
-    onCloseChat: (String) -> Unit,
-    onCreateChat: (String?) -> Unit,
+internal fun ChatRow(
+    chat: ChatInfo,
+    onOpen: () -> Unit,
+    onClose: () -> Unit,
+    /**
+     * Whether closing belongs on this row.
+     *
+     * It does on "进行中" — those are runtimes the agent is holding, and ending one
+     * is a real action. It does not on "历史": a recorded session on disk is not
+     * something the phone can stop, and an x that refuses to do anything teaches
+     * people to distrust the other x.
+     */
+    allowClose: Boolean = true,
 ) {
-    if (chats.isEmpty()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Text("还没有进行中的对话", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "在 $defaultCwd 中新建一个，就能在手机上和电脑里的助手连续对话。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(16.dp))
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer)
-                    .clickable { onCreateChat(defaultCwd) }
-                    .padding(horizontal = 18.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("新建对话", style = MaterialTheme.typography.labelLarge)
-            }
-        }
-        return
-    }
-
-    // Newest first: the conversation the user just left is the one they want.
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items(chats, key = { it.id }) { chat ->
-            ChatRow(chat = chat, onOpen = { onOpenChat(chat.id) }, onClose = { onCloseChat(chat.id) })
-        }
-    }
-}
-
-@Composable
-private fun ChatRow(chat: ChatInfo, onOpen: () -> Unit, onClose: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1109,13 +1011,15 @@ private fun ChatRow(chat: ChatInfo, onOpen: () -> Unit, onClose: () -> Unit) {
                 maxLines = 1,
             )
         }
-        IconButton(onClick = onClose, modifier = Modifier.size(34.dp)) {
-            Icon(
-                Icons.Outlined.Delete,
-                contentDescription = "关闭会话",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
+        if (allowClose) {
+            IconButton(onClick = onClose, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    Icons.Outlined.Delete,
+                    contentDescription = "关闭会话",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
     }
 }
