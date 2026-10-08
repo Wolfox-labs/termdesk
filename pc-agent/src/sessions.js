@@ -81,6 +81,88 @@ function dshSessionFile(dir) {
   return null;
 }
 
+/**
+ * The real path of `file` when it lives inside `root`, otherwise null.
+ *
+ * Every path a client supplies goes through here. Factored out of `readSession` when
+ * `lastWriteOf` needed the same rule: two copies of a security check is one copy that
+ * will be forgotten.
+ */
+function insideRoot(file, root) {
+  let resolved;
+  try { resolved = fs.realpathSync(file); } catch { return null; }
+  let allowed;
+  try { allowed = fs.realpathSync(root); } catch { allowed = path.resolve(root); }
+  const rel = path.relative(allowed, resolved);
+  if (rel !== '' && (rel.startsWith('..') || path.isAbsolute(rel))) return null;
+  return resolved;
+}
+
+/** A session file's write time, in the shape the phone's warning needs. */
+function describeWrite(file) {
+  let stat;
+  try { stat = fs.statSync(file); } catch { return null; }
+  return {
+    at: stat.mtime.toISOString(),
+    agoSeconds: Math.max(0, Math.round((Date.now() - stat.mtime.getTime()) / 1000)),
+    path: file,
+  };
+}
+
+/** The DSH session file for an id, from a client-supplied path when it gave one. */
+function dshFileFor(id, sessionPath) {
+  const root = dshRoot();
+  if (sessionPath) return insideRoot(sessionPath, root);
+  if (!id) return null;
+  let workspaces = [];
+  try { workspaces = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()); } catch { return null; }
+  for (const ws of workspaces) {
+    const hit = dshSessionFile(path.join(root, ws.name, id));
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * The Codex rollout file for a thread id.
+ *
+ * Codex keeps its own store behind `thread/*`, so the id is all we have; the file is
+ * found by the uuid at the end of `rollout-<timestamp>-<uuid>.jsonl`, the same
+ * convention `discoverThreadIdsFromDisk` uses.
+ */
+function codexRolloutFor(threadId) {
+  if (!/^[0-9a-fA-F-]{8,64}$/.test(threadId)) return null;
+  const root = codexRoot();
+  let days = [];
+  try { days = fs.readdirSync(root, { withFileTypes: true, recursive: true }); } catch { return null; }
+  for (const entry of days) {
+    if (!entry.isFile() || !entry.name.endsWith(`${threadId}.jsonl`)) continue;
+    return path.join(entry.parentPath ?? entry.path, entry.name);
+  }
+  return null;
+}
+
+/**
+ * When a session's file was last written, or null when this side cannot see it.
+ *
+ * Positive evidence ONLY: it answers "this file changed N seconds ago", never "nobody
+ * else is using this session". The ACP family keeps its store behind the kernel's own
+ * API and returns null here — and null must never be read as safety. Whoever words the
+ * warning is responsible for saying "看不到" instead of "没问题".
+ */
+export function lastWriteOf({ engine, id, sessionPath } = {}) {
+  const engineId = engine ?? 'dsh';
+  if (engineId === 'dsh') {
+    const file = dshFileFor(id, sessionPath);
+    return file ? describeWrite(file) : null;
+  }
+  if (engineId === 'codex') {
+    const file = codexRolloutFor(id);
+    return file ? describeWrite(file) : null;
+  }
+  return null;
+}
+
 /** Walk a tree and collect files whose name matches. */
 /**
  * Decode a DSH workspace directory name back into a path.
@@ -462,23 +544,13 @@ export async function readSession({ engine, id, sessionPath }) {
 
   if (!filePath) {
     if (!id) return null;
-    const root = dshRoot();
-    let workspaces = [];
-    try { workspaces = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()); } catch { workspaces = []; }
-    for (const ws of workspaces) {
-      const candidate = dshSessionFile(path.join(root, ws.name, id));
-      if (candidate) { filePath = candidate; break; }
-    }
+    filePath = dshFileFor(id, null);
   }
   if (!filePath || !fs.existsSync(filePath)) return null;
 
   // Refuse paths outside the DSH session root: the client supplies this value.
-  let resolved;
-  try { resolved = fs.realpathSync(filePath); } catch { return null; }
-  let allowed;
-  try { allowed = fs.realpathSync(dshRoot()); } catch { allowed = path.resolve(dshRoot()); }
-  const rel = path.relative(allowed, resolved);
-  if (rel !== '' && (rel.startsWith('..') || path.isAbsolute(rel))) return null;
+  const resolved = insideRoot(filePath, dshRoot());
+  if (!resolved) return null;
 
   if (resolved.endsWith('.zstd')) {
     const wsName = resolved.split(path.sep).slice(-3)[0] ?? '';

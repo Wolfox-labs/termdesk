@@ -705,6 +705,19 @@ export function createFrameHandler(ctx) {
           if (result.ok) {
             send(S2C.CHAT, result.chat);
             send(S2C.CHATS, { chats: chats.list(), approvals: chats.approvals.pending() });
+            // Taking over a session somebody else may be writing is the one part of this
+            // the phone cannot see for itself, so the sentence travels as an action
+            // result: that path already exists end to end and is drawn on screen, which
+            // is the whole point of a warning.
+            if (result.note) {
+              send(S2C.ACTION_RESULT, {
+                action: 'chat.resume',
+                target: frame.sessionId,
+                ok: true,
+                code: result.joined ? 'joined' : 'taken_over',
+                message: result.note,
+              });
+            }
           } else {
             send(S2C.ACTION_RESULT, { action: 'chat.resume', target: frame.sessionId, ok: false, code: result.code, message: result.message });
           }

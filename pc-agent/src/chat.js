@@ -85,7 +85,7 @@ import {
   unknownKernelMessage,
 } from './kernels/contract.js';
 import { ApprovalBroker, OPTIONS } from './approvals.js';
-import { dshEventToChatEvent } from './sessions.js';
+import { dshEventToChatEvent, lastWriteOf } from './sessions.js';
 
 /** The only option ids an engine's answer may be translated into. */
 
@@ -104,6 +104,16 @@ const IDLE_TTL_MS = 45 * 60 * 1000;
 const INIT_TIMEOUT_MS = 120 * 1000;
 const PROMPT_TIMEOUT_MS = 30 * 60 * 1000;
 const REAP_INTERVAL_MS = 60 * 1000;
+
+/**
+ * How recently a session's file must have been written for the phone to be warned that
+ * somebody else may be in it.
+ *
+ * Two minutes rather than a few seconds: a turn that is thinking writes nothing for long
+ * stretches, so a tight window would fall silent exactly while the desktop application is
+ * in the middle of an answer — the case the warning exists for.
+ */
+const RECENT_WRITE_SECONDS = 120;
 
 /**
  * Engines a chat conversation can run on.
@@ -368,7 +378,18 @@ export class ChatManager {
       return { ok: false, code: 'bad_session', message: '会话标识无效' };
     }
     const existing = [...this.chats.values()].find(c => c.engine === engine && c.sessionId === id);
-    if (existing) return { ok: true, chat: existing.detail() };
+    // Somebody is already in this session — another phone, or this one after a
+    // reconnect. They get the SAME chat, because one session must not become two
+    // runtimes that then disagree about what was said. That is takeover working, so the
+    // answer says so rather than looking like a fresh open.
+    if (existing) {
+      return {
+        ok: true,
+        chat: existing.detail(),
+        joined: true,
+        note: this.takeoverNote({ engine, id, sessionPath, joined: true }),
+      };
+    }
     // Resumability is the table's answer, and when the table says no it also carries
     // the sentence explaining why - so the refusal cannot drift from its reason.
     if (!canResume(engine, lookupKernel)) {
@@ -384,9 +405,43 @@ export class ChatManager {
     // ACP kernels own their session store, so "open history" is the same operation
     // as "continue": the kernel replays it and the next message continues it.
     // Nothing is ever reconstructed from display text.
-    if (turnDriver(engine, lookupKernel) === 'acp') return this.resumeAcp(engine, id);
-    if (turnDriver(engine, lookupKernel) === 'app-server') return this.resumeCodex(id);
-    return { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
+    const driver = turnDriver(engine, lookupKernel);
+    const result = driver === 'acp'
+      ? await this.resumeAcp(engine, id)
+      : driver === 'app-server'
+        ? await this.resumeCodex(id)
+        : { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
+    if (result?.ok) {
+      const note = this.takeoverNote({ engine, id, sessionPath, joined: false });
+      if (note) result.note = note;
+    }
+    return result;
+  }
+
+  /**
+   * What the phone must be told when a session is taken over, or null when there is
+   * nothing worth saying.
+   *
+   * Two different facts, and both belong in front of the person BEFORE they type.
+   * Somebody else in this app is already in the session (the join in `resume`), and the
+   * file behind it was written seconds ago — which is how the desktop application shows
+   * up, since it is a third-party app we can neither ask nor lock out. Saying it out loud
+   * is the whole mitigation: nothing else stands between two writers.
+   *
+   * `lastWriteOf` answers null for kernels whose store we cannot see (the ACP family).
+   * Null is "no evidence", never "safe", so in that case nothing is said rather than
+   * something reassuring.
+   */
+  takeoverNote({ engine, id, sessionPath, joined }) {
+    const parts = [];
+    if (joined) {
+      parts.push('这条会话已经在另一台设备上打开：双方看到的是同一个运行进程，发消息会进同一段对话');
+    }
+    const write = lastWriteOf({ engine, id, sessionPath });
+    if (write && write.agoSeconds <= RECENT_WRITE_SECONDS) {
+      parts.push(`电脑端 ${write.agoSeconds} 秒前写过它，两边同时写会让内容分叉`);
+    }
+    return parts.length > 0 ? parts.join('；') : null;
   }
   /**
    * Change what the next turns of a live conversation will use.
