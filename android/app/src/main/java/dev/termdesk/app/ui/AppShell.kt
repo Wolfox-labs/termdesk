@@ -176,6 +176,8 @@ fun AppShell(
     pendingDropped: Int,
     kernelRunsNote: String?,
     onLoadKernelRuns: () -> Unit,
+    /** Open the file section at a directory (from a conversation). */
+    onOpenFilesAt: (String) -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
     onResumeSession: (SessionDetail) -> Unit,
     connected: Boolean,
@@ -343,6 +345,7 @@ fun AppShell(
                     kernelRuns = kernelRuns,
                     kernelRunsNote = kernelRunsNote,
                     onLoadKernelRuns = onLoadKernelRuns,
+                    onOpenFilesAt = onOpenFilesAt,
                     pendingSends = pendingSends,
                     pendingDropped = pendingDropped,
                     onOpenSession = onOpenSession,
@@ -676,6 +679,8 @@ private fun SectionBody(
     pendingDropped: Int,
     kernelRunsNote: String?,
     onLoadKernelRuns: () -> Unit,
+    /** Open the file section at a directory (from a conversation). */
+    onOpenFilesAt: (String) -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
     onResumeSession: (SessionDetail) -> Unit,
     connected: Boolean,
@@ -827,6 +832,7 @@ private fun SectionBody(
             kernelRuns = kernelRuns,
             kernelRunsNote = kernelRunsNote,
             onLoadKernelRuns = onLoadKernelRuns,
+            onOpenFiles = onOpenFilesAt,
             pendingSends = pendingSends,
             pendingDropped = pendingDropped,
             onOpenSession = onOpenSession,

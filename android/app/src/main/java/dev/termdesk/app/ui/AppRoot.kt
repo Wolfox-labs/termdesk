@@ -288,6 +288,12 @@ fun AppRoot(
                 kernelRuns = kernelRuns,
                 kernelRunsNote = kernelRunsNote,
                 onLoadKernelRuns = vm::loadKernelRuns,
+                // Ask the file section for that directory and switch to it: the
+                // conversation says WHERE, the file browser is where it can be seen.
+                onOpenFilesAt = { path ->
+                    vm.listDirectory(path)
+                    section = Section.Files
+                },
                 pendingSends = pendingSends,
                 pendingDropped = pendingDropped,
                 onOpenSession = { session -> vm.openSession(session) },

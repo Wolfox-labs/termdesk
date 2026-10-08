@@ -147,6 +147,14 @@ fun ChatSection(
     /** Agent processes running on the PC that its own agent did not start. */
     kernelRuns: List<KernelRun> = emptyList(),
     kernelRunsNote: String? = null,
+    /**
+     * Open the file section at a directory.
+     *
+     * The conversation knows where it works; the file browser is where that
+     * directory can actually be looked at. Without this the path was a label and
+     * the person had to find the same folder again by hand.
+     */
+    onOpenFiles: ((String) -> Unit)? = null,
     /** Messages waiting for a link, and how many expired unsent. */
     pendingSends: Int = 0,
     pendingDropped: Int = 0,
@@ -267,6 +275,7 @@ fun ChatSection(
                     onConfigure = onConfigureChat,
                     onSetMode = onSetChatMode,
                     onRequestModels = { onRequestChatModels(chat.id) },
+                    onOpenFiles = onOpenFiles,
                 )
             } else if (recorded != null) {
                 RecordedDetailPanel(recorded)
@@ -549,6 +558,8 @@ private fun ChatDetailPanel(
     onConfigure: (String, String?, String?) -> Unit,
     onSetMode: (String, String) -> Unit,
     onRequestModels: () -> Unit,
+    /** Null when there is nowhere to open it (a preview, a test). */
+    onOpenFiles: ((String) -> Unit)? = null,
 ) {
     val catalog = if (chat.engine == "codex") codexConfig?.models.orEmpty() else emptyList()
     // Two sources of truth, one picker: Codex declares its models in the config
@@ -608,13 +619,42 @@ private fun ChatDetailPanel(
             )
         }
         Spacer(Modifier.height(2.dp))
-        Text(
-            chat.cwd,
-            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        // The working directory is the way into the files: everything the turn
+        // produced is in here, and making the person find the same folder again by
+        // hand is the whole reason the two screens felt unrelated.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(7.dp))
+                .then(
+                    if (onOpenFiles != null) {
+                        Modifier.clickable { onOpenFiles(chat.cwd) }
+                    } else {
+                        Modifier
+                    },
+                )
+                .padding(vertical = 3.dp),
+        ) {
+            if (onOpenFiles != null) {
+                Icon(
+                    Icons.Outlined.FolderOpen,
+                    // The action, not the icon: a screen reader should not stop at
+                    // "folder" and leave the person to guess what a tap does.
+                    contentDescription = "在文件里打开 ${chat.cwd}",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(5.dp))
+            }
+            Text(
+                chat.cwd,
+                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
 
         // A handful of models stay chips. Anything longer is a searchable picker:
         // one ACP kernel declares 1556 of them, and a chip row is not a way to
