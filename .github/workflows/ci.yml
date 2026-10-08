@@ -60,10 +60,16 @@ jobs:
         run: ./gradlew :app:testDebugUnitTest --console=plain
         working-directory: android
       - name: Compile the desktop shell
-        # Same Gradle project as the phone app; this is what keeps the desktop
-        # window from breaking silently while only the app is being built.
-        run: ./gradlew -p desktop compileKotlin --console=plain
-        working-directory: android
+        # `desktop/` is its OWN Gradle build with its own wrapper and settings file -
+        # deliberately not a module of the Android project (see its settings.gradle.kts).
+        # So it is built from inside that directory, with that directory's `gradlew`.
+        #
+        # This step used to say `working-directory: android` with `-p desktop`, which
+        # resolves to `android/desktop` - a path that has never existed. It would have
+        # failed the first time this workflow ran anywhere, which is exactly why the
+        # check below is worth having in a job that has never executed.
+        run: ./gradlew compileKotlin --console=plain
+        working-directory: desktop
       - name: Keep the debug APK as an artifact
         uses: actions/upload-artifact@v4
         with:
