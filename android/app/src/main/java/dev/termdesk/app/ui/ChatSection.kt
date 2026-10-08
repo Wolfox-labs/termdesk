@@ -63,6 +63,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -75,12 +76,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.findViewTreeLifecycleOwner
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatModels
@@ -94,6 +99,7 @@ import dev.termdesk.app.data.ChatTerminal
 import dev.termdesk.app.data.TerminalView
 import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
+import dev.termdesk.app.data.SessionSort
 import dev.termdesk.app.data.WorkspaceInfo
 import dev.termdesk.app.ui.theme.Semantic
 import kotlinx.coroutines.delay
@@ -161,6 +167,15 @@ fun ChatSection(
     pendingSends: Int = 0,
     pendingDropped: Int = 0,
     onLoadKernelRuns: () -> Unit = {},
+    /**
+     * The order conversations inside a workspace are listed in, and how to change it.
+     *
+     * It comes from preferences rather than from local state: the order is about how
+     * a person reads their own history, so a choice has to survive a restart instead
+     * of being asked for again on every launch.
+     */
+    sessionSort: SessionSort = SessionSort.Default,
+    onSetSessionSort: (SessionSort) -> Unit = {},
     onOpenSession: (SessionInfo) -> Unit,
     onResumeSession: (SessionDetail) -> Unit,
     connected: Boolean,
@@ -191,6 +206,44 @@ fun ChatSection(
     LaunchedEffect(Unit) {
         onLoadChats()
         onLoadSessions()
+    }
+
+    // "What is running over there" is a SNAPSHOT: the PC answers it by listing its own
+    // processes. Asked once per connection, that snapshot is the one from connect time
+    // — which is how the list showed nothing while a desktop application was running a
+    // conversation. So it is refreshed while the list is being looked at: when the
+    // "进行中" tab is shown, and every 20 s after that. Not while the app is in the
+    // background, so a phone left on this screen with the display off does not keep
+    // waking the PC's process listing up.
+    val view = LocalView.current
+    val lifecycleOwner = remember(view) { view.findViewTreeLifecycleOwner() }
+    // `!= false` on purpose: when there is no owner to ask (a preview, or a host that
+    // sets none) the answer is "assume foreground". Refreshing too often costs one
+    // process listing; not refreshing at all is the bug this effect exists to fix, so
+    // the unknown case must not fall on the broken side.
+    var inForeground by remember(lifecycleOwner) {
+        mutableStateOf(
+            lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) != false,
+        )
+    }
+    DisposableEffect(lifecycleOwner) {
+        val owner = lifecycleOwner
+        if (owner == null) {
+            onDispose { }
+        } else {
+            val observer = LifecycleEventObserver { _, _ ->
+                inForeground = owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            }
+            owner.lifecycle.addObserver(observer)
+            onDispose { owner.lifecycle.removeObserver(observer) }
+        }
+    }
+    LaunchedEffect(tab, connected, inForeground) {
+        if (tab != 0 || !connected || !inForeground) return@LaunchedEffect
+        while (true) {
+            onLoadKernelRuns()
+            delay(20_000)
+        }
     }
 
     // Opening a recorded session attaches the kernel to it (metadata-only on the
@@ -346,7 +399,9 @@ fun ChatSection(
                         tab = tab,
                         chatCount = visibleChats.size,
                         sessionCount = visibleSessions.size,
+                        sort = sessionSort,
                         onSelect = { tab = it },
+                        onSort = onSetSessionSort,
                     )
                     if (scope.isMeaningful) {
                         EngineScopeRow(
@@ -375,6 +430,7 @@ fun ChatSection(
                                 onCreateChat = { onCreateChat(defaultCwd) },
                                 externalRuns = kernelRuns,
                                 externalRunsNote = kernelRunsNote,
+                                sort = sessionSort,
                             )
                         } else {
                             GroupedSessionList(
@@ -388,6 +444,7 @@ fun ChatSection(
                                 onCreateChat = { onCreateChat(defaultCwd) },
                                 onScanSessions = onLoadSessions,
                                 allowClose = false,
+                                sort = sessionSort,
                             )
                         }
                     }
@@ -930,9 +987,19 @@ private fun InlineChips(
     }
 }
 
-/** Two states of one list: live conversations and recorded history. */
+/**
+ * Two states of one list: live conversations and recorded history, plus the switch
+ * that decides the order of the rows inside each workspace.
+ */
 @Composable
-private fun SessionTabs(tab: Int, chatCount: Int, sessionCount: Int, onSelect: (Int) -> Unit) {
+private fun SessionTabs(
+    tab: Int,
+    chatCount: Int,
+    sessionCount: Int,
+    sort: SessionSort,
+    onSelect: (Int) -> Unit,
+    onSort: (SessionSort) -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -958,6 +1025,22 @@ private fun SessionTabs(tab: Int, chatCount: Int, sessionCount: Int, onSelect: (
             )
         }
         Spacer(Modifier.weight(1f))
+        // The order belongs to the list that BOTH tabs draw, so the switch sits on the
+        // row that owns the tabs rather than inside one of them. It names the order in
+        // force and changes it on tap; a chip labelled with the other mode would read
+        // as a button that is already pressed.
+        Text(
+            text = "排序：${sort.label}",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .clip(RoundedCornerShape(9.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable {
+                    onSort(if (sort == SessionSort.Recent) SessionSort.Name else SessionSort.Recent)
+                }
+                .padding(horizontal = 9.dp, vertical = 7.dp),
+        )
     }
 }
 

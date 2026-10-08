@@ -16,9 +16,11 @@ package dev.termdesk.app.data
  * The rules the product asked for:
  *
  *   - conversations are grouped by workspace, and a group can be collapsed;
- *   - inside a group, most recently used first;
+ *   - inside a group, most recently used first — or A→Z by title, when the person
+ *     asks for that ([SessionSort]);
  *   - groups are ordered by name, A→Z (the person scans for a project by name,
- *     not by when they last touched it);
+ *     not by when they last touched it), and that does NOT follow the sort mode;
+ *     the two axes are separate on purpose (see [SessionSort]);
  *   - the header shows the directory's short name, because the full path is a
  *     constant prefix nobody reads.
  *
@@ -26,6 +28,36 @@ package dev.termdesk.app.data
  * its own rather than disappearing, because "my session vanished" is worse than
  * "this one has no directory".
  */
+/**
+ * How the conversations inside a workspace are ordered.
+ *
+ * Only the rows move. The workspaces stay in name order in both modes: that is a
+ * decision the product already made, and it is the axis a person reads the header
+ * list on either way ("find the project, then look inside it"). Letting the groups
+ * follow the mode as well would mean the newest conversation is no longer the
+ * first row on screen after tapping "最近" — which is a real question, but a
+ * separate one from this switch, so it is not answered here by accident.
+ *
+ * [id] is what preferences store, so the stored form does not depend on the enum
+ * constant's name and an unknown value degrades to [Default] instead of throwing.
+ */
+enum class SessionSort(val id: String, val label: String) {
+    /** Newest first: the order this list has always used inside a group. */
+    Recent("recent", "最近"),
+
+    /** A→Z by title, for when the person knows what the conversation was called. */
+    Name("name", "名称"),
+    ;
+
+    companion object {
+        val Default = Recent
+
+        /** The mode [id] names, or [Default] when it names nothing usable. */
+        fun of(id: String?): SessionSort =
+            entries.firstOrNull { it.id == id?.trim() } ?: Default
+    }
+}
+
 object SessionGroups {
 
     /** The name a conversation with no directory is filed under. */
@@ -60,6 +92,7 @@ object SessionGroups {
         chats: List<ChatInfo>,
         sessions: List<SessionInfo>,
         nameOf: (String) -> String,
+        sort: SessionSort = SessionSort.Default,
     ): List<Group> {
         val byKey = LinkedHashMap<String, Pair<MutableList<ChatInfo>, MutableList<SessionInfo>>>()
 
@@ -73,8 +106,14 @@ object SessionGroups {
 
         return byKey.map { (key, lists) ->
             val (live, recorded) = lists
-            val liveSorted = live.sortedByDescending { it.lastUsedAt }
-            val recordedSorted = recorded.sortedByDescending { parseIsoTime(it.updatedAt) }
+            val liveSorted = when (sort) {
+                SessionSort.Recent -> live.sortedByDescending { it.lastUsedAt }
+                SessionSort.Name -> live.sortedWith(titleOrder({ it.title }, { it.id }))
+            }
+            val recordedSorted = when (sort) {
+                SessionSort.Recent -> recorded.sortedByDescending { parseIsoTime(it.updatedAt) }
+                SessionSort.Name -> recorded.sortedWith(titleOrder({ it.title }, { it.id }))
+            }
             Group(
                 key = key,
                 name = if (key == UNKNOWN_WORKSPACE) UNKNOWN_WORKSPACE else nameOf(key),
@@ -87,6 +126,24 @@ object SessionGroups {
             )
         }.sortedWith(compareBy({ it.name.lowercase() }, { it.key }))
     }
+
+    /**
+     * Title order: A→Z, case-insensitively, with the nameless last.
+     *
+     * A conversation with no title is not "before A" — it is unknown, and putting
+     * the unknowns at the top would push the rows a person can actually recognise
+     * off the first screen. The id breaks ties, so two rows with the same title
+     * keep a stable order instead of swapping places on every redraw.
+     */
+    private fun <T> titleOrder(titleOf: (T) -> String?, idOf: (T) -> String): Comparator<T> =
+        compareBy(
+            { if (titleKey(titleOf(it)).isEmpty()) 1 else 0 },
+            { titleKey(titleOf(it)) },
+            { idOf(it) },
+        )
+
+    /** The comparable form of a title: trimmed, case-folded, empty when absent. */
+    private fun titleKey(title: String?): String = title?.trim()?.lowercase().orEmpty()
 
     /**
      * An ISO-8601 timestamp as epoch milliseconds, or 0 when there is nothing

@@ -77,6 +77,7 @@ import dev.termdesk.app.data.StorageUse
 import dev.termdesk.app.data.ServiceInfo
 import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
+import dev.termdesk.app.data.SessionSort
 import dev.termdesk.app.data.TermLine
 import dev.termdesk.app.data.TransferState
 import dev.termdesk.app.data.WorkspaceInfo
@@ -176,6 +177,8 @@ fun AppShell(
     pendingDropped: Int,
     kernelRunsNote: String?,
     onLoadKernelRuns: () -> Unit,
+    sessionSort: SessionSort,
+    onSetSessionSort: (SessionSort) -> Unit,
     /** Open the file section at a directory (from a conversation). */
     onOpenFilesAt: (String) -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
@@ -345,6 +348,8 @@ fun AppShell(
                     kernelRuns = kernelRuns,
                     kernelRunsNote = kernelRunsNote,
                     onLoadKernelRuns = onLoadKernelRuns,
+                    sessionSort = sessionSort,
+                    onSetSessionSort = onSetSessionSort,
                     onOpenFilesAt = onOpenFilesAt,
                     pendingSends = pendingSends,
                     pendingDropped = pendingDropped,
@@ -679,6 +684,8 @@ private fun SectionBody(
     pendingDropped: Int,
     kernelRunsNote: String?,
     onLoadKernelRuns: () -> Unit,
+    sessionSort: SessionSort,
+    onSetSessionSort: (SessionSort) -> Unit,
     /** Open the file section at a directory (from a conversation). */
     onOpenFilesAt: (String) -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
@@ -832,6 +839,8 @@ private fun SectionBody(
             kernelRuns = kernelRuns,
             kernelRunsNote = kernelRunsNote,
             onLoadKernelRuns = onLoadKernelRuns,
+            sessionSort = sessionSort,
+            onSetSessionSort = onSetSessionSort,
             onOpenFiles = onOpenFilesAt,
             pendingSends = pendingSends,
             pendingDropped = pendingDropped,

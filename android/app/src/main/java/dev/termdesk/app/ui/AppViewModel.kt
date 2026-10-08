@@ -33,6 +33,7 @@ import dev.termdesk.app.data.ProcessInfo
 import dev.termdesk.app.data.ServiceInfo
 import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
+import dev.termdesk.app.data.SessionSort
 import dev.termdesk.app.data.TermLine
 import dev.termdesk.app.data.UploadedFile
 import dev.termdesk.app.data.TextFile
@@ -188,6 +189,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val clean = path.trim()
         _workingDir.value = clean
         prefs.edit().putString(KEY_START_PATH, clean).apply()
+    }
+
+    /**
+     * The order conversations inside a workspace are listed in.
+     *
+     * A standing choice like the default kernel: someone who sorts their history by
+     * name once is telling us how they look through it, and asking again after every
+     * restart is noise. Stored as the mode's id, so an id this build does not know
+     * degrades to the default instead of throwing.
+     */
+    private val _sessionSort = MutableStateFlow(SessionSort.of(prefs.getString(KEY_SESSION_SORT, null)))
+    val sessionSort: StateFlow<SessionSort> = _sessionSort.asStateFlow()
+
+    fun setSessionSort(mode: SessionSort) {
+        _sessionSort.value = mode
+        prefs.edit().putString(KEY_SESSION_SORT, mode.id).apply()
     }
 
     /** Default working directory for a new conversation, mirroring the file browser. */
@@ -563,6 +580,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_START_PATH = "startPath"
         const val KEY_THEME = "themeMode"
         const val KEY_ENGINE = "defaultEngine"
+        const val KEY_SESSION_SORT = "sessionSort"
 
         /** How long a storage measurement stays believable. */
         const val STORAGE_TTL_MS = 30_000L

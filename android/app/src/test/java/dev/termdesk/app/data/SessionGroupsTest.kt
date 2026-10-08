@@ -13,9 +13,15 @@ import org.junit.Test
  */
 class SessionGroupsTest {
 
-    private fun chat(id: String, cwd: String, lastUsedAt: Long, engine: String = "dsh") = ChatInfo(
+    private fun chat(
+        id: String,
+        cwd: String,
+        lastUsedAt: Long,
+        engine: String = "dsh",
+        title: String = "对话 $id",
+    ) = ChatInfo(
         id = id,
-        title = "对话 $id",
+        title = title,
         cwd = cwd,
         provider = "",
         model = "",
@@ -32,10 +38,16 @@ class SessionGroupsTest {
         lastError = null,
     )
 
-    private fun session(id: String, cwd: String?, updatedAt: String?, engine: String = "codex") = SessionInfo(
+    private fun session(
+        id: String,
+        cwd: String?,
+        updatedAt: String?,
+        engine: String = "codex",
+        title: String? = "会话 $id",
+    ) = SessionInfo(
         engine = engine,
         id = id,
-        title = "会话 $id",
+        title = title,
         cwd = cwd,
         createdAt = null,
         updatedAt = updatedAt,
@@ -308,5 +320,104 @@ class SessionGroupsTest {
         assertEquals(listOf("alpha", "beta"), groups.map { it.name })
         assertEquals(1, groups[0].count)
         assertEquals(1, groups[1].count)
+    }
+
+    // ---- the order switch: the rows move, the groups do not --------------------
+
+    @Test
+    fun `name order sorts the rows A to Z, ignoring case`() {
+        val chats = listOf(
+            chat("c1", "E:\\w\\p", 3_000, title = "zebra"),
+            chat("c2", "E:\\w\\p", 1_000, title = "Apple"),
+            chat("c3", "E:\\w\\p", 2_000, title = "mango"),
+        )
+
+        assertEquals(
+            "the default is what the list has always done",
+            listOf("c1", "c3", "c2"),
+            SessionGroups.build(chats, emptyList(), shortName, SessionSort.Recent)[0].live.map { it.id },
+        )
+        assertEquals(
+            "A/a must not sort into two separate runs",
+            listOf("c2", "c3", "c1"),
+            SessionGroups.build(chats, emptyList(), shortName, SessionSort.Name)[0].live.map { it.id },
+        )
+    }
+
+    @Test
+    fun `the switch does not reorder the groups themselves`() {
+        // The product decision was "groups by name", and the toggle answers a different
+        // question. If this ever changes, the newest conversation stops being the top row
+        // after tapping 最近 — which is a decision, not a side effect, so it is pinned here.
+        val chats = listOf(
+            chat("newest", "E:\\work\\zebra", 9_000),
+            chat("older", "E:\\work\\apple", 1_000),
+        )
+
+        for (mode in SessionSort.entries) {
+            assertEquals(
+                "groups stay A to Z in $mode too",
+                listOf("apple", "zebra"),
+                SessionGroups.build(chats, emptyList(), shortName, mode).map { it.name },
+            )
+        }
+    }
+
+    @Test
+    fun `recorded sessions sort by title too, not by their timestamp`() {
+        val sessions = listOf(
+            session("old-but-z", "E:\\w\\p", "2026-10-01T10:00:00.000Z", title = "Zebra"),
+            session("new-but-a", "E:\\w\\p", "2026-10-08T10:00:00.000Z", title = "apple"),
+        )
+
+        assertEquals(
+            listOf("new-but-a", "old-but-z"),
+            SessionGroups.build(emptyList(), sessions, shortName, SessionSort.Name)[0].recorded.map { it.id },
+        )
+    }
+
+    @Test
+    fun `a nameless conversation goes last in name order, not first`() {
+        // Unknown is not "before A". Putting the rows nobody can recognise at the top
+        // would push the ones they can off the first screen.
+        val sessions = listOf(
+            session("nameless", "E:\\w\\p", null, title = null),
+            session("blank", "E:\\w\\p", null, title = "   "),
+            session("named", "E:\\w\\p", null, title = "aaa"),
+        )
+
+        assertEquals(
+            listOf("named", "blank", "nameless"),
+            SessionGroups.build(emptyList(), sessions, shortName, SessionSort.Name)[0].recorded.map { it.id },
+        )
+    }
+
+    @Test
+    fun `two conversations with the same title keep a stable order`() {
+        val chats = listOf(
+            chat("c2", "E:\\w\\p", 1_000, title = "same"),
+            chat("c1", "E:\\w\\p", 2_000, title = "same"),
+        )
+
+        assertEquals(
+            "the id breaks the tie, so a redraw cannot swap two identical rows",
+            listOf("c1", "c2"),
+            SessionGroups.build(chats, emptyList(), shortName, SessionSort.Name)[0].live.map { it.id },
+        )
+    }
+
+    @Test
+    fun `the stored order is an id, and one this build does not know degrades safely`() {
+        assertEquals(SessionSort.Recent, SessionSort.Default)
+        assertEquals(SessionSort.Name, SessionSort.of("name"))
+        assertEquals(SessionSort.Recent, SessionSort.of("recent"))
+        assertEquals(SessionSort.Name, SessionSort.of("  name  "))
+        assertEquals(SessionSort.Recent, SessionSort.of(null))
+        assertEquals(SessionSort.Recent, SessionSort.of(""))
+        assertEquals(
+            "a preference written by a later build must not take the list down with it",
+            SessionSort.Recent,
+            SessionSort.of("by-size"),
+        )
     }
 }

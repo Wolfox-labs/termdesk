@@ -74,6 +74,7 @@ fun AppRoot(
     val themeMode by vm.themeMode.collectAsState()
     val engines by vm.engines.collectAsState()
     val defaultEngine by vm.defaultEngine.collectAsState()
+    val sessionSort by vm.sessionSort.collectAsState()
     val workingDirectory by vm.workingDirectory.collectAsState()
     val chatTerminals by vm.chatTerminals.collectAsState()
     val terminalView by vm.terminalView.collectAsState()
@@ -128,12 +129,12 @@ fun AppRoot(
         if (activeChat?.engine == "codex") vm.loadCodexConfig()
     }
 
-    // "What is running over there" is asked once per connection rather than with
-    // every status frame: the PC answers it by listing this machine's processes,
-    // which is not something to do every two seconds on a phone's behalf.
-    LaunchedEffect(connected) {
-        if (connected) vm.loadKernelRuns()
-    }
+    // "What is running over there" is NOT asked for here any more. It was asked once
+    // per connection, which meant the answer was a snapshot from connect time — and
+    // that is exactly the snapshot that showed nothing while a desktop application
+    // was running a conversation. The section that draws the list now refreshes it
+    // while it is on screen (see the effect in ChatSection), so the question is asked
+    // when somebody is actually looking at the answer.
 
     val hostname = when (val state = link) {
         is LinkState.Connected -> state.hostname
@@ -288,6 +289,8 @@ fun AppRoot(
                 kernelRuns = kernelRuns,
                 kernelRunsNote = kernelRunsNote,
                 onLoadKernelRuns = vm::loadKernelRuns,
+                sessionSort = sessionSort,
+                onSetSessionSort = vm::setSessionSort,
                 // Ask the file section for that directory and switch to it: the
                 // conversation says WHERE, the file browser is where it can be seen.
                 onOpenFilesAt = { path ->

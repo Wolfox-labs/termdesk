@@ -39,15 +39,17 @@ import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.KernelRun
 import dev.termdesk.app.data.SessionGroups
 import dev.termdesk.app.data.SessionInfo
+import dev.termdesk.app.data.SessionSort
 
 /**
  * The session list, grouped by the directory each conversation works in.
  *
  * The ordering rules are in `data/SessionGroups.kt` and pinned by tests; this file
  * is only how they are drawn. The shape is what the product asked for: one
- * collapsible header per workspace, conversations inside it newest first, and the
- * workspaces themselves in name order because a person looks for a project by
- * name rather than by when they last touched it.
+ * collapsible header per workspace, conversations inside it newest first — or A→Z,
+ * when [sort] asks for that — and the workspaces themselves always in name order,
+ * because a person looks for a project by name rather than by when they last
+ * touched it.
  *
  * Both tabs share it on purpose. "进行中" and "历史" differ in which conversations
  * they contain, not in how a person finds one, and two implementations of the same
@@ -84,9 +86,12 @@ internal fun GroupedSessionList(
     externalRuns: List<KernelRun> = emptyList(),
     /** The PC's own sentence for an empty [externalRuns], or null. */
     externalRunsNote: String? = null,
+    /** How the conversations inside each workspace are ordered. See [SessionSort]. */
+    sort: SessionSort = SessionSort.Default,
 ) {
-    val groups = remember(chats, sessions) {
-        SessionGroups.build(chats, sessions) { workspaceShortName(it) }
+    val groups = remember(chats, sessions, sort) {
+        // Named, not trailing: the lambda would otherwise bind to `sort`.
+        SessionGroups.build(chats, sessions, nameOf = { workspaceShortName(it) }, sort = sort)
     }
 
     if (groups.isEmpty() && externalRuns.isEmpty()) {
