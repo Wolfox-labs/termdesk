@@ -149,4 +149,50 @@ class AgentFramesTest {
         assertEquals(1, results.items.size)
         assertFalse("a found file is not a directory", results.items[0].isDir)
     }
+
+    // ---- protocol negotiation (the app's half of it) -------------------------
+
+    @Test
+    fun `an agent that declares no protocol is old, not incompatible`() {
+        // Every agent built before the handshake existed looks like this. Refusing
+        // it would lock out every installed app on upgrade day.
+        val verdict = ProtocolVersion.judge(null, null)
+
+        assertTrue("an absent version must still connect", verdict.ok)
+        assertEquals(ProtocolVersion.Upgrade.AGENT, verdict.upgrade)
+        assertNull(verdict.reason)
+    }
+
+    @Test
+    fun `an agent requiring a newer app is refused with something actionable`() {
+        val verdict = ProtocolVersion.judge(
+            ProtocolVersion.PROTOCOL_VERSION,
+            ProtocolVersion.PROTOCOL_VERSION + 1,
+        )
+
+        assertFalse("the agent demands more than this app speaks", verdict.ok)
+        assertEquals(ProtocolVersion.Upgrade.APP, verdict.upgrade)
+        assertNotNull(verdict.reason)
+        // Assert on the numbers, not on prose: a version sentence that does not
+        // name the versions is useless, and an ASCII check cannot be broken by the
+        // encoding of the file it lives in.
+        val reason = verdict.reason!!
+        assertTrue(
+            "the sentence has to name both versions, it said: $reason",
+            reason.contains("v${ProtocolVersion.PROTOCOL_VERSION + 1}") &&
+                reason.contains("v${ProtocolVersion.PROTOCOL_VERSION}"),
+        )
+        assertTrue("and it has to be a sentence, not a code", reason.length > 12)
+    }
+
+    @Test
+    fun `a matching agent needs no upgrade, and a newer one blames this app`() {
+        val same = ProtocolVersion.judge(ProtocolVersion.PROTOCOL_VERSION, ProtocolVersion.PROTOCOL_VERSION)
+        assertEquals(ProtocolVersion.Upgrade.NONE, same.upgrade)
+        assertTrue(same.ok)
+
+        val newerAgent = ProtocolVersion.judge(ProtocolVersion.PROTOCOL_VERSION + 1, null)
+        assertTrue("a newer agent still works", newerAgent.ok)
+        assertEquals("but this app is the one to update", ProtocolVersion.Upgrade.APP, newerAgent.upgrade)
+    }
 }

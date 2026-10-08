@@ -1369,7 +1369,15 @@ class AgentClient(
 
         override fun onOpen(webSocket: WebSocket, response: Response) {
             if (epoch != generation) { webSocket.close(1000, "superseded"); return }
-            webSocket.send(JSONObject().put("type", "auth").put("token", token).toString())
+            // Declare the protocol version. An agent that predates this field reads
+            // the absence as v1, so sending it can only ever help.
+            webSocket.send(
+                JSONObject()
+                    .put("type", "auth")
+                    .put("token", token)
+                    .put("v", ProtocolVersion.PROTOCOL_VERSION)
+                    .toString(),
+            )
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -1398,6 +1406,19 @@ class AgentClient(
                         _link.value = LinkState.NodeOffline(frame.optString("hostname", "电脑"))
                         return
                     }
+                    // Which protocol this agent speaks, and what it requires of a
+                    // client. Absent means an agent from before the handshake.
+                    val verdict = ProtocolVersion.judge(
+                        if (frame.has("protocol")) frame.optInt("protocol") else null,
+                        if (frame.has("minV")) frame.optInt("minV") else null,
+                    )
+                    if (!verdict.ok) {
+                        // Not a network problem: retrying cannot fix it, so say which
+                        // side to update instead of reconnecting forever.
+                        _link.value = LinkState.ProtocolMismatch(verdict.reason ?: "协议版本不兼容")
+                        _loading.value = false
+                        return
+                    }
                     _link.value = LinkState.Connected(frame.optString("hostname", "unknown"))
                     attempt = 0
                     webSocket.send(
@@ -1417,6 +1438,15 @@ class AgentClient(
                     // revoked, or this address now belongs to a relay that never
                     // issued it. Say what to do instead of only what happened.
                     val reason = frame.optString("reason", "token 无效")
+                    if (frame.optString("code") == "protocol_mismatch") {
+                        // The credential was fine; the version is not. Reconnecting
+                        // would loop forever, so this is its own state with its own
+                        // sentence (the agent already wrote one).
+                        _link.value = LinkState.ProtocolMismatch(reason)
+                        _loading.value = false
+                        manuallyClosed = true
+                        return
+                    }
                     _link.value = LinkState.Failed("这台电脑不认这个凭据（$reason）：可能已被吊销，或这个地址换了中转。请在电脑上打开 /pair 重新配对")
                     manuallyClosed = true // a bad token will never fix itself by retrying
                 }

@@ -21,6 +21,7 @@ import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 
 import { C2S, S2C, CLOSE_UNAUTHORIZED, parseFrame, encodeFrame, PROTOCOL_VERSION } from './protocol.js';
+import { judgeClientVersion } from './version.js';
 import { loadOrCreateToken, tokenMatches, tokenPath } from './auth.js';
 import { allowedRoots } from './files.js';
 import { handleTransferRequest } from './transfer.js';
@@ -818,9 +819,33 @@ wss.on('connection', (socket, req) => {
       authed = true;
       noteAuthSuccess();
       clearTimeout(authTimer);
+      // The version check happens AFTER the credential: an unauthenticated peer
+      // must not learn anything about this machine, including which protocol it
+      // speaks. `auth.v` is new, and a client that omits it is read as v1 rather
+      // than refused (see version.js).
+      const compat = judgeClientVersion(frame.v);
+      if (!compat.ok) {
+        send(S2C.AUTH_FAIL, {
+          reason: compat.reason,
+          code: 'protocol_mismatch',
+          clientV: compat.clientV,
+          serverV: compat.serverV,
+          minV: compat.minV,
+        });
+        clearTimeout(authTimer);
+        socket.close(CLOSE_UNAUTHORIZED, 'client protocol too old');
+        return;
+      }
+      if (compat.upgrade === 'agent') {
+        // Answered for an agent older than we can be sure of: say so in the log
+        // rather than letting a newer app's feature fail silently later.
+        console.log(`  客户端协议 v${compat.clientV} 比本机 v${compat.serverV} 新：按兼容处理`);
+      }
       send(S2C.AUTH_OK, {
         hostname: os.hostname(),
         protocol: PROTOCOL_VERSION,
+        // What we require of a client, so a phone can say which side to update.
+        minV: compat.minV,
         agent: `termdesk-pc-agent/${AGENT_VERSION}`,
       });
       send(S2C.HELLO, { hostname: os.hostname(), platform: `${os.platform()} ${os.release()}` });

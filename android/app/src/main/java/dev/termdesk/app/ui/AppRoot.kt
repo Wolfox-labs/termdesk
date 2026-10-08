@@ -130,6 +130,7 @@ fun AppRoot(
     val connectionLabel = when (val state = link) {
         is LinkState.NodeOffline -> "VPS 已连接 · ${state.hostname} 内核离线，上线后自动恢复"
         is LinkState.Connecting -> "正在连接节点 · 已缓存记录仍可查看"
+        is LinkState.ProtocolMismatch -> "版本不匹配 · ${state.reason}"
         is LinkState.Failed -> "连接暂不可用 · 点击查看：${state.reason}"
         else -> "离线模式 · 点击连接或管理设备"
     }

@@ -7,6 +7,16 @@ sealed interface LinkState {
     data class Connected(val hostname: String) : LinkState
     data class NodeOffline(val hostname: String) : LinkState
     data class Failed(val reason: String) : LinkState
+
+    /**
+     * The two sides speak different protocol versions and this app is the one
+     * that must be replaced.
+     *
+     * Its own state rather than a [Failed] because it is not a network problem and
+     * retrying cannot fix it: without this the phone reconnects forever against an
+     * agent that will keep refusing it, which looks like a bad connection.
+     */
+    data class ProtocolMismatch(val reason: String) : LinkState
 }
 
 /** Progress of an upload or download. [fraction] is 0..1, or 0 when unknown. */
