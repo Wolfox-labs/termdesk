@@ -702,6 +702,14 @@ export function createFrameHandler(ctx) {
       case C2S.CHAT_RESUME: {
         try {
           const result = await chats.resume({ engine: frame.engine, id: frame.sessionId, sessionPath: frame.path });
+          // One line per attempt. Taking over a session is rare and user-visible, and the
+          // interesting outcome — joining a session somebody else already holds, or being
+          // refused — is invisible from the outside when the note does not reach the
+          // phone. This is the side that can say what actually happened.
+          console.log(
+            `[termdesk] chat.resume ${frame.engine}/${frame.sessionId} -> `
+            + `${result.ok ? (result.joined ? 'joined' : 'opened') : result.code}`,
+          );
           if (result.ok) {
             send(S2C.CHAT, result.chat);
             send(S2C.CHATS, { chats: chats.list(), approvals: chats.approvals.pending() });

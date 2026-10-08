@@ -93,7 +93,9 @@ check('the join note names the shared runtime',
 
 const joinedDsh = await manager.resume({ engine: 'dsh', id: 'session-legacy' });
 check('a join also reports a file that was written a moment ago',
-  /电脑端/.test(joinedDsh.note ?? '') && /秒前写过/.test(joinedDsh.note ?? ''), joinedDsh.note);
+  /文件 \d+ 秒前被写过/.test(joinedDsh.note ?? ''), joinedDsh.note);
+check('the sentence says what was measured rather than who wrote it',
+  /可能是桌面端应用/.test(joinedDsh.note ?? ''), joinedDsh.note);
 
 // A kernel with no verified resume entry point must be refused, and refused WITHOUT a
 // note: a note under a refusal reads as "it happened anyway".
@@ -105,8 +107,32 @@ check('a refusal carries no handover note', refused.note === undefined);
 // Silence when there is nothing to say: no join, no recent write, no note.
 check('no evidence and no join means no note at all',
   manager.takeoverNote({ engine: 'opencode', id: 'ses_abc', joined: false }) === null);
-check('a stale write inside the window still warns',
-  /电脑端/.test(manager.takeoverNote({ engine: 'dsh', id: 'session-legacy', joined: false }) ?? ''));
+check('a recent write with no join still warns',
+  /秒前被写过/.test(manager.takeoverNote({ engine: 'dsh', id: 'session-legacy', joined: false }) ?? ''));
+
+// --- the measurement must happen BEFORE the kernel touches the file ----------
+// Found on a real device, not by reasoning: resuming a Codex thread rewrites its rollout
+// file, so a measurement taken afterwards reported OUR write as somebody else's — the
+// phone said "0 seconds ago" for a session last touched two days earlier. The stub below
+// performs exactly that write, and the first check fails if the ordering ever slips back.
+const rollout = path.join(rolloutDir, `rollout-2026-10-08T21-58-46-${uuid}.jsonl`);
+const tenMinutesAgo = new Date(Date.now() - 600_000);
+fs.utimesSync(rollout, tenMinutesAgo, tenMinutesAgo);
+manager.resumeCodex = async () => {
+  const now = new Date();
+  fs.utimesSync(rollout, now, now); // what thread/resume does to the file
+  return { ok: true, chat: { id: 'c3', engine: 'codex', sessionId: uuid } };
+};
+
+const touched = await manager.resume({ engine: 'codex', id: uuid });
+check('a write caused by the takeover itself is not reported as another writer',
+  touched.ok === true && !/秒前被写过/.test(touched.note ?? ''), touched.note ?? '(no note)');
+
+const now = new Date();
+fs.utimesSync(rollout, now, now);
+const warned = await manager.resume({ engine: 'codex', id: uuid });
+check('a write that was already there IS reported',
+  /秒前被写过/.test(warned.note ?? ''), warned.note ?? '(no note)');
 
 manager.disposeAll();
 try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ }

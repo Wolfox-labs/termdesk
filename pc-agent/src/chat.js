@@ -377,6 +377,11 @@ export class ChatManager {
     if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,160}$/.test(id)) {
       return { ok: false, code: 'bad_session', message: '会话标识无效' };
     }
+    // Measured BEFORE anything is attached, and that ordering is the point: resuming a
+    // Codex thread rewrites its rollout file — observed on a real session, where a 09-27
+    // thread's file was touched the moment the phone resumed it — so a measurement taken
+    // afterwards reports this side's own write as somebody else's.
+    const writeBefore = lastWriteOf({ engine, id, sessionPath });
     const existing = [...this.chats.values()].find(c => c.engine === engine && c.sessionId === id);
     // Somebody is already in this session — another phone, or this one after a
     // reconnect. They get the SAME chat, because one session must not become two
@@ -387,7 +392,7 @@ export class ChatManager {
         ok: true,
         chat: existing.detail(),
         joined: true,
-        note: this.takeoverNote({ engine, id, sessionPath, joined: true }),
+        note: this.takeoverNote({ joined: true, write: writeBefore }),
       };
     }
     // Resumability is the table's answer, and when the table says no it also carries
@@ -412,7 +417,7 @@ export class ChatManager {
         ? await this.resumeCodex(id)
         : { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
     if (result?.ok) {
-      const note = this.takeoverNote({ engine, id, sessionPath, joined: false });
+      const note = this.takeoverNote({ joined: false, write: writeBefore });
       if (note) result.note = note;
     }
     return result;
@@ -428,18 +433,23 @@ export class ChatManager {
    * up, since it is a third-party app we can neither ask nor lock out. Saying it out loud
    * is the whole mitigation: nothing else stands between two writers.
    *
+   * [write] is handed in by `resume` instead of being measured here, because it has to be
+   * measured BEFORE the kernel is attached: attaching touches the file. A caller that
+   * leaves it out gets a fresh measurement, which is right for every use but that one.
+   *
    * `lastWriteOf` answers null for kernels whose store we cannot see (the ACP family).
    * Null is "no evidence", never "safe", so in that case nothing is said rather than
-   * something reassuring.
+   * something reassuring. The sentence itself says what was measured — a file changed —
+   * and not who changed it, because a write time cannot tell us that.
    */
-  takeoverNote({ engine, id, sessionPath, joined }) {
+  takeoverNote({ joined, write = undefined, engine, id, sessionPath }) {
     const parts = [];
     if (joined) {
       parts.push('这条会话已经在另一台设备上打开：双方看到的是同一个运行进程，发消息会进同一段对话');
     }
-    const write = lastWriteOf({ engine, id, sessionPath });
-    if (write && write.agoSeconds <= RECENT_WRITE_SECONDS) {
-      parts.push(`电脑端 ${write.agoSeconds} 秒前写过它，两边同时写会让内容分叉`);
+    const evidence = write === undefined ? lastWriteOf({ engine, id, sessionPath }) : write;
+    if (evidence && evidence.agoSeconds <= RECENT_WRITE_SECONDS) {
+      parts.push(`这台电脑上这条会话的文件 ${evidence.agoSeconds} 秒前被写过（可能是桌面端应用）：两边同时写会让内容分叉`);
     }
     return parts.length > 0 ? parts.join('；') : null;
   }
