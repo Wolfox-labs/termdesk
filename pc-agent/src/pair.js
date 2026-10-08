@@ -23,7 +23,7 @@ async function qrCode() {
   }
 }
 
-export function pairPayload({ wsUrl, token, name, relay = false }) {
+export function pairPayload({ wsUrl, token, name, relay = false, more = [] }) {
   const params = new URLSearchParams();
   params.set('url', wsUrl);
   params.set('token', token);
@@ -31,6 +31,13 @@ export function pairPayload({ wsUrl, token, name, relay = false }) {
   // The phone has to know whether the far side keeps a list of phones: that is
   // what makes "unbind this phone" mean anything after the local record is gone.
   if (relay) params.set('relay', '1');
+  // Addresses to try when the first one cannot be reached. The relay is a single
+  // point of failure; these are the same machine on a LAN or on Tailscale, which
+  // involve no Cloudflare at all. They travel at PAIRING time because that is the
+  // only moment the phone can learn them — once the relay is down, nothing can
+  // tell it where else to look.
+  const extras = (more ?? []).filter((u) => typeof u === 'string' && u.length > 0 && u !== wsUrl);
+  if (extras.length > 0) params.set('more', extras.join(' '));
   return `termdesk://pair?${params.toString()}`;
 }
 

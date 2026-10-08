@@ -104,7 +104,9 @@ fun AppRoot(
         onPairHandled()
         if (!request.isUsable) return@LaunchedEffect
         connectionOpen = false
-        vm.connect(request.url, request.token, request.relay)
+        // The PC hands over its own LAN/Tailscale addresses at pairing time; once
+        // the relay is down, nothing can tell this phone where else to look.
+        vm.connect(request.url, request.token, request.relay, request.more)
         snackbarHostState.showSnackbar("已通过二维码配对 · ${request.name ?: request.url}")
     }
     val connected = link is LinkState.Connected

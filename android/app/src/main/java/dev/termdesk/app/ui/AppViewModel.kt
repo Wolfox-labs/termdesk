@@ -502,7 +502,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun connect(url: String, token: String, relay: Boolean = url.startsWith("wss://")) {
+    fun connect(
+        url: String,
+        token: String,
+        relay: Boolean = url.startsWith("wss://"),
+        /** Addresses to try when the relay does not answer. */
+        more: List<String> = emptyList(),
+    ) {
         // A blank code means "use the credential this computer already has". The
         // screen used to pre-fill its field with the saved credential, so pressing
         // 连接 a second time sent whatever was in the box — including a value that
@@ -514,10 +520,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             client.reportLocalMessage("这台电脑还没有凭据：请在电脑上打开 /pair，用那个码配对")
             return
         }
-        val computer = computers.upsert(url = url, name = null, relay = relay, id = existing?.id)
+        val computer = computers.upsert(
+            url = url,
+            name = null,
+            relay = relay,
+            id = existing?.id,
+            more = more,
+        )
         computers.rememberCredential(computer.id, effective)
         refreshComputers()
-        client.connect(computer.url, effective, computer.id)
+        // The stored list, not the one just passed in: a reconnect from the
+        // computer list carries no QR code, and the addresses must still be there.
+        client.connect(
+            url = computer.url,
+            token = effective,
+            computerId = computer.id,
+            fallbacks = if (more.isNotEmpty()) more else computer.more,
+        )
     }
 
     fun disconnect() {

@@ -255,6 +255,19 @@ class AgentClient(
      * exactly the case this exists for. `onChanged` is where it is written, so
      * there is one place that knows the on-disk shape.
      */
+    /**
+     * Addresses this phone will try, in order, and the one being tried now.
+     *
+     * The paired address is the relay, and the relay is a single point of
+     * failure; the fallbacks are the same machine on a LAN or on Tailscale,
+     * handed over when it was paired (see `ConnectionCandidates`).
+     */
+    private var candidates: List<String> = emptyList()
+    private var currentUrl: String? = null
+
+    /** The address that last answered, so a working fallback is kept. */
+    private var lastWorking: String? = null
+
     private val pendingSends = PendingSends(
         onChanged = { items -> persistPendingSends(items) },
     )
@@ -474,7 +487,15 @@ class AgentClient(
         runCatching { cm.registerDefaultNetworkCallback(networkCallback) }
     }
 
-    fun connect(url: String, token: String, computerId: String = DeviceCredentials.LEGACY_ID) {
+    fun connect(
+        url: String,
+        token: String,
+        computerId: String = DeviceCredentials.LEGACY_ID,
+        /** Addresses to try when [url] does not answer (LAN, Tailscale, loopback). */
+        fallbacks: List<String> = emptyList(),
+        /** Which one worked last time, so a working fallback is not abandoned. */
+        lastWorkingOverride: String? = null,
+    ) {
         generation += 1
         lastUrl = url
         lastToken = token
@@ -491,8 +512,14 @@ class AgentClient(
         _link.value = LinkState.Connecting
         // A fresh attempt is a fresh sequence: keep the first retries quick.
 
+        // The whole list, and which of them is being tried now. `lastUrl` stays
+        // the paired address: that is what "the computer" means to the person,
+        // and the rotation is derived from it rather than replacing it.
+        candidates = ConnectionCandidates.list(url, fallbacks)
+        currentUrl = ConnectionCandidates.current(candidates, lastWorkingOverride) ?: url
+        val target = currentUrl ?: url
         runCatching {
-            val request = Request.Builder().url(url).build()
+            val request = Request.Builder().url(target).build()
             socket = client.newWebSocket(request, Listener(token, generation))
         }.onFailure { _link.value = LinkState.Failed("节点地址无效：${it.message}") }
     }
@@ -503,6 +530,10 @@ class AgentClient(
         reconnectJob?.cancel()
         socket?.close(1000, "client closing")
         socket = null
+        // A deliberate disconnect is a fresh start: forget which address worked,
+        // so the next connection begins at the one the person paired with.
+        lastWorking = null
+        currentUrl = null
         _link.value = LinkState.Idle
     }
 
@@ -1448,7 +1479,9 @@ class AgentClient(
         attempt += 1
         reconnectJob = scope.launch {
             delay(waitMs)
-            if (!manuallyClosed) connect(url, token)
+            // The rotation is already decided in `currentUrl`; passing the list
+            // and the last known good address keeps it across the backoff.
+            if (!manuallyClosed) connect(url, token, lastCredentialId, candidates, lastWorking)
         }
     }
 
@@ -1466,7 +1499,10 @@ class AgentClient(
         if (_link.value is LinkState.Connected) return
         attempt = 0
         reconnectJob?.cancel()
-        connect(url, token)
+        // Coming back on a different network is exactly when the paired address
+        // is most likely to work again, so this is where going back to the top of
+        // the list is worth it.
+        connect(url, token, lastCredentialId, candidates, null)
     }
 
     private inner class Listener(private val token: String, private val epoch: Int) : WebSocketListener() {
@@ -1524,6 +1560,9 @@ class AgentClient(
                         return
                     }
                     _link.value = LinkState.Connected(frame.optString("hostname", "unknown"))
+                    // This address works. Remember it, so the next reconnect does
+                    // not go back to dialling one that does not.
+                    lastWorking = currentUrl
                     attempt = 0
                     webSocket.send(
                         JSONObject().put("type", "status.subscribe").put("intervalMs", 2000).toString(),
@@ -1854,7 +1893,18 @@ class AgentClient(
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             if (epoch != generation) return
             socket = null
-            _link.value = LinkState.Failed(t.message ?: "连接失败")
+            // Move to the next address BEFORE the backoff, so the next attempt
+            // is a different one rather than the same dead relay. The sentence
+            // says which, because a bare failure looks identical either way.
+            val failed = currentUrl
+            if (candidates.size > 1) {
+                currentUrl = ConnectionCandidates.after(candidates, failed)
+                _link.value = LinkState.Failed(
+                    ConnectionCandidates.describe(candidates, failed) ?: (t.message ?: "连接失败"),
+                )
+            } else {
+                _link.value = LinkState.Failed(t.message ?: "连接失败")
+            }
             scheduleReconnect()
         }
 

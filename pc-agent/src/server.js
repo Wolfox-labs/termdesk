@@ -22,6 +22,7 @@ import { WebSocketServer } from 'ws';
 
 import { C2S, S2C, CLOSE_UNAUTHORIZED, parseFrame, encodeFrame, PROTOCOL_VERSION } from './protocol.js';
 import { judgeClientVersion } from './version.js';
+import { connectionCandidates, describeCandidates } from './fallback.js';
 import { loadOrCreateToken, tokenMatches, tokenPath } from './auth.js';
 import { allowedRoots } from './files.js';
 import { handleTransferRequest } from './transfer.js';
@@ -174,7 +175,15 @@ async function relayPairing({ ttlMs } = {}) {
   const name = os.hostname();
   const { code, expiresAt } = await relayConnector.pairingCode({ label: name, ttlMs });
   const wsUrl = relayConnector.url;
-  return { wsUrl, code, expiresAt, payload: pairPayload({ wsUrl, token: code, name, relay: true }) };
+  // The relay is one address, and a phone holding only that one is dead when the
+  // relay is. The fallbacks are this machine's own addresses — same Wi-Fi, or
+  // Tailscale, which needs no Cloudflare — and they can only be handed over now.
+  const more = connectionCandidates({
+    primary: wsUrl,
+    lanUrls: lanAddresses().map((addr) => `ws://${addr}:${args.port}`),
+    port: args.port,
+  }).slice(1);
+  return { wsUrl, code, expiresAt, payload: pairPayload({ wsUrl, token: code, name, relay: true, more }) };
 }
 
 /** Why the last relay pairing attempt failed, so the page can say it. */
@@ -325,6 +334,13 @@ function printHeader({ args, token, apk, relay }) {
   if (relay) {
     line('配对', 'http://127.0.0.1:' + args.port + '/pair   每次打开都会生成一个一次性的配对码');
     line('名单', 'http://127.0.0.1:' + args.port + '/devices   已配对的手机，可单独吊销');
+    // Said out loud BEFORE it matters: "the relay is the only way in" is something
+    // the person needs to know while the relay still works, not afterwards.
+    line('回退', describeCandidates(connectionCandidates({
+      primary: relay.url,
+      lanUrls: lanAddresses().map((addr) => `ws://${addr}:${args.port}`),
+      port: args.port,
+    })));
   }
   console.log('');
 }

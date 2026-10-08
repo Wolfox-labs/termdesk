@@ -23,6 +23,12 @@ data class PairedComputer(
      * anything — and the only one that can be reached from any network.
      */
     val relay: Boolean,
+    /**
+     * Other addresses for the same computer, tried in order when [url] does not
+     * answer: its LAN address, its Tailscale address. Stored, not derived — a
+     * phone that has lost the relay cannot ask the PC for them again.
+     */
+    val more: List<String> = emptyList(),
     val pairedAt: Long,
     val lastUsedAt: Long,
 )
@@ -55,6 +61,9 @@ class ComputerStore(context: Context) {
                     name = item.optString("name").takeIf { it.isNotBlank() } ?: hostOf(url),
                     url = url,
                     relay = item.optBoolean("relay", url.startsWith("wss://")),
+                    more = item.optJSONArray("more")?.let { arr ->
+                        (0 until arr.length()).mapNotNull { i -> arr.optString(i).takeIf { it.isNotBlank() } }
+                    }.orEmpty(),
                     pairedAt = item.optLong("pairedAt", 0L),
                     lastUsedAt = item.optLong("lastUsedAt", 0L),
                 )
@@ -79,7 +88,13 @@ class ComputerStore(context: Context) {
      * Matching on the address is what makes re-pairing the same machine (a new
      * code, a rotated credential) an update instead of a duplicate row.
      */
-    fun upsert(url: String, name: String?, relay: Boolean, id: String? = null): PairedComputer {
+    fun upsert(
+        url: String,
+        name: String?,
+        relay: Boolean,
+        id: String? = null,
+        more: List<String> = emptyList(),
+    ): PairedComputer {
         val now = System.currentTimeMillis()
         val existing = list().firstOrNull { it.id == id } ?: list().firstOrNull { it.url == url }
         val computer = PairedComputer(
@@ -87,6 +102,9 @@ class ComputerStore(context: Context) {
             name = name?.takeIf { it.isNotBlank() } ?: existing?.name ?: hostOf(url),
             url = url,
             relay = relay || existing?.relay == true,
+            // Keep what was learned before when this call does not carry a list:
+            // a reconnect from the computer list has no QR code to read.
+            more = if (more.isNotEmpty()) more else existing?.more ?: emptyList(),
             pairedAt = existing?.pairedAt ?: now,
             lastUsedAt = now,
         )
@@ -170,6 +188,7 @@ class ComputerStore(context: Context) {
                     .put("name", computer.name)
                     .put("url", computer.url)
                     .put("relay", computer.relay)
+                    .put("more", org.json.JSONArray(computer.more))
                     .put("pairedAt", computer.pairedAt)
                     .put("lastUsedAt", computer.lastUsedAt),
             )

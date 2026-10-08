@@ -21,6 +21,14 @@ data class PairRequest(
      * gone.
      */
     val relay: Boolean = false,
+    /**
+     * More addresses to try when [url] does not answer.
+     *
+     * The PC hands over its own LAN and Tailscale addresses here. It has to
+     * happen at pairing time: once the relay is unreachable, nothing can tell
+     * this phone where else to look.
+     */
+    val more: List<String> = emptyList(),
 ) {
     val isUsable: Boolean get() = url.isNotBlank() && token.isNotBlank()
 }
@@ -37,5 +45,11 @@ fun parsePairIntent(intent: Intent?): PairRequest? {
         token = token,
         name = data.getQueryParameter("name"),
         relay = data.getQueryParameter("relay") == "1",
+        // Space-separated in the payload: a URL is full of characters that make
+        // a comma ambiguous, and this keeps one parameter for the whole list.
+        more = data.getQueryParameter("more").orEmpty()
+            .split(' ')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() },
     )
 }
