@@ -86,6 +86,7 @@ import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.UploadedFile
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.KernelInfo
+import dev.termdesk.app.data.KernelRun
 import dev.termdesk.app.data.ChatInfo
 import dev.termdesk.app.data.ChatTerminal
 import dev.termdesk.app.data.TerminalView
@@ -143,6 +144,10 @@ fun ChatSection(
     onSetChatMode: (String, String) -> Unit,
     onCloseRecorded: () -> Unit,
     onLoadSessions: () -> Unit,
+    /** Agent processes running on the PC that its own agent did not start. */
+    kernelRuns: List<KernelRun> = emptyList(),
+    kernelRunsNote: String? = null,
+    onLoadKernelRuns: () -> Unit = {},
     onOpenSession: (SessionInfo) -> Unit,
     onResumeSession: (SessionDetail) -> Unit,
     connected: Boolean,
@@ -332,6 +337,8 @@ fun ChatSection(
                                 onCloseChat = onCloseChat,
                                 onOpenSession = onOpenSession,
                                 onCreateChat = { onCreateChat(defaultCwd) },
+                                externalRuns = kernelRuns,
+                                externalRunsNote = kernelRunsNote,
                             )
                         } else {
                             GroupedSessionList(

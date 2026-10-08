@@ -280,8 +280,37 @@ import org.json.JSONObject
             }
         }
     }
-    internal fun parseSessionList(arr: JSONArray?): List<SessionInfo> {
+    /**
+     * Agent processes running on the PC that its own agent did not start.
+     *
+     * A row without a usable pid is skipped: the pid is the only thing that makes
+     * the row concrete ("which process"), and a row that cannot name one would
+     * read as a conversation when it is not.
+     */
+    internal fun parseKernelRuns(arr: JSONArray?): List<KernelRun> {
         if (arr == null) return emptyList()
+        return buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val pid = o.optInt("pid", 0)
+                if (pid <= 0) continue
+                add(
+                    KernelRun(
+                        kernelId = o.optString("kernelId"),
+                        label = o.optString("label"),
+                        pid = pid,
+                        name = o.optString("name"),
+                        memBytes = o.optLong("memBytes", 0L),
+                        // Defaults to false, which is the truthful default: this
+                        // agent did not start the process and holds no handle to it.
+                        attachable = o.optBoolean("attachable", false),
+                    ),
+                )
+            }
+        }
+    }
+
+    internal fun parseSessionList(arr: JSONArray?): List<SessionInfo> {        if (arr == null) return emptyList()
         return buildList {
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue

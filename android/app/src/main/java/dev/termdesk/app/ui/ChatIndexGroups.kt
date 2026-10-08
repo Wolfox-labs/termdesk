@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.termdesk.app.data.ChatInfo
+import dev.termdesk.app.data.KernelRun
 import dev.termdesk.app.data.SessionGroups
 import dev.termdesk.app.data.SessionInfo
 
@@ -73,12 +74,22 @@ internal fun GroupedSessionList(
      * holds and ending one is real); false where the list is history.
      */
     allowClose: Boolean = true,
+    /**
+     * Agents the PC is running that its own agent did not start.
+     *
+     * Rendered in a section of their own, never mixed into the groups: these are
+     * processes, not conversations, and the agent holds no handle to them — so
+     * they carry no action, only the fact that they are running.
+     */
+    externalRuns: List<KernelRun> = emptyList(),
+    /** The PC's own sentence for an empty [externalRuns], or null. */
+    externalRunsNote: String? = null,
 ) {
     val groups = remember(chats, sessions) {
         SessionGroups.build(chats, sessions) { workspaceShortName(it) }
     }
 
-    if (groups.isEmpty()) {
+    if (groups.isEmpty() && externalRuns.isEmpty()) {
         EmptyIndex(title = emptyTitle, hint = emptyHint, onCreateChat = onCreateChat, onScanSessions = onScanSessions)
         return
     }
@@ -97,6 +108,13 @@ internal fun GroupedSessionList(
             if (group.key in collapsed) continue
             for (chat in group.live) add(Entry.Live(chat))
             for (session in group.recorded) add(Entry.Recorded(session))
+        }
+        // Last, and in its own section: "something is running over there that I
+        // cannot open" is useful, but it is not a conversation and must not look
+        // like one.
+        if (externalRuns.isNotEmpty()) {
+            add(Entry.ExternalHeader(externalRuns.size, externalRunsNote))
+            for (run in externalRuns) add(Entry.External(run))
         }
     }
 
@@ -125,12 +143,14 @@ internal fun GroupedSessionList(
                     session = entry.session,
                     onOpen = { onOpenSession(entry.session) },
                 )
+                is Entry.ExternalHeader -> ExternalHeader(count = entry.count, note = entry.note)
+                is Entry.External -> ExternalRunRow(run = entry.run)
             }
         }
     }
 }
 
-/** One drawn row: a workspace header, a live conversation, or a recorded session. */
+/** One drawn row: a workspace header, a conversation, a session, or a process. */
 private sealed interface Entry {
     /** What the lazy list keys on, so a group and a conversation cannot collide. */
     val key: String
@@ -145,6 +165,79 @@ private sealed interface Entry {
 
     data class Recorded(val session: SessionInfo) : Entry {
         override val key: String get() = "rec:${session.engine}:${session.id}"
+    }
+
+    data class ExternalHeader(val count: Int, val note: String?) : Entry {
+        override val key: String get() = "ext:header"
+    }
+
+    data class External(val run: KernelRun) : Entry {
+        override val key: String get() = "ext:${run.kernelId}:${run.pid}"
+    }
+}
+
+/**
+ * "Running on the PC, not started from here."
+ *
+ * The heading states what the section is so a row is never mistaken for a
+ * conversation: these cannot be opened, because this agent did not start them and
+ * holds no handle to them.
+ */
+@Composable
+private fun ExternalHeader(count: Int, note: String?) {
+    Column(Modifier.fillMaxWidth().padding(start = 2.dp, top = 10.dp, bottom = 2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "电脑上直接运行",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = count.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (!note.isNullOrBlank()) {
+            Text(
+                text = note,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** One such process: what it is, which pid, how much memory. No action. */
+@Composable
+private fun ExternalRunRow(run: KernelRun) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = run.displayName,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                // `formatBytes` is the one already in Components.kt: a second copy
+                // for this row would be a second answer to the same question.
+                text = "PID ${run.pid} · ${formatBytes(run.memBytes)} · 在电脑上运行，手机不能接管",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 

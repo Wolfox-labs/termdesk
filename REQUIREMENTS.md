@@ -280,6 +280,7 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 | C→S | `fs.list` · `fs.read` · `fs.write` · `fs.mkdir` · `fs.delete` · `fs.rename` · `fs.roots` · `fs.search` · `fs.doctext` |
 | C→S | `term.open` · `term.run` · `term.interrupt` · `term.close` · `term.list` · `ping` |
 | C→S | `kernels.list`（内核表：唯一事实来源是 pc-agent 的 `kernels/registry.js`） |
+| C→S | `kernels.runs`（这台电脑上**本代理没有启动**的 agent 进程，即用户在终端里自己跑的） |
 | C→S | `codex.get` · `codex.apply` · `codex.restore` |
 | C→S | `sessions.list` · `sessions.read`（磁盘上的历史会话，只读） |
 | C→S | `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` · `chat.config` · `chat.models` · `chat.approve` · `chat.terminals` · `chat.terminal.read` · `chat.terminal.input` · `chat.terminal.stop` |
@@ -287,6 +288,7 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 | S→C | `fs.listing` · `fs.file` · `fs.written` · `fs.roots` |
 | S→C | `term.opened` · `term.output` · `term.exit` · `term.list` |
 | S→C | `kernels`（内核表，含 tier / 是否可用 / 是否能续聊 / 真实原因） |
+| S→C | `kernels.runs`（外部运行项：内核 id / pid / 内存 / `attachable:false`——本代理对这些进程没有句柄，只能显示不能接管） |
 | S→C | `codex.config` · `sessions` · `session` |
 | S→C | `chats` · `chat` · `chat.event` · `chat.status` · `chat.turn` · `chat.sent` · `chat.closed` · `chat.approval` · `chat.terminals` · `chat.terminal` · `chat.terminal.output` · `chat.terminal.input` |
 | S→C | `action.result` · `error` · `pong` |

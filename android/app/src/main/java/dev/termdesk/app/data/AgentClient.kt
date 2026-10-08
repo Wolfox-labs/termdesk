@@ -223,6 +223,21 @@ class AgentClient(
     private val _workspaces = MutableStateFlow<List<WorkspaceInfo>>(emptyList())
     val workspaces: StateFlow<List<WorkspaceInfo>> = _workspaces.asStateFlow()
 
+    /**
+     * Agent processes running on the PC that its own agent did not start — the
+     * agents the person launched in their own terminal.
+     *
+     * Kept apart from [chats] on purpose: a chat is a conversation this app can
+     * open and type into, and one of these is a process it holds no handle to.
+     * Merging them would put un-openable rows in the list of conversations.
+     */
+    private val _kernelRuns = MutableStateFlow<List<KernelRun>>(emptyList())
+    val kernelRuns: StateFlow<List<KernelRun>> = _kernelRuns.asStateFlow()
+
+    /** The PC's own sentence about an empty list, so "none" is explained. */
+    private val _kernelRunsNote = MutableStateFlow<String?>(null)
+    val kernelRunsNote: StateFlow<String?> = _kernelRunsNote.asStateFlow()
+
     private val _sessionDetail = MutableStateFlow<SessionDetail?>(null)
     val sessionDetail: StateFlow<SessionDetail?> = _sessionDetail.asStateFlow()
 
@@ -626,6 +641,16 @@ class AgentClient(
     /** Refresh the PC kernel table. Metadata only: it never runs a model. */
     fun loadEngines() {
         sendFrame(JSONObject().put("type", "kernels.list"))
+    }
+
+    /**
+     * Ask what is running on the PC that this agent did not start.
+     *
+     * The PC spawns a process listing for this, so it is asked for when the list is
+     * actually shown rather than riding along with every status frame.
+     */
+    fun loadKernelRuns() {
+        sendFrame(JSONObject().put("type", "kernels.runs"))
     }
 
     // ---- existing-session operations ----
@@ -1630,6 +1655,10 @@ class AgentClient(
                 }
                 // The kernel table, straight from the PC registry.
                 "kernels" -> _engines.value = parseKernels(frame.optJSONArray("kernels"))
+                "kernels.runs" -> {
+                    _kernelRuns.value = parseKernelRuns(frame.optJSONArray("runs"))
+                    _kernelRunsNote.value = frame.optString("note").takeIf { it.isNotBlank() && it != "null" }
+                }
                 "sessions" -> {
                     _sessionsLoading.value = false
                     cache("index", frame)

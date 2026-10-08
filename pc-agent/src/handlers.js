@@ -32,6 +32,7 @@ import {
 } from './codexconfig.js';
 import { listSessions, readSession, sessionRoots } from './sessions.js';
 import { chatEngineIds, getKernel, isAdapterKernel, kernelTier, listKernels } from './kernels/registry.js';
+import { externalKernelRuns } from './kernelruns.js';
 import { threadSummaryToSession, threadToSessionDetail, discoverThreadIdsFromDisk } from './kernels/codex.js';
 
 const STATUS_INTERVAL_MS = 2000;
@@ -409,6 +410,46 @@ export function createFrameHandler(ctx) {
       case C2S.KERNELS_LIST:
         send(S2C.KERNELS, { kernels: listKernels() });
         break;
+
+      case C2S.KERNEL_RUNS: {
+        // Agents the person started themselves, in their own terminal. The agent
+        // did not start them and holds no handle to them, so this is a report and
+        // not something to attach to (`attachable: false` on every row) — but
+        // without it a conversation is invisible on the phone until this agent
+        // happens to create one.
+        try {
+          const [kernels, processes] = await Promise.all([listKernels(), listProcesses()]);
+          // This agent's OWN children must not be listed: they are already visible
+          // as live conversations, and a phone showing "Codex ×2" for one
+          // conversation is worse than showing nothing.
+          //
+          // The pids come from the objects that hold them, not from the chat
+          // summaries — a summary deliberately carries no process id, so an
+          // earlier version of this filter silently excluded nothing at all:
+          //   - one shared Codex app-server per machine,
+          //   - one ACP agent process per ACP kernel,
+          //   - one DSH SDK runtime per live conversation.
+          const mine = new Set();
+          const remember = (pid) => {
+            const n = Number(pid);
+            if (Number.isFinite(n) && n > 0) mine.add(n);
+          };
+          remember(chats?.codex?.child?.pid);
+          for (const kernel of chats?.acp?.values?.() ?? []) remember(kernel?.child?.pid);
+          for (const chat of chats?.chats?.values?.() ?? []) remember(chat?.child?.pid);
+
+          const runs = externalKernelRuns(processes.items, kernels, mine);
+          send(S2C.KERNEL_RUNS, {
+            capturedAt: processes.capturedAt,
+            runs,
+            // Said explicitly so a client never has to infer it from an empty list.
+            note: runs.length === 0 ? '本机没有直接运行的 agent 进程' : null,
+          });
+        } catch (err) {
+          send(S2C.ERROR, { code: 'kernel_runs_failed', message: String(err?.message ?? err) });
+        }
+        break;
+      }
 
       // ---- Codex provider configuration ----
 

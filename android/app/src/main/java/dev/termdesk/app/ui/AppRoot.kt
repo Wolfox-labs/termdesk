@@ -67,6 +67,8 @@ fun AppRoot(
     val workspaces by vm.workspaces.collectAsState()
     val sessions by vm.sessions.collectAsState()
     val sessionDetail by vm.sessionDetail.collectAsState()
+    val kernelRuns by vm.kernelRuns.collectAsState()
+    val kernelRunsNote by vm.kernelRunsNote.collectAsState()
     val themeMode by vm.themeMode.collectAsState()
     val engines by vm.engines.collectAsState()
     val defaultEngine by vm.defaultEngine.collectAsState()
@@ -120,6 +122,13 @@ fun AppRoot(
     // Codex catalog has to exist as soon as a Codex conversation is open.
     LaunchedEffect(activeChat?.engine) {
         if (activeChat?.engine == "codex") vm.loadCodexConfig()
+    }
+
+    // "What is running over there" is asked once per connection rather than with
+    // every status frame: the PC answers it by listing this machine's processes,
+    // which is not something to do every two seconds on a phone's behalf.
+    LaunchedEffect(connected) {
+        if (connected) vm.loadKernelRuns()
     }
 
     val hostname = when (val state = link) {
@@ -270,6 +279,11 @@ fun AppRoot(
                 onSetChatMode = vm::setChatMode,
                 onCloseRecorded = vm::closeSession,
                 onLoadSessions = { vm.loadSessions() },
+                // Asked for when the section is shown, because answering it means
+                // listing this machine's processes.
+                kernelRuns = kernelRuns,
+                kernelRunsNote = kernelRunsNote,
+                onLoadKernelRuns = vm::loadKernelRuns,
                 onOpenSession = { session -> vm.openSession(session) },
                 onResumeSession = vm::resumeSession,
                 connected = connected,

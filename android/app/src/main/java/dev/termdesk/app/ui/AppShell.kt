@@ -66,6 +66,7 @@ import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.KernelInfo
+import dev.termdesk.app.data.KernelRun
 import dev.termdesk.app.data.LocalKernelState
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.HostStatus
@@ -169,6 +170,10 @@ fun AppShell(
     onSetChatMode: (String, String) -> Unit,
     onCloseRecorded: () -> Unit,
     onLoadSessions: () -> Unit,
+    /** Agent processes running on the PC that its own agent did not start. */
+    kernelRuns: List<KernelRun>,
+    kernelRunsNote: String?,
+    onLoadKernelRuns: () -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
     onResumeSession: (SessionDetail) -> Unit,
     connected: Boolean,
@@ -333,6 +338,9 @@ fun AppShell(
                     onSetChatMode = onSetChatMode,
                     onCloseRecorded = onCloseRecorded,
                     onLoadSessions = onLoadSessions,
+                    kernelRuns = kernelRuns,
+                    kernelRunsNote = kernelRunsNote,
+                    onLoadKernelRuns = onLoadKernelRuns,
                     onOpenSession = onOpenSession,
                     onResumeSession = onResumeSession,
                     connected = connected,
@@ -658,6 +666,10 @@ private fun SectionBody(
     onLeaveChat: () -> Unit,
     onCloseRecorded: () -> Unit,
     onLoadSessions: () -> Unit,
+    /** Agent processes running on the PC that its own agent did not start. */
+    kernelRuns: List<KernelRun>,
+    kernelRunsNote: String?,
+    onLoadKernelRuns: () -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
     onResumeSession: (SessionDetail) -> Unit,
     connected: Boolean,
@@ -806,6 +818,9 @@ private fun SectionBody(
             onLeaveChat = onLeaveChat,
             onCloseRecorded = onCloseRecorded,
             onLoadSessions = onLoadSessions,
+            kernelRuns = kernelRuns,
+            kernelRunsNote = kernelRunsNote,
+            onLoadKernelRuns = onLoadKernelRuns,
             onOpenSession = onOpenSession,
                         onResumeSession = onResumeSession,
                         connected = connected,

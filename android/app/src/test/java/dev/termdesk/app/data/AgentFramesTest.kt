@@ -150,6 +150,60 @@ class AgentFramesTest {
         assertFalse("a found file is not a directory", results.items[0].isDir)
     }
 
+    // ---- processes running on the PC that its agent did not start ----------
+
+    @Test
+    fun `a running agent process keeps its kernel, pid and memory`() {
+        val frame = JSONArray().put(
+            JSONObject()
+                .put("kernelId", "codex")
+                .put("label", "Codex")
+                .put("pid", 4242)
+                .put("name", "codex.exe")
+                .put("memBytes", 512L * 1024 * 1024)
+                .put("attachable", false),
+        )
+
+        val runs = parseKernelRuns(frame)
+
+        assertEquals(1, runs.size)
+        assertEquals("codex", runs[0].kernelId)
+        assertEquals("Codex", runs[0].displayName)
+        assertEquals(4242, runs[0].pid)
+        assertEquals(512L * 1024 * 1024, runs[0].memBytes)
+        assertFalse("this agent holds no handle to a process it did not start", runs[0].attachable)
+    }
+
+    @Test
+    fun `a row without a pid is skipped instead of shown as a nameless process`() {
+        // The pid is the only thing that makes such a row concrete. A row that
+        // cannot name one would read as a conversation, and it is not one.
+        val frame = JSONArray()
+            .put(JSONObject().put("kernelId", "codex").put("label", "Codex"))
+            .put(JSONObject().put("kernelId", "dsh").put("label", "DSH").put("pid", 0))
+            .put(JSONObject().put("kernelId", "opencode").put("label", "OpenCode").put("pid", 77))
+
+        val runs = parseKernelRuns(frame)
+
+        assertEquals(1, runs.size)
+        assertEquals("opencode", runs[0].kernelId)
+    }
+
+    @Test
+    fun `an empty or absent list of runs is empty, not a crash`() {
+        assertEquals(emptyList<KernelRun>(), parseKernelRuns(null))
+        assertEquals(emptyList<KernelRun>(), parseKernelRuns(JSONArray()))
+    }
+
+    @Test
+    fun `attachable defaults to false when the agent does not say`() {
+        // The truthful default: absent means we cannot attach, never that we can.
+        val runs = parseKernelRuns(JSONArray().put(JSONObject().put("kernelId", "codex").put("pid", 9)))
+
+        assertEquals(1, runs.size)
+        assertFalse(runs[0].attachable)
+    }
+
     // ---- protocol negotiation (the app's half of it) -------------------------
 
     @Test

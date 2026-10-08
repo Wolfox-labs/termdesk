@@ -45,3 +45,29 @@ data class KernelInfo(
 
     val displayName: String get() = label.ifBlank { id }
 }
+
+/**
+ * An agent process running on the PC that the PC's own agent did not start.
+ *
+ * Why it exists: a conversation only appeared on the phone once TermDesk's agent
+ * had created it, so an agent the person launched in their own terminal was
+ * invisible — they discovered it by trying to attach to its session and being
+ * refused. These rows are that missing half: "an agent is running over there".
+ *
+ * What a row is NOT: a conversation. The match is by process name (two builds of
+ * the same tool look identical here), and this agent holds no handle to the
+ * process, so nothing can be opened or typed into. [attachable] carries that
+ * verdict from the PC so the UI cannot offer an action that would fail.
+ */
+data class KernelRun(
+    val kernelId: String,
+    val label: String,
+    val pid: Int,
+    /** The process name as the machine reported it, shown when it differs. */
+    val name: String,
+    val memBytes: Long,
+    /** False for every row today; a field rather than an assumption. */
+    val attachable: Boolean = false,
+) {
+    val displayName: String get() = label.ifBlank { kernelId }
+}

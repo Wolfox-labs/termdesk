@@ -37,6 +37,7 @@ import dev.termdesk.app.data.TermLine
 import dev.termdesk.app.data.UploadedFile
 import dev.termdesk.app.data.TextFile
 import dev.termdesk.app.data.TransferState
+import dev.termdesk.app.data.KernelRun
 import dev.termdesk.app.data.WorkspaceInfo
 import dev.termdesk.app.ui.theme.ThemeMode
 import kotlinx.coroutines.Dispatchers
@@ -269,6 +270,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val sessions: StateFlow<List<SessionInfo>> = client.sessions
     val workspaces: StateFlow<List<WorkspaceInfo>> = client.workspaces
     val sessionDetail: StateFlow<SessionDetail?> = client.sessionDetail
+
+    /**
+     * Agents running on the PC that its own agent did not start — "what is
+     * actually running over there", including what was launched in a terminal.
+     */
+    val kernelRuns: StateFlow<List<KernelRun>> = client.kernelRuns
+    val kernelRunsNote: StateFlow<String?> = client.kernelRunsNote
+    fun loadKernelRuns() = client.loadKernelRuns()
 
     fun loadSessions(engine: String? = null) = client.loadSessions(engine)
     fun openSession(session: SessionInfo) = client.openSession(session)

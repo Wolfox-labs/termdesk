@@ -33,6 +33,10 @@ export const C2S = {
   TERM_CLOSE: 'term.close',
   TERM_LIST: 'term.list',
   KERNELS_LIST: 'kernels.list',
+  // Agent processes running on this machine that THIS agent did not start. The
+  // phone asks when it wants to show "what is actually running over there",
+  // including the agents the person launched in their own terminal.
+  KERNEL_RUNS: 'kernels.runs',
   CODEX_GET: 'codex.get',
   CODEX_APPLY: 'codex.apply',
   CODEX_RESTORE: 'codex.restore',
@@ -78,6 +82,9 @@ export const S2C = {
   TERM_EXIT: 'term.exit',
   TERM_LIST: 'term.list',
   KERNELS: 'kernels',
+  // What is running on the PC that this agent did not start, so the phone can
+  // show it instead of only showing conversations the agent itself created.
+  KERNEL_RUNS: 'kernels.runs',
   CODEX_CONFIG: 'codex.config',
   SESSIONS: 'sessions',
   SESSION: 'session',
