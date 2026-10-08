@@ -115,4 +115,56 @@ object SessionGroups {
         }
         return 0L
     }
+
+    /**
+     * The kernels that actually have something to show, and the list narrowed to one.
+     *
+     * Why this exists: the hierarchy the product asked for is kernel → workspace →
+     * conversation, because the flat list was unusable. The machine had 313 recorded
+     * sessions across every kernel at once, so "find my OpenCode conversation" meant
+     * scanning Codex and MiMo history too.
+     *
+     * The scope is a KERNEL and not a workspace row because that is where a kernel's
+     * conversations actually differ: two kernels sharing a directory have unrelated
+     * sessions, and the phone cannot run one kernel's session on another.
+     *
+     * Both answers are pure and pinned by `SessionGroupsTest`:
+     *
+     *   - [engines] lists only kernels with conversations IN THE LISTS GIVEN. Offering a
+     *     kernel that would show an empty screen is the "button that cannot work" this
+     *     project keeps having to remove.
+     *   - [only] treats an unknown or absent selection as "everything", so a stored
+     *     choice that no longer exists (the kernel's last session was deleted) shows the
+     *     whole list instead of nothing at all.
+     */
+    data class EngineScope(
+        val engines: List<String>,
+        val selected: String?,
+    ) {
+        /** True when there is a real choice to make. One kernel is not a choice. */
+        val isMeaningful: Boolean get() = engines.size > 1
+    }
+
+    fun scopeOf(
+        chats: List<ChatInfo>,
+        sessions: List<SessionInfo>,
+        selected: String?,
+    ): EngineScope {
+        val engines = buildList {
+            for (chat in chats) add(chat.engine)
+            for (session in sessions) add(session.engine)
+        }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .sortedWith(compareBy({ it.lowercase() }, { it }))
+        val chosen = selected?.trim()?.takeIf { it.isNotEmpty() && engines.contains(it) }
+        return EngineScope(engines = engines, selected = chosen)
+    }
+
+    /** The conversations belonging to [engine], or everything when it is null. */
+    fun only(chats: List<ChatInfo>, sessions: List<SessionInfo>, engine: String?): Pair<List<ChatInfo>, List<SessionInfo>> {
+        if (engine.isNullOrBlank()) return chats to sessions
+        return chats.filter { it.engine == engine } to sessions.filter { it.engine == engine }
+    }
 }

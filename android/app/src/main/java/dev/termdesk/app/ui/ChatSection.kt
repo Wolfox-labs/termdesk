@@ -68,6 +68,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -83,6 +84,7 @@ import androidx.compose.ui.unit.sp
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatModels
+import dev.termdesk.app.data.SessionGroups
 import dev.termdesk.app.data.UploadedFile
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.KernelInfo
@@ -175,6 +177,10 @@ fun ChatSection(
     // is no separate drawer for history any more, because a phone-width screen
     // must not spend a third of its width on a second navigation surface.
     var tab by remember { mutableStateOf(0) }
+    // Which kernel's conversations are shown. The product asked for the hierarchy
+    // kernel -> workspace -> conversation: with every kernel's sessions in one flat
+    // list, finding one meant reading all of them. Null means "no narrowing".
+    var engineFilter by rememberSaveable { mutableStateOf<String?>(null) }
     // Details are folded away by default: the bar stays one row, and the model /
     // directory / effort line only appears when the user asks for it.
     var detailOpen by remember { mutableStateOf(false) }
@@ -328,12 +334,28 @@ fun ChatSection(
                     pendingDropped = pendingDropped,
                 )
                 else -> Column(Modifier.fillMaxSize()) {
+                    // Kernel scope first: the list is kernel -> workspace ->
+                    // conversation, and this is the outermost level.
+                    val scope = SessionGroups.scopeOf(chats, sessions, engineFilter)
+                    // A stored choice can outlive what it pointed at, and `scopeOf`
+                    // resolves that to "everything" - so the state is corrected here
+                    // rather than leaving a filter on that the switcher cannot show.
+                    if (scope.selected != engineFilter) engineFilter = scope.selected
+                    val (visibleChats, visibleSessions) = SessionGroups.only(chats, sessions, scope.selected)
                     SessionTabs(
                         tab = tab,
-                        chatCount = chats.size,
-                        sessionCount = sessions.size,
+                        chatCount = visibleChats.size,
+                        sessionCount = visibleSessions.size,
                         onSelect = { tab = it },
                     )
+                    if (scope.isMeaningful) {
+                        EngineScopeRow(
+                            engines = scope.engines,
+                            selected = scope.selected,
+                            labelOf = { id -> engines.firstOrNull { it.id == id }?.displayName ?: id },
+                            onSelect = { engineFilter = it },
+                        )
+                    }
                     Box(Modifier.weight(1f)) {
                         // One grouped list for both tabs: they differ in WHICH
                         // conversations they hold, not in how a person finds one.
@@ -343,7 +365,7 @@ fun ChatSection(
                             // other tab, and mixing them would quietly turn this one
                             // into a second history list.
                             GroupedSessionList(
-                                chats = chats,
+                                chats = visibleChats,
                                 sessions = emptyList(),
                                 emptyTitle = "还没有进行中的对话",
                                 emptyHint = "在 $defaultCwd 中新建一个，就能在手机上和电脑里的助手连续对话。",
@@ -356,8 +378,8 @@ fun ChatSection(
                             )
                         } else {
                             GroupedSessionList(
-                                chats = chats,
-                                sessions = sessions,
+                                chats = visibleChats,
+                                sessions = visibleSessions,
                                 emptyTitle = "没有找到历史会话",
                                 emptyHint = "电脑上记录过的对话会出现在这里，点开即可阅读或继续。",
                                 onOpenChat = onOpenChat,
@@ -939,6 +961,58 @@ private fun SessionTabs(tab: Int, chatCount: Int, sessionCount: Int, onSelect: (
     }
 }
 
+/**
+ * Which kernel's conversations are listed.
+ *
+ * The hierarchy is kernel -> workspace -> conversation, and this is the outermost level.
+ * The reason it exists: one machine had 313 recorded sessions across every kernel at
+ * once, so "find my OpenCode conversation" meant reading Codex's and MiMo's history too.
+ *
+ * "全部" is offered first and is the default, because narrowing is a way to find one
+ * thing faster, not a mode the person should have to leave. Only kernels that have
+ * something to show appear at all — a tab that lands on an empty screen is a button that
+ * cannot work, which this project has had to remove more than once.
+ *
+ * Horizontally scrollable rather than wrapped: five kernels at a 1.45 font scale exceed
+ * 400dp, and a wrapped second row would push the list down for a control used rarely.
+ */
+@Composable
+private fun EngineScopeRow(
+    engines: List<String>,
+    selected: String?,
+    labelOf: (String) -> String,
+    onSelect: (String?) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val choices = listOf<String?>(null) + engines
+        for (choice in choices) {
+            val isSelected = choice == selected
+            Text(
+                text = if (choice == null) "全部" else labelOf(choice),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (isSelected) MaterialTheme.colorScheme.onSecondaryContainer
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (isSelected) MaterialTheme.colorScheme.secondaryContainer
+                        else MaterialTheme.colorScheme.surface,
+                    )
+                    .clickable { onSelect(choice) }
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+            )
+        }
+    }
+}
 /** Recorded history, listed like conversations because that is what it is. */
 @Composable
 private fun RecordedTranscript(session: SessionDetail) {

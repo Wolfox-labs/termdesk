@@ -13,7 +13,7 @@ import org.junit.Test
  */
 class SessionGroupsTest {
 
-    private fun chat(id: String, cwd: String, lastUsedAt: Long) = ChatInfo(
+    private fun chat(id: String, cwd: String, lastUsedAt: Long, engine: String = "dsh") = ChatInfo(
         id = id,
         title = "对话 $id",
         cwd = cwd,
@@ -23,7 +23,7 @@ class SessionGroupsTest {
         mode = "",
         status = "idle",
         ready = true,
-        engine = "dsh",
+        engine = engine,
         threadId = null,
         sessionId = null,
         createdAt = lastUsedAt,
@@ -32,8 +32,8 @@ class SessionGroupsTest {
         lastError = null,
     )
 
-    private fun session(id: String, cwd: String?, updatedAt: String?) = SessionInfo(
-        engine = "codex",
+    private fun session(id: String, cwd: String?, updatedAt: String?, engine: String = "codex") = SessionInfo(
+        engine = engine,
         id = id,
         title = "会话 $id",
         cwd = cwd,
@@ -171,5 +171,142 @@ class SessionGroupsTest {
         )
 
         assertEquals("the dated one is first", listOf("dated", "broken"), groups[0].recorded.map { it.id })
+    }
+
+    // ---- kernel scope: kernel -> workspace -> conversation --------------------
+
+    @Test
+    fun `only the kernels with conversations are offered`() {
+        // The machine had 313 recorded sessions across every kernel at once, so the flat
+        // list made "find my OpenCode conversation" mean scanning Codex and MiMo too.
+        // A kernel with nothing to show must not be offered at all: that is a button
+        // which lands on an empty screen.
+        val scope = SessionGroups.scopeOf(
+            chats = listOf(chat("c1", "E:\\w\\a", 1_000, engine = "dsh")),
+            sessions = listOf(
+                session("s1", "E:\\w\\a", "2026-10-08T02:00:00.000Z", engine = "codex"),
+                session("s2", "E:\\w\\b", "2026-10-08T03:00:00.000Z", engine = "codex"),
+            ),
+            selected = null,
+        )
+
+        assertEquals(listOf("codex", "dsh"), scope.engines)
+        assertTrue("two kernels is a real choice", scope.isMeaningful)
+        assertTrue("nothing is selected means everything is shown", scope.selected == null)
+    }
+
+    @Test
+    fun `one kernel is not a choice, so no switcher is drawn`() {
+        val scope = SessionGroups.scopeOf(
+            chats = emptyList(),
+            sessions = listOf(session("s1", "E:\\w", null, engine = "codex")),
+            selected = null,
+        )
+
+        assertEquals(listOf("codex"), scope.engines)
+        assertTrue("a one-item switcher is noise", !scope.isMeaningful)
+    }
+
+    @Test
+    fun `a kernel is counted once however many conversations it has`() {
+        val scope = SessionGroups.scopeOf(
+            chats = listOf(chat("c1", "E:\\w", 1, "codex"), chat("c2", "E:\\w", 2, "codex")),
+            sessions = listOf(session("s1", "E:\\w", null, "codex"), session("s2", "E:\\w", null, "dsh")),
+            selected = null,
+        )
+
+        assertEquals(listOf("codex", "dsh"), scope.engines)
+    }
+
+    @Test
+    fun `narrowing to a kernel keeps only that kernel's conversations`() {
+        val chats = listOf(chat("c1", "E:\\w", 1, "codex"), chat("c2", "E:\\w", 2, "dsh"))
+        val sessions = listOf(session("s1", "E:\\w", null, "codex"), session("s2", "E:\\w", null, "mimo"))
+
+        val (codexChats, codexSessions) = SessionGroups.only(chats, sessions, "codex")
+
+        assertEquals(listOf("c1"), codexChats.map { it.id })
+        assertEquals(listOf("s1"), codexSessions.map { it.id })
+    }
+
+    @Test
+    fun `a selection that no longer exists shows everything instead of nothing`() {
+        // The stored choice can outlive what it pointed at: the kernel's last session was
+        // deleted, or a re-pairing changed the engine list. Showing an empty screen for a
+        // filter the person cannot see is the worst outcome available here.
+        val scope = SessionGroups.scopeOf(
+            chats = listOf(chat("c1", "E:\\w", 1, "codex")),
+            sessions = emptyList(),
+            selected = "mimo",
+        )
+
+        assertEquals("the stale choice is dropped", null, scope.selected)
+
+        val (chats, sessions) = SessionGroups.only(
+            listOf(chat("c1", "E:\\w", 1, "codex")),
+            listOf(session("s1", "E:\\w", null, "codex")),
+            scope.selected,
+        )
+        assertEquals(1, chats.size)
+        assertEquals(1, sessions.size)
+    }
+
+    @Test
+    fun `a blank or absent selection is not a filter`() {
+        val chats = listOf(chat("c1", "E:\\w", 1, "codex"))
+        val sessions = listOf(session("s1", "E:\\w", null, "dsh"))
+
+        for (selection in listOf(null, "", "   ")) {
+            val (c, s) = SessionGroups.only(chats, sessions, selection)
+            assertEquals("selection=$selection must not hide anything", 1, c.size)
+            assertEquals("selection=$selection must not hide anything", 1, s.size)
+        }
+    }
+
+    @Test
+    fun `an engine with no name is ignored rather than offered as a blank row`() {
+        val scope = SessionGroups.scopeOf(
+            chats = listOf(chat("c1", "E:\\w", 1, "")),
+            sessions = listOf(session("s1", "E:\\w", null, "  "), session("s2", "E:\\w", null, "codex")),
+            selected = null,
+        )
+
+        assertEquals(listOf("codex"), scope.engines)
+    }
+
+    @Test
+    fun `the switcher is ordered by name so it does not move between refreshes`() {
+        val scope = SessionGroups.scopeOf(
+            chats = emptyList(),
+            sessions = listOf(
+                session("s1", "E:\\w", null, "opencode"),
+                session("s2", "E:\\w", null, "Codex"),
+                session("s3", "E:\\w", null, "mimo"),
+            ),
+            selected = null,
+        )
+
+        assertEquals(listOf("Codex", "mimo", "opencode"), scope.engines)
+    }
+
+    @Test
+    fun `the grouping still applies inside one kernel`() {
+        // The hierarchy is kernel -> workspace -> conversation, so narrowing to a kernel
+        // must leave the workspace grouping intact rather than flattening it.
+        val (chats, sessions) = SessionGroups.only(
+            chats = emptyList(),
+            sessions = listOf(
+                session("s1", "E:\\w\\alpha", "2026-10-08T02:00:00.000Z", "codex"),
+                session("s2", "E:\\w\\beta", "2026-10-08T03:00:00.000Z", "codex"),
+                session("s3", "E:\\w\\alpha", "2026-10-08T04:00:00.000Z", "dsh"),
+            ),
+            engine = "codex",
+        )
+
+        val groups = SessionGroups.build(chats, sessions, shortName)
+
+        assertEquals(listOf("alpha", "beta"), groups.map { it.name })
+        assertEquals(1, groups[0].count)
+        assertEquals(1, groups[1].count)
     }
 }
