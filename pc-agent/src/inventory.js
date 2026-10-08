@@ -21,7 +21,30 @@ const MAX_ITEMS = 400;
 let processCache = { at: 0, value: null, inFlight: null };
 let serviceCache = { at: 0, value: null, inFlight: null };
 
+/**
+ * Processes, with the parent link this collector used to drop.
+ *
+ * Two sources on purpose, merged in PowerShell:
+ *
+ *   - `Get-Process` is where CPU seconds and thread counts come from. `Win32_Process`
+ *     has neither, so replacing the call with it (the obvious way to get a parent pid)
+ *     would have silently blanked a field the UI already shows.
+ *   - `Win32_Process` is where `ParentProcessId` comes from, and one query is shared by
+ *     both the list and the parent lookup rather than being run twice.
+ *
+ * The parent matters for correctness, not decoration: "which processes did THIS agent
+ * start" cannot be answered by pids alone, because a kernel that is launched through a
+ * wrapper (mimo is `node bin/mimo` -> `mimo.exe`) puts the real process one level below
+ * the pid we recorded. Without the link, the agent reports its own kernel as somebody
+ * else's running conversation.
+ */
 const PROCESS_SCRIPT = `
+$parents = @{}
+try {
+  foreach ($wp in (Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+    $parents[[int]$wp.ProcessId] = [int]$wp.ParentProcessId
+  }
+} catch { }
 $items = Get-Process | ForEach-Object {
   $p = $_
   $start = $null
@@ -30,9 +53,12 @@ $items = Get-Process | ForEach-Object {
   try { if ($null -ne $p.CPU) { $cpu = [math]::Round([double]$p.CPU, 2) } } catch { }
   $threads = 0
   try { $threads = $p.Threads.Count } catch { }
+  $parent = 0
+  if ($parents.ContainsKey([int]$p.Id)) { $parent = $parents[[int]$p.Id] }
   [PSCustomObject]@{
     pid        = $p.Id
     name       = $p.ProcessName
+    parentPid  = $parent
     cpuSeconds = $cpu
     memBytes   = $p.WorkingSet64
     startTime  = $start
@@ -62,6 +88,9 @@ function normalizeProcess(row) {
   return {
     pid: Number(row.pid ?? 0),
     name: String(row.name ?? ''),
+    // 0 means "unknown": the OS would not tell us, or the parent has exited. It is
+    // never treated as a pid, so a process can never be shown as a child of pid 0.
+    parentPid: Number(row.parentPid ?? 0) || 0,
     // Null means "the OS would not tell us", which the UI shows as "—".
     cpuSeconds: row.cpuSeconds === null || row.cpuSeconds === undefined ? null : Number(row.cpuSeconds),
     memBytes: Number(row.memBytes ?? 0),

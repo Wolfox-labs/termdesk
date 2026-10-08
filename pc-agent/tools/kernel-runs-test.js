@@ -16,7 +16,13 @@
  *
  *   node tools/kernel-runs-test.js
  */
-import { executableFor, processNameOf, externalKernelRuns, describeExternalRuns } from '../src/kernelruns.js';
+import {
+  executableFor,
+  processNameOf,
+  externalKernelRuns,
+  describeExternalRuns,
+  withDescendants,
+} from '../src/kernelruns.js';
 
 const results = [];
 const check = (name, passed, detail = '') => {
@@ -113,6 +119,72 @@ check('nothing to report says so instead of saying nothing',
 check('a summary counts by kernel', describeExternalRuns([
   { label: 'Codex' }, { label: 'Codex' }, { label: 'DSH' },
 ]).includes('Codex×2'), describeExternalRuns([{ label: 'Codex' }, { label: 'Codex' }, { label: 'DSH' }]));
+
+// ---- the agent's own children, including the ones below the wrapper ----------
+//
+// This is the bug that reached a phone: "MiMo Code" was listed as an agent running on
+// the machine, and it was TermDesk's OWN kernel. The agent recorded `node .../bin/mimo`
+// as its child, but a process list reports `mimo.exe` one level further down, so
+// excluding only the recorded pid excluded nothing that mattered.
+
+{
+  // The measured chain, verbatim from the machine that produced the bug.
+  const chain = [
+    { pid: 46068, name: 'node', parentPid: 18708 }, // the agent itself
+    { pid: 42160, name: 'node', parentPid: 46068 }, // `node .../bin/mimo` (recorded)
+    { pid: 44280, name: 'mimo', parentPid: 42160 }, // `mimo.exe acp` (what the list shows)
+  ];
+  const ours = withDescendants(chain, [42160]);
+
+  check('a grandchild of a recorded pid is recognised as ours',
+    ours.has(44280), 'this is the exact process the phone was shown as a stranger');
+  check('and the recorded pid itself stays excluded', ours.has(42160));
+  check('walking down does not walk UP into the agent and its shell',
+    !ours.has(46068) && !ours.has(18708), 'the agent is not one of its own conversations');
+  check('the exclusion set is what externalKernelRuns needs to say nothing',
+    externalKernelRuns(chain, [kernel('mimo', 'MiMo Code')], ours).length === 0,
+    JSON.stringify(externalKernelRuns(chain, [kernel('mimo', 'MiMo Code')], ours)));
+}
+
+{
+  // Without this, the fix would be a regression: every kernel would vanish.
+  const other = [
+    { pid: 46068, name: 'node', parentPid: 1 },
+    { pid: 900, name: 'mimo', parentPid: 1 }, // somebody else's kernel
+  ];
+  check('a kernel that is NOT ours is still reported',
+    externalKernelRuns(other, [kernel('mimo', 'MiMo Code')], withDescendants(other, [46068])).length === 1);
+}
+
+{
+  // A deeper chain, and two recorded roots.
+  const deep = [
+    { pid: 1, name: 'a', parentPid: 0 },
+    { pid: 2, name: 'b', parentPid: 1 },
+    { pid: 3, name: 'c', parentPid: 2 },
+    { pid: 4, name: 'd', parentPid: 3 },
+    { pid: 5, name: 'e', parentPid: 1 },
+  ];
+  const ours = withDescendants(deep, [1]);
+  check('a deep chain is walked to the bottom',
+    [1, 2, 3, 4, 5].every((pid) => ours.has(pid)), [...ours].join(','));
+}
+
+check('no roots means nothing is excluded',
+  withDescendants([{ pid: 1, name: 'a', parentPid: 0 }], []).size === 0);
+check('a root that is not in the list is still excluded',
+  withDescendants([{ pid: 1, name: 'a', parentPid: 0 }], [999]).has(999),
+  'our own pid must be excluded even if the process list is capped before it');
+check('no parent links at all still excludes the roots themselves',
+  withDescendants([{ pid: 1, name: 'a' }, { pid: 2, name: 'b' }], [1]).size === 1,
+  'an older collector must not silently stop excluding anything');
+check('pid 0 is never treated as a parent',
+  withDescendants([{ pid: 1, name: 'a', parentPid: 0 }, { pid: 2, name: 'b', parentPid: 0 }], [1]).size === 1,
+  'otherwise every orphan would look like a child of pid 0');
+check('junk pids are skipped rather than walked',
+  withDescendants([{ pid: 'x', name: 'a' }, { pid: -5, name: 'b' }], [1]).size === 1);
+check('an empty process list returns just the roots',
+  withDescendants([], [7]).has(7));
 
 const failed = results.filter((r) => !r.passed);
 console.log(`\n${results.length - failed.length} passed, ${failed.length} failed`);

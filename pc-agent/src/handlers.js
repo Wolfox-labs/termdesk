@@ -33,7 +33,7 @@ import {
 } from './codexconfig.js';
 import { listSessions, readSession, sessionRoots } from './sessions.js';
 import { chatEngineIds, getKernel, isAdapterKernel, kernelTier, listKernels } from './kernels/registry.js';
-import { externalKernelRuns } from './kernelruns.js';
+import { externalKernelRuns, withDescendants } from './kernelruns.js';
 import { detectDesktopAgentInstances } from './appagents.js';
 import { threadSummaryToSession, threadToSessionDetail, discoverThreadIdsFromDisk } from './kernels/codex.js';
 
@@ -440,7 +440,15 @@ export function createFrameHandler(ctx) {
           for (const kernel of chats?.acp?.values?.() ?? []) remember(kernel?.child?.pid);
           for (const chat of chats?.chats?.values?.() ?? []) remember(chat?.child?.pid);
 
-          const runs = externalKernelRuns(processes.items, kernels, mine);
+          // A kernel launched through a wrapper puts the process that SHOWS UP one
+          // level below the pid we recorded: MiMo is `node .../bin/mimo` (ours) which
+          // spawns `mimo.exe` (the real kernel, and the name a process list reports).
+          // Excluding the recorded pids alone therefore excluded nothing that mattered,
+          // and the phone advertised this agent's own kernel as somebody else's running
+          // conversation. See `withDescendants`.
+          const ours = withDescendants(processes.items, mine);
+
+          const runs = externalKernelRuns(processes.items, kernels, ours);
 
           // Agents running INSIDE a desktop app are invisible to the name match above,
           // and that is not hypothetical: the phone showed "还没有进行中的对话" while a

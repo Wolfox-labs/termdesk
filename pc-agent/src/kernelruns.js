@@ -59,6 +59,61 @@ export function processNameOf(executablePath) {
 }
 
 /**
+ * Every pid this agent started, including the ones it started indirectly.
+ *
+ * This is the fix for a bug that reached a phone: the phone listed "MiMo Code" as an
+ * agent running on the machine, and it was actually TermDesk's OWN ACP kernel — the
+ * agent had recorded `node .../bin/mimo` as its child, but the process that shows up in
+ * a process list is `mimo.exe`, one level further down. Excluding only the recorded pids
+ * therefore excluded nothing that mattered, and the phone advertised the agent's own
+ * kernel as a stranger's conversation.
+ *
+ * The walk is over the process list the caller already has, so it costs nothing: the
+ * parent link is collected with the list. It is bounded by visiting each pid once, and a
+ * pid whose parent is unknown (0, or already exited) simply has no ancestors.
+ *
+ * @param {Array<{pid: number, parentPid?: number}>} processes
+ * @param {Iterable<number|string>} roots pids this agent recorded as its own
+ * @returns {Set<number>} the roots plus every descendant found
+ */
+export function withDescendants(processes, roots) {
+    const out = new Set();
+    const childrenOf = new Map();
+    let hasParentLinks = false;
+    for (const proc of processes ?? []) {
+        const pid = Number(proc?.pid);
+        const parent = Number(proc?.parentPid ?? 0);
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+        if (Number.isFinite(parent) && parent > 0) hasParentLinks = true;
+        if (!Number.isFinite(parent) || parent <= 0) continue;
+        const bucket = childrenOf.get(parent);
+        if (bucket) bucket.push(pid);
+        else childrenOf.set(parent, [pid]);
+    }
+
+    for (const root of roots ?? []) {
+        const pid = Number(root);
+        if (Number.isFinite(pid) && pid > 0) out.add(pid);
+    }
+    // Without parent links this cannot find anything, and pretending otherwise would
+    // silently drop the roots themselves from the exclusion set.
+    if (!hasParentLinks) return out;
+
+    const queue = [...out];
+    const seen = new Set(out);
+    while (queue.length > 0) {
+        const pid = queue.pop();
+        for (const child of childrenOf.get(pid) ?? []) {
+            if (seen.has(child)) continue;
+            seen.add(child);
+            out.add(child);
+            queue.push(child);
+        }
+    }
+    return out;
+}
+
+/**
  * Agent processes running on this machine that this agent does not own.
  *
  * @param {Array<{pid: number, name: string, memBytes?: number, cpuSeconds?: number}>} processes
