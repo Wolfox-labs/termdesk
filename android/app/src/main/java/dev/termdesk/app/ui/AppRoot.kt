@@ -69,6 +69,8 @@ fun AppRoot(
     val sessionDetail by vm.sessionDetail.collectAsState()
     val kernelRuns by vm.kernelRuns.collectAsState()
     val kernelRunsNote by vm.kernelRunsNote.collectAsState()
+    val pendingSends by vm.pendingCount.collectAsState()
+    val pendingDropped by vm.pendingDropped.collectAsState()
     val themeMode by vm.themeMode.collectAsState()
     val engines by vm.engines.collectAsState()
     val defaultEngine by vm.defaultEngine.collectAsState()
@@ -284,6 +286,8 @@ fun AppRoot(
                 kernelRuns = kernelRuns,
                 kernelRunsNote = kernelRunsNote,
                 onLoadKernelRuns = vm::loadKernelRuns,
+                pendingSends = pendingSends,
+                pendingDropped = pendingDropped,
                 onOpenSession = { session -> vm.openSession(session) },
                 onResumeSession = vm::resumeSession,
                 connected = connected,

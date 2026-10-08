@@ -147,6 +147,9 @@ fun ChatSection(
     /** Agent processes running on the PC that its own agent did not start. */
     kernelRuns: List<KernelRun> = emptyList(),
     kernelRunsNote: String? = null,
+    /** Messages waiting for a link, and how many expired unsent. */
+    pendingSends: Int = 0,
+    pendingDropped: Int = 0,
     onLoadKernelRuns: () -> Unit = {},
     onOpenSession: (SessionInfo) -> Unit,
     onResumeSession: (SessionDetail) -> Unit,
@@ -312,6 +315,8 @@ fun ChatSection(
                     onSetMode = onSetChatMode,
                     onClose = onCloseChat,
                     connected = connected,
+                    pendingSends = pendingSends,
+                    pendingDropped = pendingDropped,
                 )
                 else -> Column(Modifier.fillMaxSize()) {
                     SessionTabs(
@@ -1063,6 +1068,8 @@ private fun Conversation(
     onSetMode: (String, String) -> Unit,
     onClose: (String) -> Unit,
     connected: Boolean,
+    pendingSends: Int = 0,
+    pendingDropped: Int = 0,
 ) {
     // What this conversation can run as, both of them the kernel's own words:
     // the model list and the permission / agent modes it declared.
@@ -1239,6 +1246,8 @@ private fun Conversation(
             sending = sending,
             running = chat.isRunning,
             canSend = connected && (chat.ready || chat.isRunning || chat.status != "stopped"),
+            pendingCount = pendingSends,
+            droppedCount = pendingDropped,
             onSend = {
                 val text = draft.trim()
                 if (text.isNotEmpty()) {
@@ -1361,7 +1370,35 @@ private fun Composer(
     canSend: Boolean,
     onSend: () -> Unit,
     onCancel: () -> Unit,
+    /**
+     * How many messages are waiting for the link to come back.
+     *
+     * Shown rather than silently held: someone who typed a message on a train
+     * needs to know it is not lost, and needs to know when it finally goes.
+     */
+    pendingCount: Int = 0,
+    /** How many were dropped for being too old to be worth sending. */
+    droppedCount: Int = 0,
 ) {
+    Column(Modifier.fillMaxWidth()) {
+        if (pendingCount > 0) {
+            Text(
+                text = "待发 $pendingCount 条 · 连上就发",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 12.dp, top = 4.dp),
+            )
+        }
+        if (droppedCount > 0) {
+            Text(
+                // Said out loud: a message that expired is a message the person
+                // expected to be sent, and finding out by silence is worse.
+                text = "$droppedCount 条待发消息已过期未发出",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(start = 12.dp, top = 4.dp),
+            )
+        }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1408,6 +1445,7 @@ private fun Composer(
                 }
             }
         }
+    }
     }
 }
 

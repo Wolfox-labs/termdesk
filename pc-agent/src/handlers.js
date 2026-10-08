@@ -801,12 +801,17 @@ export function createFrameHandler(ctx) {
           model: frame.model,
           effort: frame.effort,
         });
+        // `requestId` is echoed, not interpreted. The phone queues a message while
+        // the link is down and replays it on reconnect; the echo is what tells it
+        // the message actually arrived, as opposed to a timer guessing.
+        const requestId = typeof frame.requestId === 'string' && frame.requestId ? frame.requestId : null;
         if (result.ok) {
           send(S2C.CHAT_SENT, {
             chatId: frame.chatId,
             seq: result.userSeq?.seq ?? null,
             messageId: result.messageId,
             sessionId: result.sessionId,
+            requestId,
           });
         } else {
           send(S2C.ACTION_RESULT, {
@@ -815,6 +820,7 @@ export function createFrameHandler(ctx) {
             ok: false,
             code: result.code,
             message: result.message,
+            requestId,
           });
         }
         break;

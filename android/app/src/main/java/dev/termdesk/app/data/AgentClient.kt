@@ -57,6 +57,15 @@ class AgentClient(
         .readTimeout(0, TimeUnit.MILLISECONDS) // long-lived socket
         .build()
 
+    init {
+        // A queue that did not survive the process would be a queue only for the
+        // length of a train tunnel.
+        runCatching {
+            val saved = pendingSendsFile()?.takeIf { it.exists() }?.readText()
+            if (saved != null) pendingSends.restore(PendingSends.fromJson(saved))
+        }
+    }
+
     private val _link = MutableStateFlow<LinkState>(LinkState.Idle)
     val link: StateFlow<LinkState> = _link.asStateFlow()
 
@@ -238,6 +247,26 @@ class AgentClient(
     private val _kernelRunsNote = MutableStateFlow<String?>(null)
     val kernelRunsNote: StateFlow<String?> = _kernelRunsNote.asStateFlow()
 
+    /**
+     * Messages the person wrote while the link was down.
+     *
+     * Persisted under `filesDir` so a queued message survives a restart: a
+     * conversation typed on a train and interrupted by the app being killed is
+     * exactly the case this exists for. `onChanged` is where it is written, so
+     * there is one place that knows the on-disk shape.
+     */
+    private val pendingSends = PendingSends(
+        onChanged = { items -> persistPendingSends(items) },
+    )
+
+    /** How many messages are waiting for a link, for the composer to show. */
+    private val _pendingCount = MutableStateFlow(0)
+    val pendingCount: StateFlow<Int> = _pendingCount.asStateFlow()
+
+    /** What was dropped for being too old, so the screen can say so once. */
+    private val _pendingDropped = MutableStateFlow(0)
+    val pendingDropped: StateFlow<Int> = _pendingDropped.asStateFlow()
+
     private val _sessionDetail = MutableStateFlow<SessionDetail?>(null)
     val sessionDetail: StateFlow<SessionDetail?> = _sessionDetail.asStateFlow()
 
@@ -328,6 +357,39 @@ class AgentClient(
      * budget the cache grows with every session the user opens, forever.
      */
     private val historyCacheBudget = 48L * 1024 * 1024
+
+    /** Where the queue lives. Null when there is no app context (tests, previews). */
+    private fun pendingSendsFile(): File? = appContext?.let {
+        val dir = File(it.filesDir, "pending-sends").apply { mkdirs() }
+        File(dir, "queue.json")
+    }
+
+    private fun persistPendingSends(items: List<PendingSends.Item>) {
+        _pendingCount.value = items.size
+        val file = pendingSendsFile() ?: return
+        runCatching { file.writeText(PendingSends.toJson(items)) }
+    }
+
+    /**
+     * Send what was queued while the link was down, in order.
+     *
+     * One at a time, and each one is left in the queue until the agent echoes its
+     * id back: firing them all at once would lose the order the person wrote them
+     * in, and removing them on send would lose them for real the moment the socket
+     * died again mid-replay.
+     */
+    private fun replayPendingSends() {
+        val dropped = pendingSends.pruneExpired()
+        if (dropped > 0) _pendingDropped.value = dropped
+        for (item in pendingSends.snapshot()) {
+            val frame = JSONObject()
+                .put("type", "chat.send")
+                .put("chatId", item.chatId)
+                .put("text", item.text)
+                .put("requestId", item.id)
+            if (!sendFrame(frame)) return
+        }
+    }
 
     private fun cacheFile(name: String): File? = appContext?.let {
         val dir = File(it.filesDir, "history-cache").apply { mkdirs() }
@@ -769,11 +831,28 @@ class AgentClient(
     }
 
     fun sendChatMessage(chatId: String, text: String, model: String? = null, effort: String? = null) {
-        _chatSending.value = true
-        val frame = JSONObject().put("type", "chat.send").put("chatId", chatId).put("text", text)
+        // The id is minted here rather than by the agent so the phone can name the
+        // message it is waiting for: the agent echoes it back, and that echo is
+        // what says the words arrived.
+        val requestId = "p-" + java.util.UUID.randomUUID()
+        val frame = JSONObject()
+            .put("type", "chat.send")
+            .put("chatId", chatId)
+            .put("text", text)
+            .put("requestId", requestId)
         if (!model.isNullOrBlank()) frame.put("model", model)
         if (!effort.isNullOrBlank()) frame.put("effort", effort)
-        sendFrame(frame)
+
+        if (!sendFrame(frame)) {
+            // Offline: the words are kept rather than dropped. Only a message the
+            // PERSON wrote is queued; everything else still fails out loud, because
+            // a stale read or a file change happening minutes later with nobody
+            // watching is worse than an error (see PendingSends).
+            pendingSends.enqueue(id = requestId, chatId = chatId, text = text)
+            _chatSending.value = false
+        } else {
+            _chatSending.value = true
+        }
     }
 
     /**
@@ -1455,6 +1534,9 @@ class AgentClient(
                     sendFrame(JSONObject().put("type", "fs.roots"))
                     loadChats()
                     loadSessions()
+                    // Anything written while the link was down goes out now, in
+                    // order, behind the reads that just re-established the view.
+                    replayPendingSends()
                     _activeChat.value?.let { sendFrame(JSONObject().put("type", "chat.read").put("chatId", it.id)) }
                 }
                 "auth.fail" -> {
@@ -1598,6 +1680,13 @@ class AgentClient(
                     }
                 }
                 "action.result" -> {
+                    // A refusal is also an answer: a message the agent declined must
+                    // not be retried forever just because it never became a
+                    // `chat.sent`. The requestId is what says which one it was.
+                    run {
+                        val requestId = frame.optString("requestId")
+                        if (requestId.isNotBlank()) pendingSends.acknowledge(requestId)
+                    }
                     val action = frame.optString("action")
                     if (action.startsWith("chat.")) _chatSending.value = false
                     _lastAction.value = ActionResult(
@@ -1655,6 +1744,14 @@ class AgentClient(
                 }
                 // The kernel table, straight from the PC registry.
                 "kernels" -> _engines.value = parseKernels(frame.optJSONArray("kernels"))
+                // A queued message arrived: the agent echoed the id we minted, so
+                // it can leave the queue. An `action.result` counts too, because a
+                // refusal is also an answer — keeping it queued would retry a
+                // message the agent has already declined.
+                "chat.sent" -> {
+                    val requestId = frame.optString("requestId")
+                    if (requestId.isNotBlank()) pendingSends.acknowledge(requestId)
+                }
                 "kernels.runs" -> {
                     _kernelRuns.value = parseKernelRuns(frame.optJSONArray("runs"))
                     _kernelRunsNote.value = frame.optString("note").takeIf { it.isNotBlank() && it != "null" }

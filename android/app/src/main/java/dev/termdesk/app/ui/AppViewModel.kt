@@ -279,6 +279,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val kernelRunsNote: StateFlow<String?> = client.kernelRunsNote
     fun loadKernelRuns() = client.loadKernelRuns()
 
+    /** Messages the person wrote while the link was down. */
+    val pendingCount: StateFlow<Int> = client.pendingCount
+    val pendingDropped: StateFlow<Int> = client.pendingDropped
+
     fun loadSessions(engine: String? = null) = client.loadSessions(engine)
     fun openSession(session: SessionInfo) = client.openSession(session)
     fun closeSession() = client.closeSession()
