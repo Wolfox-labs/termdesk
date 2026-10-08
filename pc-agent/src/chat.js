@@ -116,6 +116,15 @@ const REAP_INTERVAL_MS = 60 * 1000;
 const RECENT_WRITE_SECONDS = 120;
 
 /**
+ * How many messages may wait behind a running turn.
+ *
+ * Small on purpose: this is "I typed the next thing while it was answering", not a batch
+ * interface. A queue nobody can see the end of is how a conversation ends up answering
+ * questions the person has already moved past.
+ */
+const MAX_QUEUED_MESSAGES = 5;
+
+/**
  * Engines a chat conversation can run on.
  *
  * No longer a hard-coded pair: the kernel registry decides, so a kernel becomes
@@ -517,8 +526,30 @@ export class ChatManager {
     if (message.length > MAX_PROMPT_CHARS) {
       return { ok: false, code: 'prompt_too_long', message: `消息过长（上限 ${MAX_PROMPT_CHARS} 字符）` };
     }
+    // Waiting is the PC's job, not the person's. A kernel takes one prompt at a time, so a
+    // message typed while the answer is still coming waits here and starts when the turn
+    // ends. It is shown immediately, because a message that disappears until later reads
+    // as a message that was lost.
     if (chat.status === 'running') {
-      return { ok: false, code: 'busy', message: '上一轮还在进行中' };
+      const queue = (chat.queue ??= []);
+      if (queue.length >= MAX_QUEUED_MESSAGES) {
+        return {
+          ok: false,
+          code: 'queue_full',
+          message: `上一轮还在进行中，排队已满（${MAX_QUEUED_MESSAGES} 条），等它答完再发`,
+        };
+      }
+      const line = chat.push({
+        kind: 'message',
+        role: 'user',
+        text: message,
+        optimistic: true,
+        queued: true,
+      });
+      queue.push({ line, text: message, opts });
+      chat.lastUsedAt = Date.now();
+      this.emitEvent(chat, line);
+      return { ok: true, queued: true, position: queue.length, userSeq: line };
     }
 
     // Per-turn overrides: the kernel documents model and effort as applying to
@@ -546,12 +577,86 @@ export class ChatManager {
 
     // One question, three answers. Before this the manager asked by name, so a
     // kernel it had not been taught fell through to the SDK driver and talked a
-    // protocol it does not speak.
+    // protocol it does not speak. A queued message starts through the same dispatch, so it
+    // lives on its own.
+    return this.dispatchTurn(chat, message, userSeq);
+  }
+
+  /**
+   * Hand one prompt to whichever driver this conversation's kernel speaks.
+   *
+   * Split out of `send` so a queued message can start without re-entering the parts of
+   * `send` that decide whether a message may be sent at all — and, more importantly,
+   * without pushing a second copy of a line that is already on screen.
+   */
+  dispatchTurn(chat, message, userSeq) {
     const driver = turnDriver(chat.engine, lookupKernel);
     if (driver === 'app-server') return this.sendCodex(chat, message, userSeq);
     if (driver === 'acp') return this.sendAcp(chat, message, userSeq);
     if (driver === 'sdk') return this.sendDsh(chat, message, userSeq);
     return this.failUnsupported(chat, userSeq);
+  }
+
+  /**
+   * Start the next queued message, if there is one and the conversation is free.
+   *
+   * Called where a turn ends. The line is already in the transcript — it was shown the
+   * moment it was typed — so it is NOT pushed again: a second copy is exactly the
+   * duplicate this queue must not create, and the phone would draw both. The echo slot is
+   * set here instead, because that slot means "the kernel has not echoed this line yet",
+   * which only becomes true now.
+   *
+   * A message that cannot start (a runtime that died while it waited) would stall the
+   * queue behind itself forever, because a turn that never began never ends. So the
+   * failure is written onto that line and the queue moves on.
+   */
+  async drainQueue(chat) {
+    if (!chat?.queue || chat.queue.length === 0) return false;
+    if (chat.status === 'running') return false;
+    const next = chat.queue.shift();
+    chat.status = 'running';
+    chat.lastUsedAt = Date.now();
+    chat.pendingUserEcho = next.line;
+    // It is being sent now, so it stops saying "waiting". The phone redraws this line from
+    // the event; without it the marker would sit on a message the kernel has already seen.
+    if (next.line.queued) {
+      next.line.queued = false;
+      this.emitEvent(chat, next.line);
+    }
+    const result = await this.dispatchTurn(chat, next.text, next.line);
+    if (result?.ok === false) {
+      chat.status = 'idle';
+      const record = chat.push({
+        kind: 'error',
+        role: 'engine',
+        text: `排队中的消息没有发出：${result.message ?? result.code ?? '未知原因'}`,
+      });
+      this.emitEvent(chat, record.seq);
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
+      return this.drainQueue(chat);
+    }
+    return true;
+  }
+
+  /**
+   * Abandon whatever is still waiting, out loud.
+   *
+   * Stopping means stopping: a queued message that fires right after a cancel is the
+   * opposite of what the person asked for. The lines themselves stay — they were shown
+   * when they were typed, and deleting somebody's words is worse than not sending them —
+   * and one line says how many will not go.
+   */
+  dropQueue(chat, note) {
+    const queued = chat.queue?.length ?? 0;
+    if (queued === 0) return 0;
+    chat.queue = [];
+    const record = chat.push({
+      kind: 'local',
+      role: 'engine',
+      text: `${note}：队列中的 ${queued} 条消息未发送`,
+    });
+    this.emitEvent(chat, record.seq);
+    return queued;
   }
 
   /** One turn on the resident DSH SDK runtime. */
@@ -1002,6 +1107,9 @@ export class ChatManager {
     });
     this.emit({ event: 'chat.turn', chatId: chat.id, state: failed ? 'failed' : 'ended' });
     this.emit({ event: 'chat.status', chatId: chat.id, status: chat.status });
+    // The turn is over, so anything typed during it can start now. A failed turn is not
+    // drained: the next message would go into the same wall.
+    if (!failed) this.drainQueue(chat).catch(() => {});
   }
 
   armCodexWatchdog(chat) {
@@ -1402,6 +1510,9 @@ export class ChatManager {
     });
     this.emit({ event: 'chat.turn', chatId: chat.id, state: failed ? 'failed' : 'ended' });
     this.emit({ event: 'chat.status', chatId: chat.id, status: chat.status });
+    // The turn is over, so anything typed during it can start now. A failed turn is not
+    // drained: the next message would go into the same wall.
+    if (!failed) this.drainQueue(chat).catch(() => {});
   }
 
   /**
@@ -1544,6 +1655,9 @@ export class ChatManager {
   stopTurn(chat, note) {
     chat.status = 'stopped';
     chat.push({ kind: 'error', role: 'engine', text: note ?? '已停止本轮回复' });
+    // Stopping stops the whole thing, queue included: a message that fires seconds after a
+    // cancel is the opposite of what was asked for.
+    this.dropQueue(chat, '已停止');
     this.emit({ event: 'chat.turn', chatId: chat.id, state: 'cancelled' });
     this.emit({ event: 'chat.status', chatId: chat.id, status: 'stopped' });
     return { ok: true };
@@ -1707,6 +1821,8 @@ export class ChatManager {
         chat.status = 'idle';
         this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
         this.emit({ event: 'chat.turn', chatId: chat.id, state: 'idle' });
+        // The runtime is free again, so a message typed during the turn can go now.
+        this.drainQueue(chat).catch(() => {});
       } else if (status === 'running' && chat.status !== 'running') {
         chat.status = 'running';
         this.emit({ event: 'chat.status', chatId: chat.id, status: 'running' });

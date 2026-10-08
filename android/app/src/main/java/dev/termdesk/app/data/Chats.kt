@@ -95,6 +95,14 @@ data class ChatEvent(
     val sourceKind: String?,
     /** True while the model is still streaming this line. */
     val streaming: Boolean,
+    /**
+     * True while this message is waiting its turn on the PC.
+     *
+     * A message typed while the previous answer is still coming is queued there rather
+     * than refused, and it is drawn straight away so that it does not look lost. This flag
+     * is what tells "waiting to be sent" apart from "sent, and being answered".
+     */
+    val queued: Boolean = false,
 ) {
     val isUser: Boolean get() = kind == "message" && role == "user"
     val isAssistant: Boolean get() = kind == "message" && role == "assistant"

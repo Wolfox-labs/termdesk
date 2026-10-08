@@ -38,6 +38,32 @@ import org.junit.Test
  */
 class AgentFramesTest {
 
+    @Test
+    fun `a queued message is marked as waiting, and a sent one is not`() {
+        // The PC queues a message typed while the previous answer is still coming, and
+        // draws it immediately so it does not look lost. The badge is the only thing that
+        // tells "waiting to be sent" apart from "sent, and being answered".
+        val waiting = parseChatEvent(
+            JSONObject()
+                .put("seq", 3)
+                .put("kind", "message")
+                .put("role", "user")
+                .put("text", "also check the tests")
+                .put("queued", true),
+        )
+        val sent = parseChatEvent(
+            JSONObject()
+                .put("seq", 4)
+                .put("kind", "message")
+                .put("role", "user")
+                .put("text", "and the docs"),
+        )
+
+        assertTrue("a message waiting its turn says so", waiting.queued)
+        assertTrue("and it is still the user's own line", waiting.isUser)
+        assertFalse("a message the kernel has already seen is not queued", sent.queued)
+    }
+
     // ---- the session list's workspace index (what the sidebar groups by) ----
 
     @Test

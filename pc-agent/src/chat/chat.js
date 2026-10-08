@@ -117,6 +117,17 @@ export class Chat {
      * path, which echoes user messages back over the wire.
      */
     this.pendingUserEcho = null;
+    /**
+     * Messages typed while this conversation was still answering, in the order typed.
+     *
+     * The queue lives on the PC and not on the phone, because the kernel takes one prompt
+     * at a time: the phone is a display shell, and "wait your turn" is this side's job.
+     * Each entry is `{ line, text, opts }`, where `line` is the transcript record that was
+     * already shown when the message was typed — so starting it later must NOT push a
+     * second copy of it. (It is a record and not a seq because the echo reconciliation
+     * compares records; see `pendingUserEcho`.)
+     */
+    this.queue = [];
   }
 
   push(event) {

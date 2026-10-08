@@ -142,6 +142,7 @@ import org.json.JSONObject
             exitCode = meta?.let { if (it.isNull("exitCode")) null else it.optInt("exitCode") },
             sourceKind = meta?.let { if (it.isNull("sourceKind")) null else it.optString("sourceKind") },
             streaming = o.optBoolean("streaming", false),
+            queued = o.optBoolean("queued", false),
         )
     }
     internal fun parseProcesses(arr: JSONArray?): List<ProcessInfo> {

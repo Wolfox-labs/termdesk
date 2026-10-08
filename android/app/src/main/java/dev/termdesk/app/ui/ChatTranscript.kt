@@ -86,6 +86,18 @@ internal fun UserLine(event: ChatEvent) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
+            // A message typed while the answer was still coming waits its turn on the PC.
+            // It is drawn the moment it is typed — a message that disappears until later
+            // reads as a message that was lost — so this line is what stops "waiting" from
+            // looking like "ignored".
+            if (event.queued) {
+                Text(
+                    text = "排队中 · 这一轮答完就发",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
         }
     }
 }
