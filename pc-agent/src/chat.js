@@ -70,6 +70,7 @@ import crypto from 'node:crypto';
 import { CodexAppServer, notificationToChatEvents, turnToChatEvents } from './kernels/codex.js';
 import { AcpKernel, acpUpdateToChatEvents, acpSessionToSessionInfo } from './kernels/acp.js';
 import { createApprovalHandlers } from './chat/approvals.js';
+import { discardPreviews as discardStreamedPreviews, handleAssistantChunk as handleStreamChunk } from './chat/stream.js';
 import { Chat } from './chat/chat.js';
 import { decisionFor } from './kernels/codex.js';
 import { CliKernel } from './kernels/cli.js';
@@ -1677,48 +1678,10 @@ export class ChatManager {
   }
 
   handleAssistantChunk(chat, ev) {
-    const chunk = ev.data?.chunk ?? {};
-    const index = chunk.index ?? 0;
-
-    if (chunk.type === 'block-start') {
-      chat.streaming = { index, blockType: chunk.blockType ?? 'text', text: '' };
-      return;
-    }
-    if (chunk.type === 'block-end') {
-      // Close the preview, but keep it registered: the authoritative
-      // `assistant/message` may still replace it later in the turn.
-      if (chat.streaming) chat.streaming.open = false;
-      chat.streaming = null;
-      return;
-    }
-
-    const deltaTypes = {
-      'text-delta': 'text',
-      'reasoning-delta': 'reasoning',
-    };
-    const blockType = deltaTypes[chunk.type];
-    if (!blockType) return;
-
-    if (!chat.streaming || chat.streaming.index !== index) {
-      chat.streaming = { index, blockType, text: '' };
-    }
-    chat.streaming.text += chunk.text ?? '';
-
-    const kind = blockType === 'reasoning' ? 'reasoning' : 'message';
-
-    // Coalesce deltas into one growing event instead of one frame per token:
-    // the phone renders far better and the wire stays small.
-    const openPreview = chat.previews.filter((p) => p.kind === kind).pop();
-    const last = chat.events[chat.events.length - 1];
-    if (openPreview && last === openPreview) {
-      last.text += chunk.text ?? '';
-      this.emitEvent(chat, last, { stream: true });
-      return;
-    }
-
-    const record = chat.push({ kind, role: 'assistant', text: chunk.text ?? '', streaming: true });
-    chat.previews.push(record);
-    this.emitEvent(chat, record, { stream: true });
+    return handleStreamChunk(chat, ev, {
+      push: (target, event) => target.push(event),
+      emitEvent: (target, record, extra) => this.emitEvent(target, record, extra),
+    });
   }
 
   pushAndEmit(chat, normalized) {
@@ -1727,37 +1690,12 @@ export class ChatManager {
     return record;
   }
 
-  /**
-   * Publish one transcript change.
-   *
-   * The frame carries the whole record, not just its seq: the phone renders a
-   * live answer token by token, and a frame that only said "something changed"
-   * would force a `chat.read` round trip per delta.
-   */
   emitEvent(chat, record, extra = {}) {
     this.emit({ event: 'chat.event', chatId: chat.id, seq: record.seq, item: record, ...extra });
   }
 
-  /**
-   * Remove streamed preview events of one kind from the transcript.
-   *
-   * The runtime emits `assistant/chunk` deltas for live display and then one
-   * `assistant/message` holding the finished blocks. Only the finished message
-   * is durable, so the previews of that same kind are dropped to keep the
-   * transcript equal to what the runtime actually recorded.
-   *
-   * @returns {number} how many preview events were removed.
-   */
   discardPreviews(chat, kind) {
-    const doomed = new Set(chat.previews.filter((p) => p.kind === kind));
-    if (doomed.size === 0) return 0;
-    chat.events = chat.events.filter((e) => !doomed.has(e));
-    chat.previews = chat.previews.filter((p) => !doomed.has(p));
-    // The client learned about those seqs already; tell it they are gone so its
-    // incremental view cannot keep the duplicate.
-    for (const preview of doomed) {
-      this.emit({ event: 'chat.event', chatId: chat.id, seq: preview.seq, removed: true });
-    }    return doomed.size;
+    return discardStreamedPreviews(chat, kind, this);
   }
 
   failPending(chat, error) {
