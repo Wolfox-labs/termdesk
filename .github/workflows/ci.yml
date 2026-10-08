@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
 
 jobs:
@@ -24,27 +24,43 @@ jobs:
         # check, and the relay package carries its own dependency (ws).
         working-directory: relay
         run: npm install --no-audit --no-fund
-      - name: Syntax + protocol consistency
+      - name: Syntax, protocol consistency, and the facade pin
         run: npm test
 
-  android-lint:
-    name: android sources present
+  android:
+    name: Android and desktop compile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Ensure Kotlin sources parse as UTF-8
-        run: |
-          python3 - <<'PY'
-          import pathlib, sys
-          root = pathlib.Path('android/app/src')
-          bad = []
-          for p in root.rglob('*.kt'):
-              try:
-                  p.read_text(encoding='utf-8')
-              except Exception as e:
-                  bad.append(f'{p}: {e}')
-          if bad:
-              print('\n'.join(bad))
-              sys.exit(1)
-          print('ok')
-          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+        with:
+          # compileSdk is 35; the runner image already carries most of this, and
+          # this step makes the exact platform present rather than assumed.
+          packages: 'platforms;android-35 build-tools;35.0.0'
+      - name: Install the agent's dependencies
+        # The APK carries the agent's own source (see `syncLocalAgent` in
+        # android/app/build.gradle.kts), and that task also stages `ws` out of
+        # pc-agent/node_modules. Without this install the asset tree is
+        # incomplete and the Android build fails - which is exactly what a
+        # fresh checkout looks like, so it is a required step, not a nicety.
+        working-directory: pc-agent
+        run: npm install --no-audit --no-fund
+      - name: Compile the phone app
+        run: ./gradlew :app:assembleDebug --console=plain
+        working-directory: android
+      - name: Compile the desktop shell
+        # Same Gradle project as the phone app; this is what keeps the desktop
+        # window from breaking silently while only the app is being built.
+        run: ./gradlew -p desktop compileKotlin --console=plain
+        working-directory: android
+      - name: Keep the debug APK as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: termdesk-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
