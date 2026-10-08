@@ -132,6 +132,10 @@ export class ApprovalBroker extends EventEmitter {
       };
       this.pendingRequests.set(requestId, record);
       this.emitEvent({ event: 'chat.approval', ...publicRequest });
+      // Somebody has to answer this and the kernel is blocked until they do, which makes it
+      // the one event worth waking a phone for. The listener decides how; this only reports
+      // that it happened.
+      this.emit('requested', publicRequest);
     });
   }
 

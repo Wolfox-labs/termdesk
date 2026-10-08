@@ -30,6 +30,7 @@ import { handleLocalKernelRequest } from './localkernel.js';
 import { TerminalManager } from './terminal.js';
 import { listKernels, probeKernels } from './kernels/registry.js';
 import { ChatManager } from './chat.js';
+import { Notifier } from './notify.js';
 import { loadRelayConfig, startRelayConnector } from './relay-client.js';
 import { Tunnel, findCloudflared, findTunnelConfig, verifyOwnAgent } from './tunnel.js';
 import { choosePairingUrl, devicesPage, pairPage, pairPayload, pairingUrlReason, qrMatrix, qrTerminal } from './pair.js';
@@ -101,7 +102,14 @@ function httpAccessKey(req, url) {
 }
 
 const terminals = new TerminalManager();
-const chats = new ChatManager();
+/**
+ * What the phone gets told about while nobody is looking.
+ *
+ * Created before the chat manager because the manager is what reports into it — the
+ * decision to notify belongs to the side that knows a turn ended, not to the phone.
+ */
+const notifier = new Notifier();
+const chats = new ChatManager({ notifier });
 
 /**
  * The socket currently receiving streamed terminal/engine/chat frames.
@@ -873,6 +881,18 @@ wss.on('connection', (socket, req) => {
       });
       send(S2C.HELLO, { hostname: os.hostname(), platform: `${os.platform()} ${os.release()}` });
       routedSocket = socket;
+      // Notifications follow the same rule as everything else streamed: the last
+      // authenticated client is the one being told things. Anything that happened while
+      // nobody was attached is delivered now, marked `whileAway` so the phone can say so
+      // rather than pretending it just happened.
+      notifier.attach((payload) => {
+        if (socket.readyState !== socket.OPEN) throw new Error('socket is not open');
+        socket.send(encodeFrame(S2C.NOTIFY, payload));
+      });
+      notifier.deliver((payload) => {
+        if (socket.readyState !== socket.OPEN) throw new Error('socket is not open');
+        socket.send(encodeFrame(S2C.NOTIFY, payload));
+      });
       // Chat frames carry their own type names: a chat has four distinct
       // stream kinds (event/status/turn/closed).
       chats.attach((payload) => {
@@ -909,6 +929,9 @@ wss.on('connection', (socket, req) => {
       // themselves stay alive so a reconnect keeps its scrollback.
       terminals.detach();
       chats.detach();
+      // From here on, news is held instead of sent — which is the case a notification
+      // exists for: the phone is away when the work finishes.
+      notifier.detach();
     }
   });
 

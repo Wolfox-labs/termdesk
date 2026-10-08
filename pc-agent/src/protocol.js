@@ -101,6 +101,10 @@ export const S2C = {
   CHAT_TERMINAL: 'chat.terminal',
   CHAT_TERMINAL_OUTPUT: 'chat.terminal.output',
   CHAT_TERMINAL_INPUT: 'chat.terminal.input',
+  // Something the phone should tell its owner about — a finished turn, a kernel blocked
+  // waiting for an answer, a turn that failed. Decided on this side (see notify.js); the
+  // phone draws it, and decides whether to interrupt somebody who is already reading.
+  NOTIFY: 'notify',
   ACTION_RESULT: 'action.result',
   ERROR: 'error',
   PONG: 'pong',

@@ -218,9 +218,16 @@ let chatCounter = 0;
  */
 
 export class ChatManager {
-  constructor() {
+  /**
+   * @param {object} [options]
+   * @param {import('./notify.js').Notifier|null} [options.notifier] where "tell the phone
+   *   about this" goes. Optional, because tests and probes run without one — and a
+   *   notification must never be the reason a turn fails.
+   */
+  constructor({ notifier = null } = {}) {
     this.chats = new Map();
     this.onEvent = null;
+    this.notifier = notifier;
     // The reaper belongs to the manager, not to a socket: a chat runtime must
     // keep its idle clock running while the phone is disconnected, exactly as a
     // terminal session keeps its scrollback.
@@ -250,6 +257,16 @@ export class ChatManager {
      * phone answers in one place and every decision lands in the transcript.
      */
     this.approvals = new ApprovalBroker();
+    // A question the kernel is blocked on is the most useful thing this side can tell a
+    // phone that is not looking, so it is reported the moment it is registered.
+    this.approvals.on('requested', (request) => this.notify({
+      kind: 'approval',
+      chatId: request?.chatId ?? null,
+      engine: request?.engine ?? null,
+      requestId: request?.requestId ?? null,
+      title: request?.title ?? '内核在等你的回答',
+      text: request?.detail ?? '',
+    }));
     /**
      * Every approval-facing method below is mixed in from `chat/approvals.js`,
      * with its seams passed explicitly: which chat a Codex thread belongs to,
@@ -301,6 +318,41 @@ export class ChatManager {
     } catch {
       // A dead socket must never take the runtime down with it.
     }
+  }
+
+  /**
+   * Tell the phone something it should know even if it is not looking.
+   *
+   * Wrapped in a try on purpose: a notification is a courtesy, and no courtesy is worth
+   * losing a turn over. With no notifier (tests, probes) this does nothing.
+   */
+  notify(entry) {
+    try {
+      this.notifier?.push(entry);
+    } catch {
+      // Never let "telling somebody" break "doing the work".
+    }
+  }
+
+  /**
+   * The notification for a turn that just ended: which conversation, and what it said.
+   *
+   * The last thing the assistant said, cut short. "Done" on its own sends the person into
+   * the app to find out whether it was worth opening — which is the trip this exists to
+   * save. A failed turn says so instead of pretending something finished.
+   */
+  turnNotification(chat, state) {
+    const last = [...chat.events].reverse().find(
+      (e) => e.kind === 'message' && e.role === 'assistant' && e.text?.trim(),
+    );
+    return {
+      kind: state === 'failed' ? 'turn_failed' : 'turn_done',
+      chatId: chat.id,
+      sessionId: chat.sessionId ?? null,
+      engine: chat.engine,
+      title: chat.title,
+      text: last ? last.text.replace(/\s+/g, ' ').trim().slice(0, 120) : '',
+    };
   }
 
   list() {
@@ -1107,6 +1159,7 @@ export class ChatManager {
     });
     this.emit({ event: 'chat.turn', chatId: chat.id, state: failed ? 'failed' : 'ended' });
     this.emit({ event: 'chat.status', chatId: chat.id, status: chat.status });
+    this.notify(this.turnNotification(chat, failed ? 'failed' : 'ended'));
     // The turn is over, so anything typed during it can start now. A failed turn is not
     // drained: the next message would go into the same wall.
     if (!failed) this.drainQueue(chat).catch(() => {});
@@ -1510,6 +1563,7 @@ export class ChatManager {
     });
     this.emit({ event: 'chat.turn', chatId: chat.id, state: failed ? 'failed' : 'ended' });
     this.emit({ event: 'chat.status', chatId: chat.id, status: chat.status });
+    this.notify(this.turnNotification(chat, failed ? 'failed' : 'ended'));
     // The turn is over, so anything typed during it can start now. A failed turn is not
     // drained: the next message would go into the same wall.
     if (!failed) this.drainQueue(chat).catch(() => {});
@@ -1821,6 +1875,7 @@ export class ChatManager {
         chat.status = 'idle';
         this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
         this.emit({ event: 'chat.turn', chatId: chat.id, state: 'idle' });
+        this.notify(this.turnNotification(chat, 'ended'));
         // The runtime is free again, so a message typed during the turn can go now.
         this.drainQueue(chat).catch(() => {});
       } else if (status === 'running' && chat.status !== 'running') {

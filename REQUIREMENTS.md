@@ -293,6 +293,7 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 | S→C | `kernels.runs`（外部运行项：内核 id / pid / 内存 / `attachable:false`——本代理对这些进程没有句柄，只能显示不能接管） |
 | S→C | `codex.config` · `sessions` · `session` |
 | S→C | `chats` · `chat` · `chat.event` · `chat.status` · `chat.turn` · `chat.sent` · `chat.closed` · `chat.approval` · `chat.terminals` · `chat.terminal` · `chat.terminal.output` · `chat.terminal.input` |
+| S→C | `notify`（该让人知道的事：`kind` ∈ `turn_done` / `turn_failed` / `approval`，带 `chatId` / `title` / `text` / `id` / `at`。**由 PC 判定**——它才知道一轮什么时候真的结束；无人连着时**保留**，下次认证后补发并带 `whileAway:true`。有上限与生存期：跑一整夜的代理不能在下一次连接时倒出上百条陈旧通知） |
 | S→C | `action.result` · `error` · `pong` |
 
 **统一对话协议要点**（`chat.*`）：
