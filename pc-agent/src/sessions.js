@@ -16,7 +16,7 @@
  *          turn_context, token_usage_record, world_state.
  *          The working directory lives in session_meta.payload.cwd.
  *
- *   DSH    ~/.dsh/sessions/--<cwd with separators encoded as '-'>--/<id>/session.jsonl.zstd
+ *   DSH    ~/.dsh/sessions/--<cwd with separators encoded as '-'>--/<id>/session[.v4].jsonl.zstd
  *          Appended multi-frame zstd: every append writes a fresh independent
  *          frame, so a single decompress call stops after the first frame and
  *          yields almost nothing. Frames must be split on the zstd magic
@@ -51,6 +51,34 @@ function dshRoot() {
   return process.env.TERMDESK_DSH_DIR
     ? path.join(process.env.TERMDESK_DSH_DIR, 'sessions')
     : path.join(os.homedir(), '.dsh', 'sessions');
+}
+
+/**
+ * The file names a DSH session has used, newest format first.
+ *
+ * Measured on this machine (2026-10-08): of 268 session directories, 230 held only the
+ * legacy name, 23 held only `session.v4.jsonl.zstd`, and 15 held both — and in all 15 the
+ * v4 file was the newer one (by hours to days) and usually the smaller, because the v4
+ * layout records finished events instead of every streamed delta.
+ *
+ * Hard-coding the legacy name therefore hid the newest sessions from the phone, and hid
+ * them SILENTLY: the list was merely shorter, with nothing to say a session was missing.
+ * The desktop app was writing v4 while this was being measured, so the ones it hid were
+ * exactly the ones in use.
+ *
+ * One parser reads either file: both formats use the same event names (`user/message`
+ * with `source.kind`, `assistant/message`, `tool/call`, `tool/result`, `step/*`,
+ * `compaction/*`); only the streamed deltas differ, and those were never rendered.
+ */
+const DSH_SESSION_FILES = ['session.v4.jsonl.zstd', 'session.jsonl.zstd'];
+
+/** The session file inside one session directory, or null when it holds none. */
+function dshSessionFile(dir) {
+  for (const name of DSH_SESSION_FILES) {
+    const file = path.join(dir, name);
+    if (fs.existsSync(file)) return file;
+  }
+  return null;
 }
 
 /** Walk a tree and collect files whose name matches. */
@@ -397,8 +425,8 @@ export async function listSessions({ engine } = {}) {
       let subs = [];
       try { subs = fs.readdirSync(wsPath, { withFileTypes: true }).filter((e) => e.isDirectory()); } catch { continue; }
       for (const sub of subs) {
-        const f = path.join(wsPath, sub.name, 'session.jsonl.zstd');
-        if (!fs.existsSync(f)) continue;
+        const f = dshSessionFile(path.join(wsPath, sub.name));
+        if (!f) continue;
         let stat;
         try { stat = fs.statSync(f); } catch { continue; }
         out.push({
@@ -438,8 +466,8 @@ export async function readSession({ engine, id, sessionPath }) {
     let workspaces = [];
     try { workspaces = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory()); } catch { workspaces = []; }
     for (const ws of workspaces) {
-      const candidate = path.join(root, ws.name, id, 'session.jsonl.zstd');
-      if (fs.existsSync(candidate)) { filePath = candidate; break; }
+      const candidate = dshSessionFile(path.join(root, ws.name, id));
+      if (candidate) { filePath = candidate; break; }
     }
   }
   if (!filePath || !fs.existsSync(filePath)) return null;

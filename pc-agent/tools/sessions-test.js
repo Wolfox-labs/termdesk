@@ -8,6 +8,7 @@
  *   node tools/sessions-test.js
  */
 import fs from 'node:fs';
+import path from 'node:path';
 import {
   listSessions,
   readSession,
@@ -77,6 +78,54 @@ try {
   }
   check('dsh engine summaries pass through verbatim', sawEngineSummary,
     sawEngineSummary ? 'compaction/summary found' : 'none in sampled sessions');
+
+  // --- every session file on disk is listed, whatever it is called ---------
+  // The invariant rather than the file name, because this test previously agreed with
+  // the reader on one hard-coded name and therefore could not see that 23 DSH sessions
+  // were invisible. It now walks the store, finds anything shaped like a session file,
+  // and insists the index contains it — so the next rename fails loudly here instead of
+  // quietly shortening the phone's list.
+  const sessionFilePattern = /^session(\.[\w-]+)?\.jsonl\.zstd$/;
+  const onDisk = new Map(); // session id -> file name found in its directory
+  for (const ws of fs.readdirSync(roots.dsh, { withFileTypes: true })) {
+    if (!ws.isDirectory()) continue;
+    const wsPath = path.join(roots.dsh, ws.name);
+    for (const sub of fs.readdirSync(wsPath, { withFileTypes: true })) {
+      if (!sub.isDirectory()) continue;
+      let names = [];
+      try { names = fs.readdirSync(path.join(wsPath, sub.name)); } catch { continue; }
+      const hit = names.find((n) => sessionFilePattern.test(n));
+      if (hit) onDisk.set(sub.name, hit);
+    }
+  }
+  const listedIds = new Set(dsh.map((s) => s.id));
+  const unlisted = [...onDisk.entries()].filter(([id]) => !listedIds.has(id));
+  check('every session file on disk appears in the index', unlisted.length === 0,
+    unlisted.length === 0
+      ? `${onDisk.size} session directories, all listed`
+      : `${unlisted.length} missing, e.g. ${unlisted.slice(0, 3).map(([id, n]) => `${id} (${n})`).join(', ')}`);
+
+  const knownNames = new Set(['session.jsonl.zstd', 'session.v4.jsonl.zstd']);
+  const unknownNames = [...new Set([...onDisk.values()])].filter((n) => !knownNames.has(n));
+  check('no session file is named something the reader ignores', unknownNames.length === 0,
+    unknownNames.join(',') || 'only known names present');
+
+  // Listing is not enough: a session that lists and then opens empty is worse than one
+  // that is absent, because it looks like an answer.
+  const v4Ids = [...onDisk.entries()].filter(([, n]) => n === 'session.v4.jsonl.zstd').map(([id]) => id);
+  if (v4Ids.length > 0) {
+    const read = [];
+    for (const id of v4Ids) read.push(await readSession({ engine: 'dsh', id }));
+    const found = read.filter(Boolean).length;
+    const withEvents = read.filter((r) => (r?.events.length ?? 0) > 0).length;
+    check('reads v4-named dsh sessions', found === v4Ids.length, `${found}/${v4Ids.length}`);
+    // Some sessions are genuinely empty — created, then nothing was said — so the bar is
+    // "most of them", measured: 20 of 23 carried events, the other 3 were ~0.3 KB stubs.
+    check('v4 sessions carry their events', withEvents >= Math.ceil(v4Ids.length * 0.8),
+      `${withEvents}/${v4Ids.length} with events`);
+  } else {
+    console.log('SKIP  no v4-named dsh session on this machine');
+  }
 
   // --- truncation guard ---------------------------------------------------
   const huge = all.filter((s) => s.sizeBytes > 5 * 1024 * 1024)[0];

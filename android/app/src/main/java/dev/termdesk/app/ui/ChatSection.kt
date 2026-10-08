@@ -399,17 +399,30 @@ fun ChatSection(
                         tab = tab,
                         chatCount = visibleChats.size,
                         sessionCount = visibleSessions.size,
-                        sort = sessionSort,
                         onSelect = { tab = it },
-                        onSort = onSetSessionSort,
                     )
-                    if (scope.isMeaningful) {
-                        EngineScopeRow(
-                            engines = scope.engines,
-                            selected = scope.selected,
-                            labelOf = { id -> engines.firstOrNull { it.id == id }?.displayName ?: id },
-                            onSelect = { engineFilter = it },
-                        )
+                    // The order switch shares this row instead of the tab row above it.
+                    // The tab row had nothing that could give when the text grew: measured
+                    // on a real phone at a 1.35 font scale, the two tabs plus the switch
+                    // already filled 96% of the width, and 1.45 is a setting the owner
+                    // actually uses. The kernel chips here scroll, so THEY take the
+                    // squeeze and the switch keeps its width at any scale.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (scope.isMeaningful) {
+                            EngineScopeRow(
+                                engines = scope.engines,
+                                selected = scope.selected,
+                                labelOf = { id -> engines.firstOrNull { it.id == id }?.displayName ?: id },
+                                onSelect = { engineFilter = it },
+                                modifier = Modifier.weight(1f),
+                            )
+                        } else {
+                            Spacer(Modifier.weight(1f))
+                        }
+                        SortSwitch(sort = sessionSort, onSort = onSetSessionSort)
                     }
                     Box(Modifier.weight(1f)) {
                         // One grouped list for both tabs: they differ in WHICH
@@ -987,18 +1000,13 @@ private fun InlineChips(
     }
 }
 
-/**
- * Two states of one list: live conversations and recorded history, plus the switch
- * that decides the order of the rows inside each workspace.
- */
+/** Two states of one list: live conversations and recorded history. */
 @Composable
 private fun SessionTabs(
     tab: Int,
     chatCount: Int,
     sessionCount: Int,
-    sort: SessionSort,
     onSelect: (Int) -> Unit,
-    onSort: (SessionSort) -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -1025,23 +1033,38 @@ private fun SessionTabs(
             )
         }
         Spacer(Modifier.weight(1f))
-        // The order belongs to the list that BOTH tabs draw, so the switch sits on the
-        // row that owns the tabs rather than inside one of them. It names the order in
-        // force and changes it on tap; a chip labelled with the other mode would read
-        // as a button that is already pressed.
-        Text(
-            text = "排序：${sort.label}",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .clip(RoundedCornerShape(9.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .clickable {
-                    onSort(if (sort == SessionSort.Recent) SessionSort.Name else SessionSort.Recent)
-                }
-                .padding(horizontal = 9.dp, vertical = 7.dp),
-        )
     }
+}
+
+/**
+ * The order switch for the list below: newest first, or A→Z by title.
+ *
+ * It is drawn at the end of the kernel row, and that placement is the point. On the tab
+ * row above it had nothing that could give when the text grew: measured on the test phone
+ * (339dp wide, a 1.35 font scale) the three chips filled 96% of the width. The owner's
+ * phone is wider (400dp) but set to 1.45, which lands in the same marginal place, and any
+ * narrower screen would have clipped it. The kernel chips beside it scroll, so a squeeze
+ * is absorbed there and this stays whole at any font scale.
+ *
+ * The label names the order IN FORCE rather than the one a tap would switch to: a chip
+ * reading "名称" while the list is sorted by time reads as a button already pressed.
+ */
+@Composable
+private fun SortSwitch(sort: SessionSort, onSort: (SessionSort) -> Unit) {
+    Text(
+        text = "排序：${sort.label}",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        modifier = Modifier
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable {
+                onSort(if (sort == SessionSort.Recent) SessionSort.Name else SessionSort.Recent)
+            }
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    )
 }
 
 /**
@@ -1058,6 +1081,8 @@ private fun SessionTabs(
  *
  * Horizontally scrollable rather than wrapped: five kernels at a 1.45 font scale exceed
  * 400dp, and a wrapped second row would push the list down for a control used rarely.
+ * It also shares its row with the order switch, which is what lets the switch stay whole
+ * when the text grows: this row can scroll, the switch cannot shrink.
  */
 @Composable
 private fun EngineScopeRow(
@@ -1065,9 +1090,10 @@ private fun EngineScopeRow(
     selected: String?,
     labelOf: (String) -> String,
     onSelect: (String?) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
             .padding(horizontal = 12.dp, vertical = 2.dp),
