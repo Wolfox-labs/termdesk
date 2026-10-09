@@ -30,6 +30,14 @@ data class AgentNotification(
     val at: Long,
     /** True when it happened while no client was attached, so it arrives late. */
     val whileAway: Boolean,
+    /**
+     * The question this is about, for `kind == "approval"`.
+     *
+     * It is what lets the notification be taken back once somebody answers: without it the
+     * phone only knows "a kernel was waiting at some point", and a notification saying that
+     * outlives the wait.
+     */
+    val requestId: String? = null,
 ) {
     val isApproval: Boolean get() = kind == "approval"
     val isFailure: Boolean get() = kind == "turn_failed"
@@ -100,7 +108,7 @@ object AgentNotifications {
                 note.text.ifBlank { if (note.isApproval) "内核在等你确认" else "这一轮已经结束" },
             )
             .setStyle(NotificationCompat.BigTextStyle().bigText(note.text))
-            .setWhen(note.at)
+            .setWhen(whenFor(note.at))
             .setAutoCancel(true)
             .setContentIntent(intentFor(context, note))
             .setPriority(
@@ -114,6 +122,20 @@ object AgentNotifications {
                 if (note.isApproval) setCategory(NotificationCompat.CATEGORY_REMINDER)
             }
             .build()
+
+    /**
+     * How far apart the two clocks may be before the PC's stamp is not trusted for display.
+     *
+     * The timestamp is the PC's (`notify.js` stamps it there), and a machine whose clock is
+     * a few minutes ahead would date the notification in the future — which Android draws as
+     * "in 3 minutes", for something that has already happened. The two sides agreeing on
+     * "now" is the moment this phone received it, and that is the honest fallback.
+     */
+    private const val CLOCK_TRUST_MS = 120_000L
+
+    /** The stamp to draw: the PC's when it is close to this phone's clock, otherwise now. */
+    fun whenFor(at: Long, now: Long = System.currentTimeMillis()): Long =
+        if (at > 0 && kotlin.math.abs(now - at) <= CLOCK_TRUST_MS) at else now
 
     /**
      * Stable per conversation and kind, so a second turn replaces the first instead of

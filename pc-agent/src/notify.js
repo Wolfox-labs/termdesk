@@ -15,10 +15,19 @@
  * about a turn this agent no longer remembers would open a conversation that is not there.
  */
 export class Notifier {
-  constructor({ limit = 20, ttlMs = 24 * 60 * 60 * 1000, now = () => Date.now() } = {}) {
+  constructor({ limit = 20, ttlMs = 24 * 60 * 60 * 1000, now = () => Date.now(), log = null } = {}) {
     this.limit = limit;
     this.ttlMs = ttlMs;
     this.now = now;
+    /**
+     * One line per decision, and nothing by default.
+     *
+     * "The phone was never told" is the complaint this whole file exists to prevent, and
+     * from the outside the three ways it can happen — never judged worth telling, held
+     * because nobody was attached, or handed to a socket that did not take it — look
+     * identical. The caller passes a logger in production; tests stay silent.
+     */
+    this.log = log;
     this.entries = [];
     this.nextId = 1;
     /** Set while a client is attached; then entries go straight out. */
@@ -47,6 +56,7 @@ export class Notifier {
     if (this.send) {
       try {
         this.send(record);
+        this.log?.(`[termdesk] notify ${record.id} ${record.kind}${chatOf(record)} → 客户端在线，直接送出`);
         return record;
       } catch {
         // A socket that died between the check and the send: fall through and hold it,
@@ -56,6 +66,9 @@ export class Notifier {
     record.whileAway = true;
     this.entries.push(record);
     this.prune();
+    this.log?.(
+      `[termdesk] notify ${record.id} ${record.kind}${chatOf(record)} → 没有客户端，暂存（待发 ${this.entries.length} 条）`,
+    );
     return record;
   }
 
@@ -107,6 +120,17 @@ export class Notifier {
       }
     }
     this.entries = failed;
+    if (waiting.length > 0) {
+      this.log?.(
+        `[termdesk] notify 补发 ${sent}/${waiting.length} 条`
+        + (failed.length ? `（${failed.length} 条没发出去，仍留着）` : ''),
+      );
+    }
     return sent;
   }
+}
+
+/** ` chat=c-3` for the log line, or nothing when the entry is not about a conversation. */
+function chatOf(record) {
+  return record.chatId ? ` chat=${record.chatId}` : '';
 }

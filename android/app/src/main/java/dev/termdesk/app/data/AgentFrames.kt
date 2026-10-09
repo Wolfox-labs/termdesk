@@ -143,7 +143,30 @@ import org.json.JSONObject
             sourceKind = meta?.let { if (it.isNull("sourceKind")) null else it.optString("sourceKind") },
             streaming = o.optBoolean("streaming", false),
             queued = o.optBoolean("queued", false),
+            files = parseChatFiles(meta?.optJSONArray("files")),
         )
+    }
+
+    /**
+     * The files a turn handed over, when the event carried any.
+     *
+     * An entry without a path is dropped rather than shown: the point of the row is that a
+     * tap opens the file, and there is nothing to open.
+     */
+    internal fun parseChatFiles(arr: JSONArray?): List<ChatFile> {
+        if (arr == null) return emptyList()
+        val out = ArrayList<ChatFile>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val path = o.optString("path").takeIf { it.isNotBlank() && it != "null" } ?: continue
+            out.add(
+                ChatFile(
+                    path = path,
+                    description = o.optString("description").takeIf { it.isNotBlank() && it != "null" },
+                ),
+            )
+        }
+        return out
     }
 
     /**
@@ -169,6 +192,7 @@ import org.json.JSONObject
             text = text.orEmpty(),
             at = o.optLong("at"),
             whileAway = o.optBoolean("whileAway", false),
+            requestId = o.optString("requestId").takeIf { it.isNotBlank() && it != "null" },
         )
     }
     internal fun parseProcesses(arr: JSONArray?): List<ProcessInfo> {

@@ -226,6 +226,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     val approvals: StateFlow<List<ChatApproval>> = client.approvals
 
+    /** How many times the agent has stated the whole pending list (see AgentClient). */
+    val approvalsEpoch: StateFlow<Int> = client.approvalsEpoch
+
     fun respondApproval(requestId: String, optionId: String) = client.respondApproval(requestId, optionId)
 
     fun loadChats() = client.loadChats()

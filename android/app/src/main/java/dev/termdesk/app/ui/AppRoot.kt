@@ -3,6 +3,7 @@ package dev.termdesk.app.ui
 import androidx.activity.compose.BackHandler
 
 import android.app.NotificationManager
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,11 +30,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.findViewTreeLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.termdesk.app.data.AgentNotification
 import dev.termdesk.app.data.AgentNotifications
 import dev.termdesk.app.data.LinkState
 import dev.termdesk.app.data.OpenRequest
 import dev.termdesk.app.data.PairRequest
 import dev.termdesk.app.data.SessionInfo
+
+/** Same tag as the receiving side, so one logcat filter shows the whole path. */
+private const val TAG_NOTIFY = "TermDeskNotify"
 
 @Composable
 fun AppRoot(
@@ -130,7 +135,10 @@ fun AppRoot(
     // conversation, which the PC cannot know. An approval is never suppressed: the kernel is
     // blocked until somebody answers it.
     val context = LocalContext.current
-    LaunchedEffect(Unit) { AgentNotifications.ensureChannel(context) }
+    LaunchedEffect(Unit) {
+        AgentNotifications.ensureChannel(context)
+        Log.i(TAG_NOTIFY, "通知渠道已就绪（${AgentNotifications.CHANNEL_ID}）")
+    }
 
     val rootView = LocalView.current
     val lifecycleOwner = remember(rootView) { rootView.findViewTreeLifecycleOwner() }
@@ -147,12 +155,24 @@ fun AppRoot(
             onDispose { }
         } else {
             val observer = LifecycleEventObserver { _, _ ->
-                windowVisible = owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                val now = owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                if (now != windowVisible) Log.i(TAG_NOTIFY, if (now) "窗口回到前台" else "窗口退到后台")
+                windowVisible = now
             }
             owner.lifecycle.addObserver(observer)
             onDispose { owner.lifecycle.removeObserver(observer) }
         }
     }
+
+    // ---- notifications ---------------------------------------------------------
+    // Approval notifications are tracked so they can be taken back. Two facts are kept
+    // apart, because they are different evidence: "this question was pending a moment ago"
+    // (a single frame said so) and "the agent has stated the whole pending list" (which can
+    // clear a question that was settled while this phone was away).
+    var openApprovals by remember { mutableStateOf<List<AgentNotification>>(emptyList()) }
+    var seenPending by remember { mutableStateOf<Set<String>>(emptySet()) }
+    val approvalsEpoch by vm.approvalsEpoch.collectAsState()
+    LaunchedEffect(approvals) { seenPending = seenPending + approvals.map { it.requestId } }
 
     LaunchedEffect(pendingNotifications, windowVisible, section, activeChat?.id) {
         if (pendingNotifications.isEmpty()) return@LaunchedEffect
@@ -160,10 +180,40 @@ fun AppRoot(
         for (note in pendingNotifications) {
             val looking = windowVisible && section == Section.Sessions &&
                 note.chatId != null && note.chatId == activeChat?.id
-            if (looking && !note.isApproval) continue
+            if (looking && !note.isApproval) {
+                Log.i(TAG_NOTIFY, "不打扰：正在看这个会话（${note.id}）")
+                continue
+            }
             manager?.notify(AgentNotifications.idFor(note), AgentNotifications.build(context, note))
+            // The line that separates "the notification path broke" from "the system did not
+            // show what it was handed". Only logcat can tell those apart.
+            Log.i(TAG_NOTIFY, "投递 ${note.id} ${note.kind}（窗口可见=$windowVisible，manager=${manager != null}）")
+            if (note.isApproval && note.requestId != null) {
+                openApprovals = openApprovals.filterNot { it.requestId == note.requestId } + note
+            }
         }
         vm.consumeNotifications()
+    }
+
+    // ---- a question that is no longer being asked ---------------------------------
+    // "The kernel is waiting for you" is only true while it is. Left alone, the notification
+    // outlives the wait: answered from this phone, answered from the desktop, or timed out,
+    // and it still says somebody is blocked.
+    LaunchedEffect(approvals, approvalsEpoch) {
+        if (openApprovals.isEmpty()) return@LaunchedEffect
+        val live = approvals.map { it.requestId }.toSet()
+        val gone = openApprovals.filter { note ->
+            val id = note.requestId ?: return@filter false
+            val listed = approvalsEpoch > 0
+            (id in seenPending || listed) && id !in live
+        }
+        if (gone.isEmpty()) return@LaunchedEffect
+        val manager = context.getSystemService(NotificationManager::class.java)
+        for (note in gone) {
+            manager?.cancel(AgentNotifications.idFor(note))
+            Log.i(TAG_NOTIFY, "撤销 ${note.id}：这个问题已经有人答了")
+        }
+        openApprovals = openApprovals - gone.toSet()
     }
 
     // A tap on one of those notifications asks for a specific conversation. It may be gone —

@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -66,6 +67,9 @@ class AgentFramesTest {
         )
         assertTrue("a blocked kernel is an approval", approval!!.isApproval)
         assertFalse("and it is not labelled as having waited", approval.whileAway)
+        // The question's own id, so the notification can be taken back when it is answered.
+        // Without it the phone knows only that a kernel was waiting at some point.
+        assertEquals("an approval carries the question it is about", "r1", approval.requestId)
 
         // Nothing to say means no notification: an empty one is how people learn to swipe
         // without reading, and then miss the one that mattered.
@@ -99,6 +103,47 @@ class AgentFramesTest {
         assertTrue("a message waiting its turn says so", waiting.queued)
         assertTrue("and it is still the user's own line", waiting.isUser)
         assertFalse("a message the kernel has already seen is not queued", sent.queued)
+    }
+
+    /**
+     * The timestamp on a notification is the PC's clock, not this phone's.
+     *
+     * Android draws a future timestamp as "in 3 minutes", for something that has already
+     * happened, so a stamp too far from "now" is not evidence of anything and is replaced by
+     * the moment the phone received it.
+     */
+    @Test
+    fun `a clock that disagrees is not trusted for the timestamp`() {
+        val now = 1_790_000_000_000L
+        assertEquals("the PC's stamp is kept when the two clocks agree",
+            now - 5_000, AgentNotifications.whenFor(now - 5_000, now))
+        assertEquals("a stamp from the future becomes now",
+            now, AgentNotifications.whenFor(now + 10 * 60_000, now))
+        assertEquals("and so does one from the past",
+            now, AgentNotifications.whenFor(now - 10 * 60_000, now))
+        assertEquals("a frame that carried no time at all is stamped now",
+            now, AgentNotifications.whenFor(0, now))
+    }
+
+    /**
+     * Which notification replaces which.
+     *
+     * Stable ids are the whole reason a long conversation does not fill the shade: the third
+     * turn about one chat takes the first one's place, while a question the kernel is blocked
+     * on keeps a slot of its own beside it.
+     */
+    @Test
+    fun `a second turn replaces the first, and a question does not`() {
+        val turn = AgentNotification(
+            id = "n-1", kind = "turn_done", chatId = "c1", sessionId = null, engine = null,
+            title = "t", text = "x", at = 1L, whileAway = false,
+        )
+        val question = turn.copy(id = "n-2", kind = "approval", requestId = "r1")
+
+        assertEquals("a later turn about the same chat takes the earlier one's place",
+            AgentNotifications.idFor(turn), AgentNotifications.idFor(turn.copy(id = "n-3")))
+        assertNotEquals("a blocked kernel is not hidden by a finished turn",
+            AgentNotifications.idFor(turn), AgentNotifications.idFor(question))
     }
 
     // ---- the session list's workspace index (what the sidebar groups by) ----

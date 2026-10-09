@@ -39,17 +39,17 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -385,6 +385,9 @@ fun ChatSection(
                     connected = connected,
                     pendingSends = pendingSends,
                     pendingDropped = pendingDropped,
+                    // The same door the workspace row uses: a produced file is opened the
+                    // way its folder is, so there is one behaviour to learn, not two.
+                    onOpenFile = onOpenFiles,
                 )
                 else -> Column(Modifier.fillMaxSize()) {
                     // Kernel scope first: the list is kernel -> workspace ->
@@ -596,7 +599,7 @@ private fun SessionBar(
     ) {
         IconButton(onClick = onLeading) {
             Icon(
-                imageVector = if (open) Icons.Outlined.ArrowBack else Icons.Outlined.Menu,
+                imageVector = if (open) Icons.AutoMirrored.Outlined.ArrowBack else Icons.Outlined.Menu,
                 contentDescription = if (open) "返回" else "分区",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1293,6 +1296,8 @@ private fun Conversation(
     connected: Boolean,
     pendingSends: Int = 0,
     pendingDropped: Int = 0,
+    /** Open a produced file's folder in the file section (see `DeliverableLine`). */
+    onOpenFile: ((String) -> Unit)? = null,
 ) {
     // What this conversation can run as, both of them the kernel's own words:
     // the model list and the permission / agent modes it declared.
@@ -1378,7 +1383,7 @@ private fun Conversation(
                     ),
                     verticalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
-                    items(events, key = { it.seq }) { event -> ChatEventRow(event) }
+                    items(events, key = { it.seq }) { event -> ChatEventRow(event, onOpenFile) }
                 }
             }
         }
@@ -1658,20 +1663,28 @@ private fun Composer(
         // Shown while running only once there is something to send, so the row stays calm
         // when there is not, and appears the moment somebody types.
         if (!running || draft.isNotBlank()) {
-            IconButton(onClick = onSend, enabled = canSend && draft.isNotBlank() && !sending) {
-                if (sending) {
-                    CircularProgressIndicator(modifier = Modifier.size(19.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(
-                        Icons.Outlined.Send,
-                        contentDescription = if (running) "发送（排队）" else "发送",
-                        tint = if (canSend && draft.isNotBlank()) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.outline
-                        },
-                    )
-                }
+            // Disabled only by what the person can control themselves. It used to also be
+            // disabled while a send was in flight, which quietly removed the queue on ACP
+            // kernels: there the acknowledgement arrives when the turn *ends*, so the button
+            // stayed dead for the whole turn and nothing could be typed into the queue at all.
+            // The PC accepts and orders the second message either way (ChatManager.drainQueue).
+            if (sending && !running) {
+                // "In flight" means the gap between tapping and the turn starting — not the
+                // whole turn, which would claim the machine is still receiving what it has
+                // already begun answering.
+                CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(6.dp))
+            }
+            IconButton(onClick = onSend, enabled = canSend && draft.isNotBlank()) {
+                Icon(
+                    Icons.AutoMirrored.Outlined.Send,
+                    contentDescription = if (running) "发送（排队）" else "发送",
+                    tint = if (canSend && draft.isNotBlank()) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.outline
+                    },
+                )
             }
         }
     }

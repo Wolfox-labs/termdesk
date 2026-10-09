@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -30,6 +31,14 @@ import java.util.concurrent.TimeUnit
 
 /** Keeps the retained terminal scrollback bounded on the phone. */
 private const val MAX_TERM_LINES = 1500
+
+/**
+ * Where the notification path says what it did.
+ *
+ * `adb logcat -s TermDeskNotify:I` answers the one question this feature keeps raising —
+ * did the frame arrive and nothing was drawn, or did nothing arrive at all.
+ */
+private const val TAG_NOTIFY = "TermDeskNotify"
 
 /** Above this size the upload switches to a chunked session (P5-4). */
 private const val SINGLE_SHOT_LIMIT = 32L * 1024 * 1024
@@ -385,6 +394,16 @@ class AgentClient(
      */
     private val _approvals = MutableStateFlow<List<ChatApproval>>(emptyList())
     val approvals: StateFlow<List<ChatApproval>> = _approvals.asStateFlow()
+
+    /**
+     * How many times the agent has stated the *whole* pending list.
+     *
+     * A single `chat.approval` frame says one question changed; the `approvals` array in a
+     * `chats` frame says what is pending, full stop. Only the second kind can be used to
+     * decide that a question asked earlier is no longer waiting.
+     */
+    private val _approvalsEpoch = MutableStateFlow(0)
+    val approvalsEpoch: StateFlow<Int> = _approvalsEpoch.asStateFlow()
 
     private val _chatSending = MutableStateFlow(false)
     val chatSending: StateFlow<Boolean> = _chatSending.asStateFlow()
@@ -1795,6 +1814,10 @@ class AgentClient(
                     // but the last would lose exactly the news the feature exists for.
                     parseAgentNotification(frame)?.let { note ->
                         _pendingNotifications.value = (_pendingNotifications.value + note).takeLast(20)
+                        // Logged, not assumed. Whether the frame arrived and whether anything
+                        // was drawn are different questions, and when a notification does not
+                        // appear the two look the same from the outside.
+                        Log.i(TAG_NOTIFY, "收到 ${note.id} ${note.kind}${if (note.whileAway) "（你不在的时候）" else ""}")
                     }
                 }
                 "codex.config" -> {
@@ -1879,7 +1902,14 @@ class AgentClient(
                     // The agent's pending list is authoritative, so a question it
                     // already settled (a timeout, or while this phone was away)
                     // disappears instead of leaving a stale dialog behind.
-                    frame.optJSONArray("approvals")?.let { _approvals.value = parseApprovals(it) }
+                    frame.optJSONArray("approvals")?.let {
+                        _approvals.value = parseApprovals(it)
+                        // Counted, not just stored: this is the one place that says "this list
+                        // is the whole truth right now", as opposed to a single question being
+                        // added or answered. Anything that has to judge a notification older
+                        // than the list needs to know when the list spoke for everything.
+                        _approvalsEpoch.value = _approvalsEpoch.value + 1
+                    }
                 }
                 "chat.approval" -> applyApproval(frame)
                 "chat.models" -> applyChatModels(frame)

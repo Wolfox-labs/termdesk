@@ -108,7 +108,7 @@ const terminals = new TerminalManager();
  * Created before the chat manager because the manager is what reports into it — the
  * decision to notify belongs to the side that knows a turn ended, not to the phone.
  */
-const notifier = new Notifier();
+const notifier = new Notifier({ log: (line) => console.log(line) });
 const chats = new ChatManager({ notifier });
 
 /**
@@ -889,6 +889,10 @@ wss.on('connection', (socket, req) => {
         if (socket.readyState !== socket.OPEN) throw new Error('socket is not open');
         socket.send(encodeFrame(S2C.NOTIFY, payload));
       });
+      // Said once per connection on both sides: whether the phone was attached at the
+      // moment something happened is the first thing to establish when a notification
+      // does not show up, and neither side can see the other's half.
+      console.log('[termdesk] notify 路由：手机已连上，之后的动态直接送');
       notifier.deliver((payload) => {
         if (socket.readyState !== socket.OPEN) throw new Error('socket is not open');
         socket.send(encodeFrame(S2C.NOTIFY, payload));
@@ -932,6 +936,7 @@ wss.on('connection', (socket, req) => {
       // From here on, news is held instead of sent — which is the case a notification
       // exists for: the phone is away when the work finishes.
       notifier.detach();
+      console.log('[termdesk] notify 路由：手机断开，之后的动态暂存到它回来');
     }
   });
 
