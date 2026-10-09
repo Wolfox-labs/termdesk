@@ -10,12 +10,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.TERMDESK_PORT || 7420);
 const HOST = process.env.TERMDESK_HOST || '127.0.0.1';
-const token = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+const token = machineTokenOrSkip('p2-e2e');
 
 const SCRATCH = path.join(__dirname, '..', '..', '.tmp', 'termdesk-e2e');
 fs.mkdirSync(SCRATCH, { recursive: true });

@@ -191,6 +191,39 @@ check('at least one script was checked, or this test proves nothing',
   }
 }
 
+// ---- a warning that means "dead code" must fail the job -----------------------
+//
+// Kotlin's `Duplicate branch condition` is not advice: it means one arm of a `when` can
+// never run. That happened here (two `"chat.sent"` arms, and the second one - the one that
+// cleared "sending" - was the dead one, so the send button span for a whole turn), and the
+// warning was there the whole time, unread. Warnings are printed to a log nobody opens, so
+// the workflow has to open it.
+
+{
+  const gate = steps.find((s) => (s.keys.name ?? '').includes('dead branch'));
+  check('there is a step that fails the job on a duplicate branch condition', Boolean(gate));
+  if (gate) {
+    // The gate is a multi-line `run: |` block, so its script lives in the raw lines rather
+    // than in `keys.run`. Reading the file text is the honest way to check what it does.
+    const gateLines = lines.filter((l) => /Duplicate branch condition|exit 1/.test(l));
+    check('and it actually fails rather than printing a note',
+      gateLines.some((l) => l.includes('Duplicate branch condition'))
+        && gateLines.some((l) => l.trim() === 'exit 1'),
+      'both the pattern and the failure are present');
+  }
+
+  // A gate with nothing to read passes for the wrong reason, which is worse than no gate.
+  const teeSteps = steps.filter((s) => (s.keys.run ?? '').includes('gradle-build.log'));
+  const gradleSteps = steps.filter((s) => (s.keys.run ?? '').includes('./gradlew'));
+  check('every Gradle step writes the log the gate reads',
+    gradleSteps.length > 0 && gradleSteps.every((s) => teeSteps.includes(s)),
+    `${teeSteps.length} of ${gradleSteps.length} Gradle steps are captured`);
+
+  check('and the pipe does not swallow Gradle\'s exit code',
+    teeSteps.every((s) => (s.keys.run ?? '').includes('pipefail')),
+    'tee returns 0 whatever Gradle said');
+}
+
 // ---- the Android SDK version in the job must match the build ------------------
 
 {

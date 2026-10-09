@@ -15,12 +15,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT = path.join(__dirname, '..', 'src', 'server.js');
 const PORT = Number(process.env.TERMDESK_TEST_PORT || 7443);
 
-const token = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+const token = machineTokenOrSkip('upload-chunk-test');
 const base = `http://127.0.0.1:${PORT}`;
 const auth = { authorization: `Bearer ${token}` };
 

@@ -20,6 +20,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 import { PROTOCOL_VERSION } from '../src/protocol.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -59,9 +60,7 @@ function startAgent() {
 
 /** The machine token lives in ~/.termdesk/token; the agent prints a prefix of it. */
 async function readToken() {
-  const { readFileSync } = await import('node:fs');
-  const os = await import('node:os');
-  return readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+  return machineTokenOrSkip('version-handshake-e2e');
 }
 
 /** One auth round trip; resolves with the first auth.ok / auth.fail frame. */

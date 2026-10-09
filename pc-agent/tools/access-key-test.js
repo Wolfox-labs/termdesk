@@ -13,13 +13,14 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT = path.join(__dirname, '..', 'src', 'server.js');
 const PORT = Number(process.env.TERMDESK_TEST_PORT || 7444);
 const ACCESS = 'test-access-key-9f3a';
 
-const token = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+const token = machineTokenOrSkip('access-key-test');
 const base = `http://127.0.0.1:${PORT}`;
 
 const results = [];

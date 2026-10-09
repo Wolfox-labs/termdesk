@@ -18,11 +18,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const PORT = Number(process.env.TERMDESK_QUEUE_E2E_PORT ?? 7449);
 const BASE = `http://127.0.0.1:${PORT}`;
-const TOKEN = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+const TOKEN = machineTokenOrSkip('chat-queue-e2e');
 
 let failures = 0;
 const check = (label, ok, detail = '') => {

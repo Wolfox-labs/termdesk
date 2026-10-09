@@ -19,11 +19,12 @@ import { once } from 'node:events';
 import WebSocket from 'ws';
 import { createRelay } from '../../relay/src/relay.js';
 import { digest } from '../../relay/src/credentials.js';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const NODE_ID = 'test-pc';
 const NODE_KEY = 'test-node-key';
-const TOKEN = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+const TOKEN = machineTokenOrSkip('relay-pairing-e2e');
 
 let failures = 0;
 const check = (label, ok, detail = '') => {

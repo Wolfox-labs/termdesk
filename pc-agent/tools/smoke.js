@@ -10,10 +10,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { WebSocket } from 'ws';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
 const PORT = Number(process.env.TERMDESK_PORT || 7420);
 const HOST = process.env.TERMDESK_HOST || '127.0.0.1';
-const token = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+const token = machineTokenOrSkip('smoke');
 
 const url = `ws://${HOST}:${PORT}`;
 console.log(`connecting to ${url}`);

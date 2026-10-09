@@ -1,7 +1,7 @@
 /** Does the phone's "open a recorded ACP session" work over the wire? */
-import fs from 'node:fs';
 import WebSocket from 'ws';
-const token = fs.readFileSync(process.env.USERPROFILE + '/.termdesk/token', 'utf8').trim();
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
+const token = machineTokenOrSkip('acp-history-wire-test');
 const ws = new WebSocket('ws://127.0.0.1:7421');
 let listed = null;
 ws.on('open', () => ws.send(JSON.stringify({ type: 'auth', token })));

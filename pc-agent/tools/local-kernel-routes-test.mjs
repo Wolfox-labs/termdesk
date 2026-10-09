@@ -22,11 +22,12 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { localKernelDir, readLocalKernel } from '../src/localkernel.js';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const PORT = Number(process.env.TERMDESK_LOCAL_KERNEL_PORT ?? 7434);
 const BASE = `http://127.0.0.1:${PORT}`;
-const TOKEN = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+const TOKEN = machineTokenOrSkip('local-kernel-routes-test');
 
 let passes = 0;
 let failures = 0;

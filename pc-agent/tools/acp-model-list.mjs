@@ -11,10 +11,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import WebSocket from 'ws';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
 const [engine = 'opencode', filter = ''] = process.argv.slice(2);
 const port = process.env.TERMDESK_PORT ?? '7421';
-const token = fs.readFileSync(path.join(process.env.USERPROFILE ?? '', '.termdesk', 'token'), 'utf8').trim();
+const token = machineTokenOrSkip('acp-model-list');
 
 const ws = new WebSocket(`ws://127.0.0.1:${port}`);
 const finish = (code) => { try { ws.close(); } catch {} setTimeout(() => process.exit(code), 200); };

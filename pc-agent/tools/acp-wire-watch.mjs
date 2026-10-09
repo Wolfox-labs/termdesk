@@ -7,8 +7,9 @@
  */
 import fs from 'node:fs';
 import WebSocket from 'ws';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
-const token = fs.readFileSync(process.env.USERPROFILE + '/.termdesk/token', 'utf8').trim();
+const token = machineTokenOrSkip('acp-wire-watch');
 const url = 'ws://127.0.0.1:7421';
 const ws = new WebSocket(url);
 const started = Date.now();

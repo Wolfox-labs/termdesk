@@ -199,7 +199,11 @@ async function runTurn(session, promptId, text) {
   update(session.id, call);
   await sleep(150);
 
-  const option = await askPermission(session, toolCallId);
+  // A turn that finishes on its own, for the cases where the point is what happens
+  // *after* it ends. Asking permission every turn means every turn waits for a phone,
+  // which cannot be backgrounded mid-turn on purpose if the phone is the one answering.
+  const skipPermission = process.env.FAKE_ACP_SKIP_PERMISSION === '1';
+  const option = skipPermission ? 'allow_once' : await askPermission(session, toolCallId);
   const verdict = option ? `allowed (${option})` : 'denied';
 
   // A real kernel runs its execute tool in a terminal it asks the client for —

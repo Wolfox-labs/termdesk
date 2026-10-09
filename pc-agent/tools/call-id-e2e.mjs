@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
@@ -39,7 +40,7 @@ fs.writeFileSync(path.join(sandbox, 'alpha', 'a.txt'), 'alpha\n');
 fs.mkdirSync(path.join(sandbox, 'beta'));
 fs.writeFileSync(path.join(sandbox, 'beta', 'b.txt'), 'beta\n');
 
-const token = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+const token = machineTokenOrSkip('call-id-e2e');
 
 const agent = spawn(process.execPath, [path.join(root, 'src', 'server.js'), '--port', String(PORT)], {
   cwd: root,

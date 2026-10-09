@@ -11,11 +11,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT = path.join(__dirname, '..', 'src', 'server.js');
 const PORT = Number(process.env.TERMDESK_TEST_PORT || 7441);
-const token = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+const token = machineTokenOrSkip('inventory-test');
 
 const results = [];
 const check = (name, passed, detail = '') => {

@@ -10,11 +10,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import { machineTokenOrSkip } from './lib/machine-token.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENT = path.join(__dirname, '..', 'src', 'server.js');
 const PORT = Number(process.env.TERMDESK_TEST_PORT || 7442);
-const token = fs.readFileSync(path.join(os.homedir(), '.termdesk', 'token'), 'utf8').trim();
+const token = machineTokenOrSkip('files-test');
 
 // Confine the test to a scratch directory so nothing real is touched.
 // Keep it inside the repo work tree (`.tmp/`, gitignored) rather than the OS

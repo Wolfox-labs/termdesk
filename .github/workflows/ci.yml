@@ -51,13 +51,23 @@ jobs:
         working-directory: pc-agent
         run: npm install --no-audit --no-fund
       - name: Compile the phone app
-        run: ./gradlew :app:assembleDebug --console=plain
+        # Tee'd to a file so the compiler's own words can be checked afterwards. A warning
+        # nobody reads is how a dead `when` branch survived in this project: two identical
+        # arms meant the one clearing "sending" never ran, and the send button span for a
+        # whole turn. `set -o pipefail` is not the default here, and without it the pipe
+        # would hide Gradle's exit code behind tee's.
+        shell: bash
+        run: set -o pipefail && ./gradlew :app:assembleDebug --console=plain 2>&1 | tee "$RUNNER_TEMP/gradle-build.log"
         working-directory: android
       - name: Run the phone's unit tests
         # Compiling is not testing: `assembleDebug` does not run them. These are
         # the frame parsers (the only device-free logic on this side) and JUnit
         # fails the job on the first broken assertion.
-        run: ./gradlew :app:testDebugUnitTest --console=plain
+        #
+        # Captured like the builds are: it compiles too, and a step that compiles without
+        # its output being read is a step whose warnings nobody will see.
+        shell: bash
+        run: set -o pipefail && ./gradlew :app:testDebugUnitTest --console=plain 2>&1 | tee -a "$RUNNER_TEMP/gradle-build.log"
         working-directory: android
       - name: Compile the desktop shell
         # `desktop/` is its OWN Gradle build with its own wrapper and settings file -
@@ -68,8 +78,24 @@ jobs:
         # resolves to `android/desktop` - a path that has never existed. It would have
         # failed the first time this workflow ran anywhere, which is exactly why the
         # check below is worth having in a job that has never executed.
-        run: ./gradlew compileKotlin --console=plain
+        shell: bash
+        run: set -o pipefail && ./gradlew compileKotlin --console=plain 2>&1 | tee -a "$RUNNER_TEMP/gradle-build.log"
         working-directory: desktop
+      - name: No dead branch slipped through
+        # The gate for a class of defect that compiles cleanly and behaves wrongly. Kotlin
+        # says `Duplicate branch condition` and carries on; here, carrying on is the bug.
+        #
+        # On a warm build cache the compile task may be FROM-CACHE and print nothing. That
+        # is not a hole worth closing with `--rerun-tasks`: a cache hit means this exact
+        # source has been compiled before, on a run where this same gate looked at it.
+        shell: bash
+        run: |
+          if grep -q "Duplicate branch condition" "$RUNNER_TEMP/gradle-build.log"; then
+            echo "::error::Kotlin reports a duplicate branch condition - one of the when arms is dead code"
+            grep -n -B2 -A2 "Duplicate branch condition" "$RUNNER_TEMP/gradle-build.log"
+            exit 1
+          fi
+          echo "no duplicate branch conditions reported"
       - name: Keep the debug APK as an artifact
         uses: actions/upload-artifact@v4
         with:
