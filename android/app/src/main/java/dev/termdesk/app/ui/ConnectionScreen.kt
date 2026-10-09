@@ -198,6 +198,10 @@ private fun ComputerRow(
     onSelect: () -> Unit,
     onForget: () -> Unit,
 ) {
+    // Asked, not assumed. Unpairing throws away the credential this phone was given, and getting
+    // it back means fetching a fresh code from the computer — a stray tap next to 切换 is not
+    // consent, and this app already asks before killing a process.
+    var confirmForget by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -235,6 +239,19 @@ private fun ComputerRow(
         } else {
             TextButton(onClick = onSelect) { Text("切换") }
         }
-        TextButton(onClick = onForget) { Text("解绑") }
+        TextButton(onClick = { confirmForget = true }) { Text("解绑") }
+    }
+
+    if (confirmForget) {
+        ConfirmDialog(
+            title = "解绑这台电脑？",
+            body = "这台手机上的凭据会被删掉，想再连上得在电脑上重新取一个配对码。",
+            confirmLabel = "解绑",
+            onConfirm = {
+                confirmForget = false
+                onForget()
+            },
+            onDismiss = { confirmForget = false },
+        )
     }
 }

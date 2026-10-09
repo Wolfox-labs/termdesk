@@ -3,6 +3,7 @@ package dev.termdesk.app.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,7 +23,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,6 +58,16 @@ fun FileEditor(
     var draft by remember(file.path) { mutableStateOf(file.text) }
     val dirty = draft != file.text
 
+    // Leaving with unsaved edits used to be silent: the back arrow and the system back both just
+    // closed the editor and the draft was gone. On a phone keyboard a long edit is real work, and
+    // "I will ask before throwing it away" is the whole of this guard.
+    var askBeforeLeaving by remember(file.path) { mutableStateOf(false) }
+    val leave = {
+        if (dirty) askBeforeLeaving = true else onClose()
+    }
+    // The system back gesture goes through the same door as the arrow: one guard, both paths.
+    BackHandler { leave() }
+
     Column(Modifier.fillMaxSize().imePadding()) {
         Row(
             modifier = Modifier
@@ -63,7 +76,7 @@ fun FileEditor(
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onClose) {
+            IconButton(onClick = leave) {
                 Icon(
                     Icons.AutoMirrored.Outlined.ArrowBack,
                     contentDescription = "返回",
@@ -108,6 +121,36 @@ fun FileEditor(
                 .fillMaxSize()
                 .padding(8.dp),
             placeholder = { Text("空文件") },
+        )
+    }
+
+    if (askBeforeLeaving) {
+        AlertDialog(
+            onDismissRequest = { askBeforeLeaving = false },
+            title = { Text("还有未保存的修改") },
+            text = { Text("离开这些修改就没了。要保存吗？", style = MaterialTheme.typography.bodyMedium) },
+            confirmButton = {
+                TextButton(onClick = {
+                    askBeforeLeaving = false
+                    onSave(file.path, draft)
+                    // The editor is closed on purpose: this is the answer to "save and leave",
+                    // and staying would make the button mean something else.
+                    onClose()
+                }) { Text("保存并离开") }
+            },
+            // Three answers, because two would force a choice between losing work and being
+            // stuck: 取消 goes back to the editor, and the third one discards deliberately —
+            // which is a decision, unlike the silence this replaces.
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { askBeforeLeaving = false }) { Text("取消") }
+                    TextButton(onClick = {
+                        askBeforeLeaving = false
+                        onClose()
+                    }) { Text("放弃修改", color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
         )
     }
 }
