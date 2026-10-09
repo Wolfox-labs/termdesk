@@ -16,7 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
@@ -65,7 +65,7 @@ fun FileEditor(
         ) {
             IconButton(onClick = onClose) {
                 Icon(
-                    Icons.Outlined.ArrowBack,
+                    Icons.AutoMirrored.Outlined.ArrowBack,
                     contentDescription = "返回",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp),
@@ -124,7 +124,7 @@ fun FileViewer(path: String, text: String, onClose: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onClose) {
-                Icon(Icons.Outlined.ArrowBack, contentDescription = "返回", modifier = Modifier.size(20.dp))
+                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回", modifier = Modifier.size(20.dp))
             }
             Text(
                 path,

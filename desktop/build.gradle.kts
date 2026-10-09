@@ -64,7 +64,7 @@ compose.desktop {
             // Numeric on purpose: the installer format only accepts MAJOR.MINOR.BUILD, so a
             // suffix on the product version cannot live here; the consistency check compares
             // this with the numeric core of the one product version.
-            packageVersion = "0.31.0"
+            packageVersion = "0.32.0"
             description = "TermDesk — 手机远程指挥这台电脑上的 agent 内核"
             vendor = "Wolfox Labs"
         }

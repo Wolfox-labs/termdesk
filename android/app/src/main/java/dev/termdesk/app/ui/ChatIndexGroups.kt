@@ -19,7 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -284,7 +284,7 @@ private fun WorkspaceHeader(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            imageVector = if (collapsed) Icons.Outlined.KeyboardArrowRight else Icons.Outlined.KeyboardArrowDown,
+            imageVector = if (collapsed) Icons.AutoMirrored.Outlined.KeyboardArrowRight else Icons.Outlined.KeyboardArrowDown,
             // Two projects can share a folder name, so the full path is what a
             // screen reader gets even though the row shows the short name.
             contentDescription = if (collapsed) "展开 ${group.key}" else "收起 ${group.key}",
@@ -346,7 +346,7 @@ private fun RecordedRow(session: SessionInfo, onOpen: () -> Unit) {
             }
         }
         Icon(
-            Icons.Outlined.KeyboardArrowRight,
+            Icons.AutoMirrored.Outlined.KeyboardArrowRight,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(18.dp),

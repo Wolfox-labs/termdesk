@@ -30,9 +30,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -98,7 +98,7 @@ fun FilePreviewScreen(
         ) {
             IconButton(onClick = onClose) {
                 Icon(
-                    Icons.Outlined.ArrowBack,
+                    Icons.AutoMirrored.Outlined.ArrowBack,
                     contentDescription = "返回",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -124,7 +124,7 @@ fun FilePreviewScreen(
             if (file != null) {
                 IconButton(onClick = { openWith(context, file) }) {
                     Icon(
-                        Icons.Outlined.OpenInNew,
+                        Icons.AutoMirrored.Outlined.OpenInNew,
                         contentDescription = "用其他应用打开",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
