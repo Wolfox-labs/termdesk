@@ -68,6 +68,8 @@ data class SessionEvent(
      * file produced last week is exactly what somebody comes back to a history for.
      */
     val files: List<ChatFile> = emptyList(),
+    /** What the harness injected (goal / tool-jobs / skill-catalog …), for the block's label. */
+    val sourceKind: String? = null,
 ) {
     val isMessage: Boolean get() = kind == "message"
     val isUser: Boolean get() = isMessage && role == "user"

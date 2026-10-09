@@ -294,10 +294,15 @@ fun AppRoot(
     LaunchedEffect(connected, windowVisible) {
         if (!connected || !windowVisible || BatteryGuidance.isExempt(context)) return@LaunchedEffect
         Log.i(TAG_NOTIFY, "系统未放行后台运行，已提示去设置")
+        // An explicit duration: with an action label Material3 defaults to Indefinite, which
+        // pinned this over the bottom of the screen for as long as the app was open — the last
+        // lines of a transcript could not be reached, and a hint nobody can dismiss is worse
+        // than no hint. The notification keeps the same door for anyone who wants it later.
         val answer = snackbarHostState.showSnackbar(
             message = "系统可能不允许 TermDesk 在后台运行，通知会晚到",
             actionLabel = "去设置",
             withDismissAction = true,
+            duration = SnackbarDuration.Long,
         )
         if (answer == SnackbarResult.ActionPerformed) {
             runCatching { context.startActivity(BatteryGuidance.intentFor(context)) }

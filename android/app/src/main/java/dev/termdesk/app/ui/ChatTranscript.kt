@@ -252,10 +252,15 @@ internal fun ContextLine(event: ChatEvent) {
 
 @Composable
 internal fun ToolLine(event: ChatEvent) {
+    // Not the syntax-keyword red. The tail of a real session is dozens of these rows stacked in
+    // one column, and Monokai's keyword red (#E06C75) made the whole transcript read as a wall
+    // of failures when nothing had failed. Red is `ErrorLine`'s; a tool call is ordinary work,
+    // and its result is quieter still.
+    val isCall = event.kind == "tool"
     EngineBlock(
-        label = if (event.kind == "tool") (event.name ?: "工具") else "工具结果",
+        label = if (isCall) (event.name ?: "工具") else "工具结果",
         text = event.text,
-        accent = Semantic.current.syntaxKeyword,
+        accent = if (isCall) Semantic.current.info else MaterialTheme.colorScheme.onSurfaceVariant,
         streaming = event.streaming,
     )
 }

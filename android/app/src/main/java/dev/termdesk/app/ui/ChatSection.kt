@@ -359,15 +359,23 @@ fun ChatSection(
                     },
                 )
                 recordedSession != null -> {
-                    recordedSession.resumeNote?.let { note ->
-                        Text(
-                            note,
-                            modifier = Modifier.padding(12.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    // A Column of our own, on purpose: the branch's parent is a Box, so the note
+                    // and the transcript's `fillMaxSize()` list were drawn ON TOP of each other —
+                    // two blocks of text overlapping on a real screen. Weight only means
+                    // something inside a column, which is why this one is explicit.
+                    Column(Modifier.fillMaxSize()) {
+                        recordedSession.resumeNote?.let { note ->
+                            Text(
+                                note,
+                                modifier = Modifier.padding(12.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Box(Modifier.weight(1f)) {
+                            RecordedTranscript(recordedSession, onOpenFiles)
+                        }
                     }
-                    RecordedTranscript(recordedSession, onOpenFiles)
                 }
                 activeChat != null -> Conversation(
                     chat = activeChat,
@@ -1164,7 +1172,9 @@ private fun RecordedTranscript(session: SessionDetail, onOpenFile: ((String) -> 
                     name = event.name,
                     state = event.state,
                     exitCode = event.exitCode,
-                    sourceKind = null,
+                    // Carried through, not dropped: it is what labels an injected block as a
+                    // goal, a job list or a skill catalogue instead of a bare "上下文".
+                    sourceKind = event.sourceKind,
                     streaming = false,
                     files = event.files,
                 ),

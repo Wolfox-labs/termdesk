@@ -426,6 +426,12 @@ import org.json.JSONObject
                             state = m?.let { if (it.isNull("state")) null else it.optString("state") },
                             exitCode = m?.let { if (it.isNull("exitCode")) null else it.optInt("exitCode") },
                             tokens = m?.let { if (it.isNull("total")) null else it.optInt("total") },
+                            // What the harness injected, and why it is worth keeping: the label
+                            // on a context block reads out of this ("目标", "工具任务", …). Without
+                            // it every injected block was labelled a bare "上下文 · context",
+                            // which says nothing about which of them is a goal and which is a
+                            // skill catalogue.
+                            sourceKind = m?.let { if (it.isNull("sourceKind")) null else it.optString("sourceKind") },
                             files = parseChatFiles(m?.optJSONArray("files")),
                         ),
                     )
