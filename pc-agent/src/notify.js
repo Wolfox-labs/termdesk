@@ -46,30 +46,58 @@ export class Notifier {
   /**
    * Remember one thing worth telling the phone about, and drop what is no longer worth it.
    *
-   * While a client is attached the entry is sent immediately: the phone knows whether it is
-   * looking at that conversation, and it is the side that should decide whether to interrupt
-   * somebody who is already reading. This side only knows that something happened.
+   * Every entry is kept until the phone says it has it (see `ack`), whether or not a client
+   * is attached right now. That is not belt-and-braces: writing to a socket is not delivery.
+   * Measured on a real phone — backgrounded, the frame went into a socket that stayed open and
+   * the process did nothing with it, and when the connection finally died the buffered bytes
+   * died with it. The PC had already forgotten the news, so it was lost in silence.
+   *
+   * While a client is attached the entry goes out immediately as well: the phone knows whether
+   * it is looking at that conversation, and it is the side that should decide whether to
+   * interrupt somebody who is already reading. This side only knows that something happened.
    */
   push(entry) {
     const at = this.now();
     const record = { id: `n-${this.nextId++}`, at, ...entry };
+    this.entries.push(record);
+    this.prune();
     if (this.send) {
       try {
         this.send(record);
-        this.log?.(`[termdesk] notify ${record.id} ${record.kind}${chatOf(record)} → 客户端在线，直接送出`);
+        record.sentAt = this.now();
+        this.log?.(
+          `[termdesk] notify ${record.id} ${record.kind}${chatOf(record)} → 客户端在线，送出（等它确认）`,
+        );
         return record;
       } catch {
-        // A socket that died between the check and the send: fall through and hold it,
+        // A socket that died between the check and the send: the entry is already held,
         // because the news is still true.
       }
     }
     record.whileAway = true;
-    this.entries.push(record);
-    this.prune();
     this.log?.(
       `[termdesk] notify ${record.id} ${record.kind}${chatOf(record)} → 没有客户端，暂存（待发 ${this.entries.length} 条）`,
     );
     return record;
+  }
+
+  /**
+   * The phone says it has these. Only now is the news forgotten.
+   *
+   * A phone that received a notification while somebody was reading that very conversation
+   * still acks it: "I have it, I chose not to interrupt" is a decision, not a loss, and
+   * re-sending it on every reconnect would turn the decision into an argument.
+   */
+  ack(ids) {
+    const wanted = new Set((Array.isArray(ids) ? ids : [ids]).filter((id) => typeof id === 'string'));
+    if (wanted.size === 0) return 0;
+    const before = this.entries.length;
+    this.entries = this.entries.filter((e) => !wanted.has(e.id));
+    const dropped = before - this.entries.length;
+    if (dropped > 0) {
+      this.log?.(`[termdesk] notify 手机确认收到 ${dropped} 条（还剩 ${this.entries.length} 条没确认）`);
+    }
+    return dropped;
   }
 
   /**
@@ -100,11 +128,13 @@ export class Notifier {
   }
 
   /**
-   * Hand every held entry to `send`, oldest first, and forget them.
+   * Hand every unconfirmed entry to `send`, oldest first. They stay until acked.
    *
-   * Forgotten on delivery rather than on being read: the phone has the frame at that point,
-   * and a phone in the background can post its own notification from it. Entries that fail
-   * to send stay held, so a socket that dies mid-flush does not swallow the rest.
+   * The flush happens on every authentication, so a phone that comes back after being
+   * suspended — or after the agent was restarted — is told everything it has not confirmed.
+   * Sending the same entry twice is harmless by design: the phone's notification id is derived
+   * from the conversation, so a repeat replaces the notification it already showed instead of
+   * stacking a second copy of it.
    */
   deliver(send) {
     this.prune();
@@ -113,17 +143,22 @@ export class Notifier {
     let sent = 0;
     for (const entry of waiting) {
       try {
+        // As far as this side knows, nobody has seen this yet — an entry is only forgotten
+        // once the phone says it has it, so an unconfirmed one being sent again is news the
+        // phone has never shown. "While you were away" is the honest sentence for it, and the
+        // phone replaces its own notification rather than stacking a second copy.
+        entry.whileAway = true;
         send(entry);
+        entry.sentAt = this.now();
         sent += 1;
       } catch {
         failed.push(entry);
       }
     }
-    this.entries = failed;
     if (waiting.length > 0) {
       this.log?.(
-        `[termdesk] notify 补发 ${sent}/${waiting.length} 条`
-        + (failed.length ? `（${failed.length} 条没发出去，仍留着）` : ''),
+        `[termdesk] notify 补发 ${sent}/${waiting.length} 条（都在等手机确认）`
+        + (failed.length ? `，其中 ${failed.length} 条没发出去` : ''),
       );
     }
     return sent;

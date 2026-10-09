@@ -908,6 +908,14 @@ export function createFrameHandler(ctx) {
         break;
       }
 
+      case C2S.NOTIFY_ACK: {
+        // The phone saying it has these. Until this arrives the entry stays on this side, so
+        // news written into a socket nobody read is re-sent rather than lost — which is what
+        // happened on a real phone that Android had suspended with the bytes still buffered.
+        ctx.notifier?.ack(frame.ids);
+        break;
+      }
+
       case C2S.CHAT_APPROVE: {
         // The phone answering a "may I run this?" question. An unknown or
         // already-settled request is refused, so a stale tap cannot decide

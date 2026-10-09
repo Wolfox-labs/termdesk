@@ -167,15 +167,33 @@ try {
     held.some((f) => typeof f.title === 'string' && f.title.length > 0),
     JSON.stringify(held.map((f) => ({ title: f.title, text: (f.text ?? '').slice(0, 24) }))));
 
-  // ---- and only once -------------------------------------------------------
+  // ---- and a phone that says nothing is told again -------------------------
+  // This is the case that was measured on a real device: the frame went into a socket that
+  // stayed open, Android had suspended the app, and the news died with the connection. The
+  // PC must not treat "written to a socket" as "received".
+  c.ws.close();
+  await sleep(300);
   const d = await connect();
   await sleep(500);
-  check('a later connection is not handed the same news again',
-    d.frames.filter((f) => f.type === 'notify').length === 0,
-    `${d.frames.filter((f) => f.type === 'notify').length} notifications`);
+  const again = d.frames.filter((f) => f.type === 'notify');
+  check('a phone that never confirmed is told the same news again', again.length === held.length,
+    `${again.length} vs ${held.length}`);
+  check('and it is the same news, not new news',
+    again.map((f) => f.id).join(',') === held.map((f) => f.id).join(','),
+    `${again.map((f) => f.id).join(',')} vs ${held.map((f) => f.id).join(',')}`);
 
-  c.ws.close();
+  // ---- once confirmed, it is not news any more ----------------------------
+  d.ws.send(JSON.stringify({ type: 'notify.ack', ids: again.map((f) => f.id) }));
+  await sleep(300);
   d.ws.close();
+  await sleep(300);
+  const e = await connect();
+  await sleep(500);
+  check('after the phone confirms them, a later connection is handed nothing',
+    e.frames.filter((f) => f.type === 'notify').length === 0,
+    `${e.frames.filter((f) => f.type === 'notify').length} notifications`);
+
+  e.ws.close();
 } catch (err) {
   check('the notification run completed', false, err.message);
   console.error(serverLog.slice(-1500));

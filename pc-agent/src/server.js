@@ -777,6 +777,8 @@ wss.on('connection', (socket, req) => {
     shellEnabled: SHELL_ENABLED,
     terminals,
     chats,
+    // So the phone can confirm what it received; unconfirmed entries are re-sent.
+    notifier,
     pushStatus,
     stopStatus,
     startStatusTimer,

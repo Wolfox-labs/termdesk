@@ -1069,9 +1069,29 @@ class AgentClient(
         _lastAction.value = null
     }
 
-    /** The notifications have been drawn (or deliberately suppressed); forget them. */
+    /**
+     * The notifications have been drawn (or deliberately suppressed); forget them.
+     *
+     * Told to the PC as well, and that is the point: on this side "handled" and "never arrived"
+     * look nothing alike, but from the PC they were the same event — it had already written the
+     * frame to a socket and forgotten the news. A phone Android has suspended reads nothing, so
+     * a frame can sit in a buffer until the socket dies and take the news with it. The PC keeps
+     * every entry until this arrives and re-sends the rest on the next connection.
+     */
     fun consumeNotifications() {
+        val ids = _pendingNotifications.value.map { it.id }
         _pendingNotifications.value = emptyList()
+        if (ids.isNotEmpty()) {
+            sendFrame(
+                JSONObject()
+                    .put("type", "notify.ack")
+                    .put("ids", org.json.JSONArray(ids)),
+            )
+            // Logged because this frame is what makes the PC forget the news: without it the
+            // same notification comes back on every reconnect, and the only way to tell "the
+            // phone never confirmed" from "the PC never asked" is to see both sides.
+            Log.i(TAG_NOTIFY, "确认收到 ${ids.size} 条（${ids.joinToString(",")}）")
+        }
     }
 
     // ---- P2 operations ----

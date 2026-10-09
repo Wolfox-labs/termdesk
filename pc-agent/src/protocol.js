@@ -60,6 +60,15 @@ export const C2S = {
   CHAT_TERMINAL_READ: 'chat.terminal.read',
   CHAT_TERMINAL_INPUT: 'chat.terminal.input',
   CHAT_TERMINAL_STOP: 'chat.terminal.stop',
+  /**
+   * The phone confirming it has these notifications.
+   *
+   * Until it arrives the entry stays on this side and is re-sent on the next connection:
+   * a write to a socket is not a delivery, and a phone that Android has suspended will not
+   * read the bytes until it is resumed — by which time the socket may be gone, and the news
+   * with it.
+   */
+  NOTIFY_ACK: 'notify.ack',
   PING: 'ping',
 };
 
