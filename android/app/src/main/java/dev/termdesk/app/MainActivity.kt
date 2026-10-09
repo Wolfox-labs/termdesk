@@ -15,6 +15,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import dev.termdesk.app.data.PairRequest
+import dev.termdesk.app.data.AgentNotifications
+import dev.termdesk.app.data.OpenRequest
+import dev.termdesk.app.data.parseOpenRequest
 import dev.termdesk.app.data.parsePairIntent
 import dev.termdesk.app.ui.AppRoot
 import dev.termdesk.app.ui.AppViewModel
@@ -33,6 +36,14 @@ class MainActivity : ComponentActivity() {
      */
     private val pairRequest = MutableStateFlow<PairRequest?>(null)
 
+    /**
+     * A conversation a notification tap asked for.
+     *
+     * Held the same way as [pairRequest] and for the same reason: a tap can arrive while the
+     * app is already open (`onNewIntent`), and the Compose tree has to see it.
+     */
+    private val openRequest = MutableStateFlow<OpenRequest?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Draw behind the system bars so the theme fills the screen, then pad
@@ -40,10 +51,12 @@ class MainActivity : ComponentActivity() {
         // the status bar and became unreadable.
         enableEdgeToEdge()
         pairRequest.value = parsePairIntent(intent)
+        openRequest.value = parseOpenRequest(intent)
 
         setContent {
             val mode by vm.themeMode.collectAsState()
             val pair by pairRequest.collectAsState()
+            val open by openRequest.collectAsState()
             TermDeskTheme(mode = mode) {
                 Surface(
                     modifier = Modifier
@@ -54,6 +67,12 @@ class MainActivity : ComponentActivity() {
                         vm = vm,
                         pairRequest = pair,
                         onPairHandled = { pairRequest.value = null },
+                        openRequest = open,
+                        onOpenHandled = {
+                            openRequest.value = null
+                            // So a rotation does not replay a tap that was already served.
+                            intent?.removeExtra(AgentNotifications.EXTRA_CHAT_ID)
+                        },
                     )
                 }
             }
@@ -64,6 +83,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         parsePairIntent(intent)?.let { pairRequest.value = it }
+        parseOpenRequest(intent)?.let { openRequest.value = it }
     }
 
     /**

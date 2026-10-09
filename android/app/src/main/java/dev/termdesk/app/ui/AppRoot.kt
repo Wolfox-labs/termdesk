@@ -2,6 +2,7 @@ package dev.termdesk.app.ui
 
 import androidx.activity.compose.BackHandler
 
+import android.app.NotificationManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,6 +13,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -21,8 +23,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.findViewTreeLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.termdesk.app.data.AgentNotifications
 import dev.termdesk.app.data.LinkState
+import dev.termdesk.app.data.OpenRequest
 import dev.termdesk.app.data.PairRequest
 import dev.termdesk.app.data.SessionInfo
 
@@ -31,6 +40,9 @@ fun AppRoot(
     vm: AppViewModel = viewModel(),
     pairRequest: PairRequest? = null,
     onPairHandled: () -> Unit = {},
+    /** A conversation a notification tap asked for, if the launch carried one. */
+    openRequest: OpenRequest? = null,
+    onOpenHandled: () -> Unit = {},
 ) {
     val link by vm.link.collectAsState()
     val status by vm.status.collectAsState()
@@ -38,6 +50,7 @@ fun AppRoot(
     val services by vm.services.collectAsState()
     val loading by vm.loading.collectAsState()
     val lastAction by vm.lastAction.collectAsState()
+    val pendingNotifications by vm.pendingNotifications.collectAsState()
     val listing by vm.listing.collectAsState()
     // Collected so startPath recomputes once the agent reports its roots.
     val roots by vm.fsRoots.collectAsState()
@@ -109,6 +122,58 @@ fun AppRoot(
         // the relay is down, nothing can tell this phone where else to look.
         vm.connect(request.url, request.token, request.relay, request.more)
         snackbarHostState.showSnackbar("已通过二维码配对 · ${request.name ?: request.url}")
+    }
+
+    // ---- notifications ---------------------------------------------------------
+    // The PC decides WHAT is worth telling the owner (pc-agent/src/notify.js). The only
+    // judgement left on this side is whether they are already looking at that very
+    // conversation, which the PC cannot know. An approval is never suppressed: the kernel is
+    // blocked until somebody answers it.
+    val context = LocalContext.current
+    LaunchedEffect(Unit) { AgentNotifications.ensureChannel(context) }
+
+    val rootView = LocalView.current
+    val lifecycleOwner = remember(rootView) { rootView.findViewTreeLifecycleOwner() }
+    // `!= false` on purpose: with no owner to ask, assume the window is visible. Swallowing a
+    // notification is worse than showing one at a slightly wrong moment.
+    var windowVisible by remember(lifecycleOwner) {
+        mutableStateOf(
+            lifecycleOwner?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) != false,
+        )
+    }
+    DisposableEffect(lifecycleOwner) {
+        val owner = lifecycleOwner
+        if (owner == null) {
+            onDispose { }
+        } else {
+            val observer = LifecycleEventObserver { _, _ ->
+                windowVisible = owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            }
+            owner.lifecycle.addObserver(observer)
+            onDispose { owner.lifecycle.removeObserver(observer) }
+        }
+    }
+
+    LaunchedEffect(pendingNotifications, windowVisible, section, activeChat?.id) {
+        if (pendingNotifications.isEmpty()) return@LaunchedEffect
+        val manager = context.getSystemService(NotificationManager::class.java)
+        for (note in pendingNotifications) {
+            val looking = windowVisible && section == Section.Sessions &&
+                note.chatId != null && note.chatId == activeChat?.id
+            if (looking && !note.isApproval) continue
+            manager?.notify(AgentNotifications.idFor(note), AgentNotifications.build(context, note))
+        }
+        vm.consumeNotifications()
+    }
+
+    // A tap on one of those notifications asks for a specific conversation. It may be gone —
+    // the agent restarted, or the chat was closed while the phone was away — in which case
+    // the list is shown rather than an error about something nobody asked for by name.
+    LaunchedEffect(openRequest, chats) {
+        val target = openRequest ?: return@LaunchedEffect
+        onOpenHandled()
+        section = Section.Sessions
+        if (chats.any { it.id == target.chatId }) vm.openChat(target.chatId)
     }
     val connected = link is LinkState.Connected
     // Kernel discovery is metadata only (it never runs a model), so it can be

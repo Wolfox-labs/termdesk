@@ -1641,8 +1641,11 @@ private fun Composer(
             keyboardActions = KeyboardActions(),
         )
         Spacer(Modifier.width(6.dp))
-        // While a reply is streaming the same button becomes "stop", because
-        // sending a second prompt mid-turn would be rejected by the agent.
+        // Two buttons while a reply is streaming, where there used to be one that turned into
+        // "stop" — on the reasoning that a second prompt mid-turn would be rejected. The PC
+        // queues a message typed mid-turn now (ChatManager.drainQueue), so that reasoning is
+        // false and the button outlived it: waiting became something the person can ask for
+        // instead of something they are refused.
         if (running) {
             IconButton(onClick = onCancel) {
                 Icon(
@@ -1651,14 +1654,17 @@ private fun Composer(
                     tint = MaterialTheme.colorScheme.error,
                 )
             }
-        } else {
+        }
+        // Shown while running only once there is something to send, so the row stays calm
+        // when there is not, and appears the moment somebody types.
+        if (!running || draft.isNotBlank()) {
             IconButton(onClick = onSend, enabled = canSend && draft.isNotBlank() && !sending) {
                 if (sending) {
                     CircularProgressIndicator(modifier = Modifier.size(19.dp), strokeWidth = 2.dp)
                 } else {
                     Icon(
                         Icons.Outlined.Send,
-                        contentDescription = "发送",
+                        contentDescription = if (running) "发送（排队）" else "发送",
                         tint = if (canSend && draft.isNotBlank()) {
                             MaterialTheme.colorScheme.primary
                         } else {

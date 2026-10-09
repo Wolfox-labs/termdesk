@@ -39,6 +39,7 @@ import dev.termdesk.app.data.UploadedFile
 import dev.termdesk.app.data.TextFile
 import dev.termdesk.app.data.TransferState
 import dev.termdesk.app.data.KernelRun
+import dev.termdesk.app.data.AgentNotification
 import dev.termdesk.app.data.WorkspaceInfo
 import dev.termdesk.app.ui.theme.ThemeMode
 import kotlinx.coroutines.Dispatchers
@@ -295,6 +296,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val kernelRuns: StateFlow<List<KernelRun>> = client.kernelRuns
     val kernelRunsNote: StateFlow<String?> = client.kernelRunsNote
     fun loadKernelRuns() = client.loadKernelRuns()
+
+    /**
+     * What the PC decided the owner should be told about, waiting to be drawn.
+     *
+     * The phone's only say in it is whether to interrupt somebody who is already reading
+     * that conversation — see the effect in AppRoot.
+     */
+    val pendingNotifications: StateFlow<List<AgentNotification>> = client.pendingNotifications
+
+    fun consumeNotifications() = client.consumeNotifications()
 
     /** Messages the person wrote while the link was down. */
     val pendingCount: StateFlow<Int> = client.pendingCount

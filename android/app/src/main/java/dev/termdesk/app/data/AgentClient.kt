@@ -82,6 +82,17 @@ class AgentClient(
     private val _lastAction = MutableStateFlow<ActionResult?>(null)
     val lastAction: StateFlow<ActionResult?> = _lastAction.asStateFlow()
 
+    /**
+     * What the PC decided the owner should be told about, waiting to be drawn.
+     *
+     * A list and not a single slot, because a reconnect can deliver everything that happened
+     * while the phone was away (up to the agent's own cap) in one go — and "the last one
+     * wins" would silently swallow the rest, which is the one failure a notification must
+     * not have. The UI drains the list and calls [consumeNotifications].
+     */
+    private val _pendingNotifications = MutableStateFlow<List<AgentNotification>>(emptyList())
+    val pendingNotifications: StateFlow<List<AgentNotification>> = _pendingNotifications.asStateFlow()
+
     /** True while a list request is outstanding. */
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -1039,6 +1050,11 @@ class AgentClient(
         _lastAction.value = null
     }
 
+    /** The notifications have been drawn (or deliberately suppressed); forget them. */
+    fun consumeNotifications() {
+        _pendingNotifications.value = emptyList()
+    }
+
     // ---- P2 operations ----
 
     fun listDirectory(dirPath: String) {
@@ -1772,6 +1788,15 @@ class AgentClient(
                     // restarted agent forgot re-attaches instead of failing.
                     if (action == "chat.send" && frame.optString("code") == "no_chat") reattachActiveChat()
                 }
+                "notify" -> {
+                    // The PC decided this is worth telling the owner about (see
+                    // pc-agent/src/notify.js). Kept as a list: a reconnect delivers everything
+                    // that happened while the phone was away in one burst, and dropping all
+                    // but the last would lose exactly the news the feature exists for.
+                    parseAgentNotification(frame)?.let { note ->
+                        _pendingNotifications.value = (_pendingNotifications.value + note).takeLast(20)
+                    }
+                }
                 "codex.config" -> {
                     _codexConfig.value = parseCodexConfig(frame.optJSONObject("config"))
                     val tpl = frame.optJSONArray("templates")
@@ -1820,9 +1845,18 @@ class AgentClient(
                 // it can leave the queue. An `action.result` counts too, because a
                 // refusal is also an answer — keeping it queued would retry a
                 // message the agent has already declined.
+                //
+                // One arm, not two. There used to be a second `"chat.sent"` arm further down
+                // (the compiler warned: duplicate branch condition) and THIS one shadowed it,
+                // so the arm that cleared the composer's spinner and refreshed the chat was
+                // dead code. The visible result was a send button that stayed a spinner for
+                // the whole turn — which is also what stopped a second message from being
+                // typed and queued while an answer was streaming.
                 "chat.sent" -> {
                     val requestId = frame.optString("requestId")
                     if (requestId.isNotBlank()) pendingSends.acknowledge(requestId)
+                    _chatSending.value = false
+                    _activeChat.value?.let { upsertChat(it) }
                 }
                 "kernels.runs" -> {
                     _kernelRuns.value = parseKernelRuns(frame.optJSONArray("runs"))
@@ -1883,10 +1917,6 @@ class AgentClient(
                     } else if (info != null) {
                         sendFrame(JSONObject().put("type", "chat.read").put("chatId", info.id))
                     }
-                }
-                "chat.sent" -> {
-                    _chatSending.value = false
-                    _activeChat.value?.let { upsertChat(it) }
                 }
                 "chat.event" -> applyChatEvent(frame)
                 "chat.status" -> {

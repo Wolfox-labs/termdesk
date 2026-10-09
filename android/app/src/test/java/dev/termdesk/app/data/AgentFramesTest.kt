@@ -39,6 +39,43 @@ import org.junit.Test
 class AgentFramesTest {
 
     @Test
+    fun `a notification frame becomes something the phone can draw`() {
+        val away = parseAgentNotification(
+            JSONObject()
+                .put("id", "n-7")
+                .put("kind", "turn_done")
+                .put("chatId", "c1")
+                .put("title", "also check the tests")
+                .put("text", "Done, and the tests pass.")
+                .put("at", 1_790_000_000_000L)
+                .put("whileAway", true),
+        )
+        assertNotNull(away)
+        assertEquals("n-7", away!!.id)
+        assertEquals("also check the tests", away.title)
+        assertTrue("a notification that had to wait says so", away.whileAway)
+        assertFalse(away.isApproval)
+
+        val approval = parseAgentNotification(
+            JSONObject()
+                .put("id", "n-8")
+                .put("kind", "approval")
+                .put("requestId", "r1")
+                .put("title", "内核在等你的回答")
+                .put("text", "rm -rf build"),
+        )
+        assertTrue("a blocked kernel is an approval", approval!!.isApproval)
+        assertFalse("and it is not labelled as having waited", approval.whileAway)
+
+        // Nothing to say means no notification: an empty one is how people learn to swipe
+        // without reading, and then miss the one that mattered.
+        assertNull(parseAgentNotification(JSONObject().put("id", "n-9").put("kind", "turn_done")))
+        // No id means no identity, and the id is what keeps a second turn about the same
+        // conversation from stacking on top of the first.
+        assertNull(parseAgentNotification(JSONObject().put("title", "t").put("text", "x")))
+    }
+
+    @Test
     fun `a queued message is marked as waiting, and a sent one is not`() {
         // The PC queues a message typed while the previous answer is still coming, and
         // draws it immediately so it does not look lost. The badge is the only thing that

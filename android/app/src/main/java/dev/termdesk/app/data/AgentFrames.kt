@@ -145,6 +145,32 @@ import org.json.JSONObject
             queued = o.optBoolean("queued", false),
         )
     }
+
+    /**
+     * One `notify` frame: something the PC decided the phone should be told about.
+     *
+     * Null when there is nothing to say — no title and no text. An empty notification is
+     * worse than none: it is how people learn to swipe without reading, and then miss the
+     * one that mattered. A frame with no id is dropped for the same reason: the id is what
+     * lets a second turn about one conversation replace the first instead of stacking.
+     */
+    internal fun parseAgentNotification(o: JSONObject): AgentNotification? {
+        val id = o.optString("id").takeIf { it.isNotBlank() && it != "null" } ?: return null
+        val title = o.optString("title").takeIf { it.isNotBlank() && it != "null" }
+        val text = o.optString("text").takeIf { it.isNotBlank() && it != "null" }
+        if (title == null && text == null) return null
+        return AgentNotification(
+            id = id,
+            kind = o.optString("kind").takeIf { it.isNotBlank() && it != "null" } ?: "turn_done",
+            chatId = o.optString("chatId").takeIf { it.isNotBlank() && it != "null" },
+            sessionId = o.optString("sessionId").takeIf { it.isNotBlank() && it != "null" },
+            engine = o.optString("engine").takeIf { it.isNotBlank() && it != "null" },
+            title = title ?: "TermDesk",
+            text = text.orEmpty(),
+            at = o.optLong("at"),
+            whileAway = o.optBoolean("whileAway", false),
+        )
+    }
     internal fun parseProcesses(arr: JSONArray?): List<ProcessInfo> {
         if (arr == null) return emptyList()
         return buildList {
