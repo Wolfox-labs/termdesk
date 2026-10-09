@@ -5,15 +5,20 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!--
-      The phone-side sandbox runs as a child process of this app. A foreground
-      service is the only supported way to tell Android "do not reap this while
-      the app is in the background", which is what keeps long sandbox tasks
-      alive. FOREGROUND_SERVICE_SPECIAL_USE is only required from targetSdk 34;
-      it is declared now so raising targetSdk later does not silently break the
-      local kernel. POST_NOTIFICATIONS is likewise a no-op below targetSdk 33.
+      The phone-side sandbox runs as a child process of this app, and the connection to the
+      paired computer has to keep being read while the app is off screen. A foreground
+      service is the only supported way to tell Android "do not reap this while the app is
+      in the background". FOREGROUND_SERVICE_SPECIAL_USE and FOREGROUND_SERVICE_DATA_SYNC
+      are only required from targetSdk 34; they are declared now so raising targetSdk later
+      does not silently break the local kernel or the notifications. POST_NOTIFICATIONS is
+      likewise a no-op below targetSdk 33.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Held only while ConnectionService lives, so the socket keeps being read with the
+         screen off. Released in the service's onDestroy, never outlives it. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -68,6 +73,17 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the user's on-device Termux sandbox agent running." />
         </service>
+        <!--
+          Keeps the app scheduled while it is off screen, so a "your turn finished" or "the
+          kernel is waiting for you" frame can still be received and drawn. Started when the
+          window goes away with a live link, stopped when either comes back. Not specialUse:
+          this one keeps a network connection to the paired computer, which is what `dataSync`
+          is for.
+        -->
+        <service
+            android:name=".data.ConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
     </application>
 </manifest>

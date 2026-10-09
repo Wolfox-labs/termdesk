@@ -32,6 +32,7 @@ import androidx.lifecycle.findViewTreeLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.termdesk.app.data.AgentNotification
 import dev.termdesk.app.data.AgentNotifications
+import dev.termdesk.app.data.ConnectionService
 import dev.termdesk.app.data.LinkState
 import dev.termdesk.app.data.OpenRequest
 import dev.termdesk.app.data.PairRequest
@@ -262,6 +263,27 @@ fun AppRoot(
         is LinkState.ProtocolMismatch -> "版本不匹配 · ${state.reason}"
         is LinkState.Failed -> "连接暂不可用 · 点击查看：${state.reason}"
         else -> "离线模式 · 点击连接或管理设备"
+    }
+
+    // ---- staying awake while the window is away --------------------------------
+    // Measured on the device: backgrounded, the frames the PC sent were written to a socket
+    // that was still open, and the phone did nothing with them until the window came back —
+    // Android freezes the process and the bytes wait in the buffer. So the app asks for a
+    // foreground service exactly while it is off screen AND the link is up: that is the one
+    // state where it is doing something the owner asked for (waiting to say the answer is
+    // ready) rather than merely existing.
+    //
+    // Stopping it is not a detail: a "connected" notice left over a link that is gone is a
+    // notification the user cannot get rid of without turning the feature off. The "不用了"
+    // action stops the service only; the link is the app's business and survives until the
+    // window comes back or the connection drops, whichever happens first.
+    LaunchedEffect(connected, windowVisible) {
+        if (connected && !windowVisible) {
+            ConnectionService.start(context, hostname)
+            Log.i(TAG_NOTIFY, "前台服务：窗口在后台且已连接，开始守着这条连接")
+        } else {
+            ConnectionService.stop(context)
+        }
     }
 
     // Surface every action outcome, including refusals, so the user is never
