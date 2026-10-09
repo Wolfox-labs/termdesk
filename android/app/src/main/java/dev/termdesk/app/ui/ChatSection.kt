@@ -367,7 +367,7 @@ fun ChatSection(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    RecordedTranscript(recordedSession)
+                    RecordedTranscript(recordedSession, onOpenFiles)
                 }
                 activeChat != null -> Conversation(
                     chat = activeChat,
@@ -1127,7 +1127,7 @@ private fun EngineScopeRow(
 }
 /** Recorded history, listed like conversations because that is what it is. */
 @Composable
-private fun RecordedTranscript(session: SessionDetail) {
+private fun RecordedTranscript(session: SessionDetail, onOpenFile: ((String) -> Unit)? = null) {
     if (session.events.isEmpty()) {
         Text(
             "这条会话没有可显示的记录。",
@@ -1166,7 +1166,9 @@ private fun RecordedTranscript(session: SessionDetail) {
                     exitCode = event.exitCode,
                     sourceKind = null,
                     streaming = false,
+                    files = event.files,
                 ),
+                onOpenFile,
             )
         }
     }

@@ -60,6 +60,14 @@ data class SessionEvent(
     val state: String?,
     val exitCode: Int?,
     val tokens: Int?,
+    /**
+     * Files this turn handed over, when the engine recorded any.
+     *
+     * A stored session keeps them the same way a live one does, which is why the recorded
+     * transcript can show the same row — and why the row is worth having there at all: a
+     * file produced last week is exactly what somebody comes back to a history for.
+     */
+    val files: List<ChatFile> = emptyList(),
 ) {
     val isMessage: Boolean get() = kind == "message"
     val isUser: Boolean get() = isMessage && role == "user"

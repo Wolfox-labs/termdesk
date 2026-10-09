@@ -426,6 +426,7 @@ import org.json.JSONObject
                             state = m?.let { if (it.isNull("state")) null else it.optString("state") },
                             exitCode = m?.let { if (it.isNull("exitCode")) null else it.optInt("exitCode") },
                             tokens = m?.let { if (it.isNull("total")) null else it.optInt("total") },
+                            files = parseChatFiles(m?.optJSONArray("files")),
                         ),
                     )
                 }

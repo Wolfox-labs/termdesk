@@ -193,6 +193,22 @@ async function runTurn(session, promptId, text) {
     update(session.id, chunk);
   }
 
+  // A turn that lasts long enough to look at while it runs. The default turn is over in
+  // about two seconds, which is shorter than the round trip of an automated check (dump the
+  // screen, read the state, decide) — so anything about "during a turn" was a race. With
+  // FAKE_ACP_TURN_MS set, the answer keeps streaming until that much time has passed.
+  const turnMs = Number(process.env.FAKE_ACP_TURN_MS ?? 0);
+  const deadline = Number.isFinite(turnMs) && turnMs > 0 ? Date.now() + turnMs : 0;
+  while (deadline && Date.now() < deadline && !session.cancelled) {
+    await sleep(200);
+    const chunk = {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: ' still working…' },
+    };
+    session.messages.push(chunk);
+    update(session.id, chunk);
+  }
+
   const toolCallId = `call-${Date.now()}`;
   const call = { sessionUpdate: 'tool_call', toolCallId, title: 'bash: echo stub', kind: 'execute', status: 'in_progress' };
   session.messages.push(call);
