@@ -51,9 +51,139 @@ import dev.termdesk.app.ui.theme.Semantic
  * the model's answer, its reasoning, and the tools it ran.
  */
 
+/**
+ * One thing to draw: a single event, or a run of process rows folded into one line.
+ *
+ * Why folding exists: the tail of a real agent session is dozens of `tool` / `tool_result` /
+ * `reasoning` rows in a column, and on a 339dp-wide screen at a 1.35 font scale that is several
+ * screens of plumbing between two sentences. The run is folded, not dropped — one tap opens it,
+ * in order, exactly as it arrived.
+ */
+internal sealed interface TranscriptRow {
+    val key: String
+
+    data class One(val event: ChatEvent) : TranscriptRow {
+        override val key: String get() = "e${event.seq}"
+    }
+
+    data class Run(val events: List<ChatEvent>) : TranscriptRow {
+        override val key: String get() = "r${events.firstOrNull()?.seq ?: 0}-${events.size}"
+    }
+}
+
+/** Below this, folding hides more than it saves. */
+private const val RUN_MIN = 4
+
+/** Rows that describe *how* the work was done rather than what was said. */
+private fun isProcess(event: ChatEvent): Boolean =
+    event.isTool || event.isReasoning || event.isCommand || event.isStep
+
+/**
+ * Fold consecutive process rows into runs.
+ *
+ * Messages, errors, deliverables and the engine's own summaries are never folded: they are what
+ * somebody came to read, and a folded error is a hidden error.
+ */
+internal fun foldTranscript(events: List<ChatEvent>): List<TranscriptRow> {
+    val rows = ArrayList<TranscriptRow>(events.size)
+    var run = ArrayList<ChatEvent>()
+
+    fun flush() {
+        if (run.isEmpty()) return
+        if (run.size >= RUN_MIN) {
+            rows.add(TranscriptRow.Run(run))
+        } else {
+            for (event in run) rows.add(TranscriptRow.One(event))
+        }
+        run = ArrayList()
+    }
+
+    for (event in events) {
+        if (isProcess(event)) {
+            run.add(event)
+            continue
+        }
+        flush()
+        rows.add(TranscriptRow.One(event))
+    }
+    flush()
+    return rows
+}
+
+/**
+ * "pwsh ×6 · edit ×4 · 12 步" — what is inside, without opening it.
+ *
+ * Tool names first, because "which tools ran" is the question this line answers; the totals come
+ * last because the screen is 339dp wide and anything longer than this gets cut off at the right
+ * edge, where nobody ever reads it.
+ */
+private fun runSummary(events: List<ChatEvent>): String {
+    val byName = LinkedHashMap<String, Int>()
+    for (event in events) {
+        if (event.kind != "tool") continue
+        val name = event.name ?: "工具"
+        byName[name] = (byName[name] ?: 0) + 1
+    }
+    val names = byName.entries.take(3).joinToString(" · ") { (name, count) -> "$name ×$count" }
+    val more = if (byName.size > 3) " · 等 ${byName.size} 种" else ""
+    return buildString {
+        if (names.isNotEmpty()) append(names).append(more).append(" · ")
+        append("${events.size} 步")
+    }
+}
+
+/**
+ * A folded run of process rows, drawn as one line that opens.
+ *
+ * Collapsed by default and it stays that way: this is the plumbing of a turn, and the answer is
+ * what somebody is looking for. The tool names are named in the line so "went and ran something"
+ * is not indistinguishable from "read a file".
+ */
 @Composable
-internal fun ChatEventRow(event: ChatEvent, onOpenFile: ((String) -> Unit)? = null) {
-    when {
+internal fun ProcessRunLine(run: List<ChatEvent>, onOpenFile: ((String) -> Unit)? = null) {
+    var expanded by remember(run.firstOrNull()?.seq, run.size) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .clickable { expanded = !expanded }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = if (expanded) {
+                    Icons.Outlined.KeyboardArrowDown
+                } else {
+                    Icons.AutoMirrored.Outlined.KeyboardArrowRight
+                },
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = "过程 · ${runSummary(run)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        if (expanded) {
+            Column(
+                modifier = Modifier.padding(start = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                for (event in run) ChatEventRow(event, onOpenFile)
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ChatEventRow(event: ChatEvent, onOpenFile: ((String) -> Unit)? = null) {    when {
         event.kind == "turn" -> TurnMarker(event)
         event.kind == "step" -> Spacer(Modifier.height(0.dp))
         event.isUser -> UserLine(event)

@@ -1150,21 +1150,14 @@ private fun RecordedTranscript(session: SessionDetail, onOpenFile: ((String) -> 
     LaunchedEffect(session.engine, session.id) {
         listState.scrollToBottomNow()
     }
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 10.dp, end = 10.dp, top = 10.dp, bottom = 14.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(7.dp),
-    ) {
-        itemsIndexed(
-            session.events,
-            key = { index, _ -> "ev-$index" },
-        ) { _, event ->
-            ChatEventRow(
+    // Mapped and folded once per session. The seq matters here: a folded run is keyed by its
+    // first event's seq, and recorded events arrive without one — every row would share the
+    // same key, which is how a list recycles the wrong line.
+    val rows = remember(session.engine, session.id, session.events) {
+        foldTranscript(
+            session.events.mapIndexed { index, event ->
                 ChatEvent(
-                    seq = 0,
+                    seq = index + 1,
                     at = 0L,
                     kind = event.kind,
                     role = event.role,
@@ -1177,9 +1170,23 @@ private fun RecordedTranscript(session: SessionDetail, onOpenFile: ((String) -> 
                     sourceKind = event.sourceKind,
                     streaming = false,
                     files = event.files,
-                ),
-                onOpenFile,
-            )
+                )
+            },
+        )
+    }
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+            start = 10.dp, end = 10.dp, top = 10.dp, bottom = 14.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        items(rows, key = { it.key }) { row ->
+            when (row) {
+                is TranscriptRow.One -> ChatEventRow(row.event, onOpenFile)
+                is TranscriptRow.Run -> ProcessRunLine(row.events, onOpenFile)
+            }
         }
     }
 }
@@ -1361,6 +1368,11 @@ private fun Conversation(
     val lastSeq = events.lastOrNull()?.seq ?: 0
     val lastLen = events.lastOrNull()?.text?.length ?: 0
 
+    // Folded once per event list: a turn's plumbing (tool calls, results, reasoning) becomes one
+    // line per run instead of a screenful, and it is folded here rather than inside the list
+    // because a `LazyListScope` is not a place where state can be remembered.
+    val rows = remember(events) { foldTranscript(events) }
+
     // Open / switch: snap to the last item's bottom (not merely its top).
     LaunchedEffect(chat.id) {
         programmaticScroll = true
@@ -1395,7 +1407,12 @@ private fun Conversation(
                     ),
                     verticalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
-                    items(events, key = { it.seq }) { event -> ChatEventRow(event, onOpenFile) }
+                    items(rows, key = { it.key }) { row ->
+                        when (row) {
+                            is TranscriptRow.One -> ChatEventRow(row.event, onOpenFile)
+                            is TranscriptRow.Run -> ProcessRunLine(row.events, onOpenFile)
+                        }
+                    }
                 }
             }
         }
