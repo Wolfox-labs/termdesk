@@ -523,6 +523,105 @@ function parseDshSession(filePath, workspaceName) {
  * a listing across 300+ sessions stays fast. Full content is loaded by
  * readSession on demand.
  */
+/**
+ * The first thing a session said, read without decompressing the whole file.
+ *
+ * The session list used to carry `title: null` for DSH with the note "filled in on demand" —
+ * and nothing filled it in, so the phone listed conversations as `session-f8a45aa2-…`. That is
+ * why the owner could not find the conversation they had open on the computer a minute earlier:
+ * it WAS in the list, under an id that means nothing to a person.
+ *
+ * Reading the whole file per session would mean decompressing hundreds of megabytes on every
+ * list request, so this reads the head of the file and the first couple of frames — the session
+ * header and the opening message live there, because DSH appends a frame as it goes.
+ *
+ * The answer is cached by (path, mtime, size): a session being written right now changes mtime,
+ * and one that has not changed never needs reading twice.
+ */
+const TITLE_CACHE = new Map();
+const TITLE_HEAD_BYTES = 1024 * 1024;
+const TITLE_MAX_FRAMES = 8;
+/**
+ * How many of the newest sessions get a title read for them.
+ *
+ * Reading the head of every session on every list request is the difference between a list
+ * that appears and a list that hangs: 274 files at a megabyte each is a quarter of a gigabyte
+ * of I/O. The newest handful is what somebody scrolling a list actually looks at, and the rest
+ * keep their ids (which is what they had before this existed).
+ */
+const TITLE_LIMIT = 60;
+/** Above this, the head-only read is the only one worth paying for (see `scanForFirstQuestion`). */
+const TITLE_FULL_READ_BYTES = 4 * 1024 * 1024;
+
+function firstUserText(filePath, stat) {
+  const key = `${filePath}|${stat.mtimeMs}|${stat.size}`;
+  const cached = TITLE_CACHE.get(key);
+  if (cached !== undefined) return cached;
+
+  const title = scanForFirstQuestion(() => {
+    const head = Buffer.alloc(Math.min(TITLE_HEAD_BYTES, stat.size));
+    const fd = fs.openSync(filePath, 'r');
+    try { fs.readSync(fd, head, 0, head.length, 0); } finally { fs.closeSync(fd); }
+    return head;
+  }, () => decompressFrames(filePath), stat.size);
+
+  TITLE_CACHE.set(key, title);
+  return title;
+}
+
+/**
+ * Walk the decoded text and return the first thing a *person* said.
+ *
+ * Split out because there are two ways to get the text (the head of the file, or the whole
+ * file when the head is not enough) and the rule must be the same for both.
+ */
+function scanForFirstQuestion(readHead, readWhole, size) {
+  const scan = (text) => {
+    for (const line of text.split('\n')) {
+      if (!line.includes('"user/message"')) continue;
+      let obj;
+      try { obj = JSON.parse(line); } catch { continue; }
+      const ev = dshLineToEvent(obj);
+      // Injected context is not the person's words: the harness writes its own preamble as a
+      // user-role message with a different `source.kind`, and a title taken from it would name
+      // every conversation in the list after the same paragraph.
+      if (ev && ev.role === 'user' && ev.text && ev.text.trim()) return ev.text.trim().slice(0, 120);
+    }
+    return null;
+  };
+
+  try {
+    const head = readHead();
+    const offsets = [];
+    let at = head.indexOf(ZSTD_MAGIC);
+    while (at !== -1 && offsets.length <= TITLE_MAX_FRAMES) {
+      offsets.push(at);
+      at = head.indexOf(ZSTD_MAGIC, at + 4);
+    }
+
+    let text = '';
+    for (let k = 0; k < offsets.length; k += 1) {
+      const end = k + 1 < offsets.length ? offsets[k + 1] : head.length;
+      try { text += zlib.zstdDecompressSync(head.subarray(offsets[k], end)).toString('utf8'); } catch { /* torn */ }
+
+      // Each frame is scanned as it arrives, and the loop does NOT stop at the first
+      // `user/message`: the frames that hold the real question are often the later ones.
+      const found = scan(text);
+      if (found) return found;
+    }
+  } catch {
+    // fall through to the whole-file attempt
+  }
+
+  // A false zstd magic inside compressed data splits a frame in two and makes both halves
+  // undecodable, so a small file is read the way the rest of this module reads it. Big files
+  // keep the head-only attempt: their cost is the reason this function exists.
+  if (size <= TITLE_FULL_READ_BYTES) {
+    try { return scan(readWhole()); } catch { return null; }
+  }
+  return null;
+}
+
 export async function listSessions({ engine } = {}) {
   const out = [];
   const wantDsh = !engine || engine === 'dsh';
@@ -543,19 +642,28 @@ export async function listSessions({ engine } = {}) {
         out.push({
           engine: 'dsh',
           id: sub.name,
-          title: null, // Filled in on demand; the header carries no title.
+          // Filled in below, for the newest few: the opening line of the conversation makes
+          // the list read like conversations instead of like file names.
+          title: null,
           cwd: decodeWorkspaceDir(ws.name),
           createdAt: stat.birthtime.toISOString(),
           updatedAt: stat.mtime.toISOString(),
           sizeBytes: stat.size,
           path: f,
           workspaceDir: ws.name,
+          // Kept only for the title pass, and stripped before the list is returned.
+          _stat: stat,
         });
       }
     }
   }
 
   out.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  for (const entry of out.slice(0, TITLE_LIMIT)) {
+    if (entry.engine !== 'dsh') continue;
+    entry.title = firstUserText(entry.path, entry._stat);
+  }
+  for (const entry of out) delete entry._stat;
   return out;
 }
 
