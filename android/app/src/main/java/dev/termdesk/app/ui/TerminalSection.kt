@@ -40,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -133,9 +134,17 @@ fun TerminalSection(
         if (sessionId == null && unavailable == null) onOpen()
     }
 
-    // Follow new output, the way a terminal should.
+    // Follow new output, the way a terminal should — but only while the reader is already at the
+    // end. This used to jump on every line with no guard at all, so scrolling up during a build
+    // was undone by the next line; and because it pinned the last item's TOP, a single line
+    // taller than the viewport could never have its tail read.
+    var stickToBottom by remember { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }
+            .collect { scrolling -> if (scrolling) stickToBottom = listState.isNearBottom() }
+    }
     LaunchedEffect(lines.size) {
-        if (lines.isNotEmpty()) listState.animateScrollToItem(lines.size - 1)
+        if (lines.isNotEmpty() && stickToBottom) listState.animateScrollToBottom()
     }
 
     val submit = {

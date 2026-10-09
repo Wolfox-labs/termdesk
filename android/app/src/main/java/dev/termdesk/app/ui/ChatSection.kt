@@ -480,9 +480,32 @@ fun ChatSection(
     // A pending question is the most important thing on this screen — the kernel
     // is blocked until it is answered — so it is drawn over everything else
     // rather than buried somewhere in the transcript.
+    //
+    // "稍后再说" has to lead somewhere, though. The question stays pending on the PC — that is
+    // what makes a remote approval safe — so it is the DIALOG that is deferred, and the bar below
+    // is the way back to it. Before this, the dialog's own copy promised a way out while every
+    // exit (back, scrim, outside tap) was a no-op: the only ways past it were answering or
+    // waiting out the countdown, with the transcript that explains the question unreachable.
+    var deferredApproval by remember(activeChat?.id) { mutableStateOf<String?>(null) }
     val pendingApproval = approvals.firstOrNull { it.chatId == null || it.chatId == activeChat?.id }
     if (pendingApproval != null && open) {
-        ApprovalDialog(approval = pendingApproval, onAnswer = onRespondApproval)
+        if (deferredApproval == pendingApproval.requestId) {
+            // A way back to a question that was deferred: the dialog is gone, the question is not.
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                TextButton(
+                    onClick = { deferredApproval = null },
+                    modifier = Modifier.padding(bottom = 18.dp),
+                ) {
+                    Text("内核还在等你确认 · 点这里回答")
+                }
+            }
+        } else {
+            ApprovalDialog(
+                approval = pendingApproval,
+                onAnswer = onRespondApproval,
+                onDefer = { deferredApproval = pendingApproval.requestId },
+            )
+        }
     }
 }
 
@@ -496,7 +519,12 @@ fun ChatSection(
  * silently deciding anything.
  */
 @Composable
-private fun ApprovalDialog(approval: ChatApproval, onAnswer: (String, String) -> Unit) {
+private fun ApprovalDialog(
+    approval: ChatApproval,
+    onAnswer: (String, String) -> Unit,
+    /** Hide the dialog without answering. The question stays pending; the bar behind it is the way back. */
+    onDefer: () -> Unit,
+) {
     var now by remember(approval.requestId) { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(approval.requestId) {
         while (true) {
@@ -507,7 +535,10 @@ private fun ApprovalDialog(approval: ChatApproval, onAnswer: (String, String) ->
     val seconds = (approval.remainingMs(now) / 1000).toInt()
 
     AlertDialog(
-        onDismissRequest = { /* stays pending; it will be asked again */ },
+        // Back / outside tap now do what the copy has always promised. The question is not
+        // decided by this — it stays pending on the PC — so the worst case is that the person
+        // comes back to it, which is exactly what "稍后再说" says.
+        onDismissRequest = onDefer,
         title = { Text(approval.title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -561,6 +592,11 @@ private fun ApprovalDialog(approval: ChatApproval, onAnswer: (String, String) ->
             }
         },
         confirmButton = {},
+        // A visible way out, so the sentence above it is not a promise about a gesture nobody
+        // can guess.
+        dismissButton = {
+            TextButton(onClick = onDefer) { Text("稍后再说") }
+        },
         containerColor = MaterialTheme.colorScheme.surfaceVariant,
     )
 }
@@ -1502,7 +1538,11 @@ private fun Conversation(
             onDraftChange = { draft = it },
             sending = sending,
             running = chat.isRunning,
-            canSend = connected && (chat.ready || chat.isRunning || chat.status != "stopped"),
+            // No `connected` here. With the link down this used to grey the arrow out and swallow
+            // the tap, which is precisely the state the offline queue exists for: the message is
+            // held on the phone, the "待发 N 条 · 连上就发" line explains it, and it goes out when
+            // the link returns. A dead button taught the opposite.
+            canSend = chat.ready || chat.isRunning || chat.status != "stopped",
             pendingCount = pendingSends,
             droppedCount = pendingDropped,
             onSend = {

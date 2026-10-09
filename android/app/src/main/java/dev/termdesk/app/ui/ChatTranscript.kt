@@ -67,7 +67,10 @@ internal sealed interface TranscriptRow {
     }
 
     data class Run(val events: List<ChatEvent>) : TranscriptRow {
-        override val key: String get() = "r${events.firstOrNull()?.seq ?: 0}-${events.size}"
+        // Keyed by the FIRST event only. Including the size — which is what this did — changed the
+        // key every time the run grew, and a changed key rebuilds the row: an expanded run snapped
+        // shut seconds after being opened, during the very turn it was opened to explain.
+        override val key: String get() = "r${events.firstOrNull()?.seq ?: 0}"
     }
 }
 
