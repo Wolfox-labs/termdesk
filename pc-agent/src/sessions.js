@@ -386,6 +386,35 @@ function dshLineToEvent(obj) {
     return makeEvent({ kind: 'engine_plan', role: 'engine', text, at });
   }
 
+  /**
+   * "Here is the file this turn produced."
+   *
+   * The one place a conversation states what the work left behind, in the agent's own
+   * words rather than as a guess: TermDesk could diff a directory before and after a turn,
+   * but that reports every build artifact and every temp file as a deliverable, and reports
+   * nothing at all for a file written somewhere else.
+   *
+   * The paths are kept as data (`meta.files`) because the phone makes them tappable, and
+   * the descriptions are ALSO flattened into the text so a reader of a recorded session —
+   * which keeps no meta — still sees what each file was for.
+   */
+  if (t === 'deliverables/presented') {
+    const files = (Array.isArray(d.files) ? d.files : [])
+      .filter((f) => f && typeof f.path === 'string' && f.path.length > 0)
+      .map((f) => ({
+        path: f.path,
+        description: typeof f.description === 'string' ? f.description : null,
+      }));
+    if (files.length === 0) return null;
+    return makeEvent({
+      kind: 'deliverable',
+      role: 'assistant',
+      text: files.map((f) => f.description || f.path).join('\n'),
+      at,
+      meta: { files },
+    });
+  }
+
   return null;
 }
 

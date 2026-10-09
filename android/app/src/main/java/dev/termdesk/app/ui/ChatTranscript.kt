@@ -15,7 +15,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -51,13 +52,14 @@ import dev.termdesk.app.ui.theme.Semantic
  */
 
 @Composable
-internal fun ChatEventRow(event: ChatEvent) {
+internal fun ChatEventRow(event: ChatEvent, onOpenFile: ((String) -> Unit)? = null) {
     when {
         event.kind == "turn" -> TurnMarker(event)
         event.kind == "step" -> Spacer(Modifier.height(0.dp))
         event.isUser -> UserLine(event)
         event.isAssistant -> AssistantLine(event)
         event.isReasoning -> ReasoningLine(event)
+        event.isDeliverable -> DeliverableLine(event, onOpenFile)
         event.isInjectedContext -> ContextLine(event)
         event.isTool -> ToolLine(event)
         event.isCommand -> CommandLine(event)
@@ -69,6 +71,105 @@ internal fun ChatEventRow(event: ChatEvent) {
         event.hasText -> PlainLine(event)
         else -> Spacer(Modifier.height(0.dp))
     }
+}
+
+/**
+ * A file the turn produced, and the way to it.
+ *
+ * The agent said this is what the work left behind (DSH records it as
+ * `deliverables/presented`), so it is worth a row of its own rather than a sentence buried
+ * in the answer: the next thing somebody does with a deliverable is open it.
+ *
+ * The tap lands on the file's *folder* in the file section, not on the file itself. That is
+ * the honest limit of what this side can do without another round trip — and the file is in
+ * the listing that appears, one tap from being read. With no callback wired the row still
+ * shows the paths, which is what a recorded session can offer.
+ */
+@Composable
+internal fun DeliverableLine(event: ChatEvent, onOpenFile: ((String) -> Unit)?) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(11.dp))
+            .background(Semantic.current.info.copy(alpha = 0.10f))
+            .padding(horizontal = 11.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = if (event.files.size > 1) "产出文件 · ${event.files.size} 个" else "产出文件",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = Semantic.current.info,
+        )
+        for (file in event.files) {
+            val dir = parentDirectoryOf(file.path)
+            val openable = onOpenFile != null && dir != null
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(
+                        if (openable) {
+                            Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onOpenFile?.invoke(dir!!) }
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .padding(vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        file.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    file.description?.let { what ->
+                        Text(
+                            what,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    // The path is worth a line of its own: two files with the same name in
+                    // different folders look identical without it.
+                    Text(
+                        text = dir ?: file.path,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (openable) {
+                    Icon(
+                        Icons.Outlined.FolderOpen,
+                        contentDescription = "打开所在文件夹",
+                        tint = Semantic.current.info,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** The folder a file lives in, for either separator, or null when there is nothing above it. */
+internal fun parentDirectoryOf(path: String): String? {
+    val trimmed = path.trimEnd('\\', '/')
+    if (trimmed.isEmpty()) return null
+    val cut = trimmed.lastIndexOfAny(charArrayOf('\\', '/'))
+    // No separator at all: a bare name is not a directory, and guessing one would open the
+    // wrong folder. The root of a POSIX path IS a directory, so a leading separator is fine.
+    if (cut < 0) return null
+    if (cut == 0) return if (trimmed[0] == '/') "/" else null
+    // A drive root keeps its separator ("E:\"), because "E:" alone is not a directory.
+    val head = trimmed.substring(0, cut)
+    return if (head.length == 2 && head[1] == ':') "$head\\" else head
 }
 
 @Composable
@@ -259,7 +360,7 @@ internal fun EngineBlock(
                 imageVector = if (expanded) {
                     Icons.Outlined.KeyboardArrowDown
                 } else {
-                    Icons.Outlined.KeyboardArrowRight
+                    Icons.AutoMirrored.Outlined.KeyboardArrowRight
                 },
                 contentDescription = if (expanded) "收起" else "展开",
                 tint = accent,

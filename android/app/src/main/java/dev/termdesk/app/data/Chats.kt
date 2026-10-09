@@ -103,10 +103,19 @@ data class ChatEvent(
      * is what tells "waiting to be sent" apart from "sent, and being answered".
      */
     val queued: Boolean = false,
+    /**
+     * Files this turn handed over, when the runtime said so.
+     *
+     * Kept as data rather than as text so the tap target is the real path: a line that says
+     * "report.md" and cannot open it is decoration. Empty for every other kind of event.
+     */
+    val files: List<ChatFile> = emptyList(),
 ) {
     val isUser: Boolean get() = kind == "message" && role == "user"
     val isAssistant: Boolean get() = kind == "message" && role == "assistant"
     val isReasoning: Boolean get() = kind == "reasoning"
+    /** A file the agent says it produced (DSH `deliverables/presented`). */
+    val isDeliverable: Boolean get() = kind == "deliverable"
 
     /**
      * Context the runtime injected into its own conversation (plugin context,
@@ -127,6 +136,20 @@ data class ChatEvent(
     val isMarker: Boolean get() = isTurn || isStep || (isEngineLog && text.isBlank())
 
     val hasText: Boolean get() = text.isNotBlank()
+}
+
+/**
+ * One file a turn produced.
+ *
+ * `description` is the agent's own sentence about the file, which is usually the reason
+ * somebody wants to open it at all; the path is where it is.
+ */
+data class ChatFile(
+    val path: String,
+    val description: String?,
+) {
+    /** The last segment of either kind of path, for a label that fits. */
+    val name: String get() = path.trimEnd('\\', '/').substringAfterLast('\\').substringAfterLast('/')
 }
 
 /** One model a kernel says this conversation can switch to. */
