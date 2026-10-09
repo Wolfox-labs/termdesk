@@ -19,6 +19,9 @@
     <!-- Held only while ConnectionService lives, so the socket keeps being read with the
          screen off. Released in the service's onDestroy, never outlives it. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Only used to OPEN the screen where the owner allows background running; the app never
+         flips the setting itself and does not ask for anything else with it. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application

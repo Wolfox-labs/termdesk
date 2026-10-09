@@ -116,7 +116,7 @@ class ConnectionService : Service() {
         } else {
             "离开 App 也能收到“答完了”"
         }
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_termdesk_notify)
             .setContentTitle("TermDesk 正在守着这台电脑")
             .setContentText(text)
@@ -126,7 +126,22 @@ class ConnectionService : Service() {
             .setContentIntent(open)
             .addAction(0, "不用了", stop)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+
+        // Only offered while there is something to allow. The measured situation — the system
+        // suspending this app even with the service and the wake lock held — is not something
+        // the app can fix, and the honest response is to say where the switch is instead of
+        // pretending the notice is enough on its own.
+        if (!BatteryGuidance.isExempt(this)) {
+            val allow = PendingIntent.getActivity(
+                this,
+                2,
+                BatteryGuidance.intentFor(this),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            builder.addAction(0, "允许后台运行", allow)
+            builder.setSubText("如果通知总是晚到，多半是系统不允许它后台运行")
+        }
+        return builder.build()
     }
 
     companion object {

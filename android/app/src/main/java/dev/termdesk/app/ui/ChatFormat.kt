@@ -79,15 +79,22 @@ internal fun workspaceShortName(cwd: String): String {
  */
 internal fun parseIsoDate(iso: String?): Date? {
     if (iso.isNullOrBlank()) return null
+    // A trailing `Z` means UTC, and it has to be turned into a zone offset before parsing:
+    // in a SimpleDateFormat pattern `'Z'` is a quoted literal, so "2026-10-09T12:34:56Z" used
+    // to be read as 12:34 in the phone's own timezone — eight hours early here, which is how a
+    // conversation from a minute ago showed up as one from this afternoon and was overlooked.
+    val normalised = if (iso.endsWith("Z")) iso.dropLast(1) + "+00:00" else iso
     val patterns = listOf(
         "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
         "yyyy-MM-dd'T'HH:mm:ssXXX",
-        "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-        "yyyy-MM-dd'T'HH:mm:ss'Z'",
+        // No zone at all: the only honest reading is "the time on the machine that wrote it",
+        // which is this phone's clock for everything TermDesk sends.
+        "yyyy-MM-dd'T'HH:mm:ss.SSS",
+        "yyyy-MM-dd'T'HH:mm:ss",
     )
     for (pattern in patterns) {
         val parsed = runCatching {
-            SimpleDateFormat(pattern, Locale.US).apply { isLenient = true }.parse(iso)
+            SimpleDateFormat(pattern, Locale.US).apply { isLenient = true }.parse(normalised)
         }.getOrNull()
         if (parsed != null) return parsed
     }

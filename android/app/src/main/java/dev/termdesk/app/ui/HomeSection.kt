@@ -607,12 +607,16 @@ private fun WorkingDirectoryDialog(
     )
 }
 
-/** "2026-10-05T17:19:04Z" -> "10-05 17:19": the year is never the question. */
-private fun shortStamp(raw: String): String {
-    val trimmed = raw.trim()
-    if (trimmed.length < 16) return trimmed
-    return trimmed.substring(5, 16).replace('T', ' ')
-}
+/**
+ * "2026-10-05T17:19:04Z" -> "10-05 17:19" — in the phone's own timezone.
+ *
+ * This used to be a substring of the ISO text (`raw.substring(5, 16)`), which prints whatever
+ * clock the sender wrote, and the sender writes UTC. A conversation from a minute ago was
+ * therefore dated this afternoon — eight hours early here — which is part of why the owner
+ * could not find the conversation they had just been using on the computer. Parsing it is also
+ * what makes the two shapes the engines write (with and without a zone) mean one instant.
+ */
+private fun shortStamp(raw: String): String = formatChatTime(raw)
 
 /** The tail of a path is what tells them apart on a 400dp screen. */
 private fun shortPath(path: String): String {    if (path.isBlank()) return "（还没定）"

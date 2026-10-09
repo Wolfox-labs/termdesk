@@ -12,6 +12,7 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -32,6 +33,7 @@ import androidx.lifecycle.findViewTreeLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.termdesk.app.data.AgentNotification
 import dev.termdesk.app.data.AgentNotifications
+import dev.termdesk.app.data.BatteryGuidance
 import dev.termdesk.app.data.ConnectionService
 import dev.termdesk.app.data.LinkState
 import dev.termdesk.app.data.OpenRequest
@@ -283,6 +285,22 @@ fun AppRoot(
             Log.i(TAG_NOTIFY, "前台服务：窗口在后台且已连接，开始守着这条连接")
         } else {
             ConnectionService.stop(context)
+        }
+    }
+
+    // The cause of "my notifications arrive late", said once per launch to somebody who is
+    // looking at the app: the notification shade already offers the same door, and an owner who
+    // never opens the shade would otherwise only ever see the symptom.
+    LaunchedEffect(connected, windowVisible) {
+        if (!connected || !windowVisible || BatteryGuidance.isExempt(context)) return@LaunchedEffect
+        Log.i(TAG_NOTIFY, "系统未放行后台运行，已提示去设置")
+        val answer = snackbarHostState.showSnackbar(
+            message = "系统可能不允许 TermDesk 在后台运行，通知会晚到",
+            actionLabel = "去设置",
+            withDismissAction = true,
+        )
+        if (answer == SnackbarResult.ActionPerformed) {
+            runCatching { context.startActivity(BatteryGuidance.intentFor(context)) }
         }
     }
 
