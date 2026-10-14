@@ -66,6 +66,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val status: StateFlow<HostStatus?> = client.status
     val processes: StateFlow<List<ProcessInfo>> = client.processes
     val services: StateFlow<List<ServiceInfo>> = client.services
+    val inventoryError: StateFlow<String?> = client.inventoryError
     val lastAction: StateFlow<ActionResult?> = client.lastAction
     val loading: StateFlow<Boolean> = client.loading
 
@@ -103,7 +104,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** One kernel for the whole app: chosen in Settings, obeyed everywhere. */
     fun setKernelTarget(target: String) {
         val clean = if (target == "local") "local" else "remote"
+        if (clean == client.kernelTarget.value) return
         client.setKernelTarget(clean)
+        _defaultEngine.value = prefs.getString(engineKey(clean), null)
+        _workingDir.value = prefs.getString(directoryKey(clean), null).orEmpty()
         if (clean == "local") {
             // "Local" is a process that may not be running yet: bring it up, then
             // talk to it exactly like the PC.
@@ -164,13 +168,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * choice is a user preference, not a per-chat guess, so it lives in prefs and
      * the new-chat sheet only pre-selects it (the user can still override).
      */
-    private val _defaultEngine = MutableStateFlow(prefs.getString(KEY_ENGINE, null))
+    private fun engineKey(target: String = client.kernelTarget.value) = "defaultEngine.$target"
+    private fun directoryKey(target: String = client.kernelTarget.value) = "startPath.$target"
+
+    private val _defaultEngine = MutableStateFlow(
+        prefs.getString(engineKey(), prefs.getString(KEY_ENGINE, null)),
+    )
     val defaultEngine: StateFlow<String?> = _defaultEngine.asStateFlow()
 
     fun setDefaultEngine(engine: String?) {
         val clean = engine?.takeIf { it.isNotBlank() }
         _defaultEngine.value = clean
-        prefs.edit().putString(KEY_ENGINE, clean).apply()
+        prefs.edit().putString(engineKey(), clean).apply()
     }
 
     /**
@@ -182,14 +191,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * reports first" (see [startPath]).
      */
     private val _workingDir = MutableStateFlow(
-        prefs.getString(KEY_START_PATH, null)?.takeIf { it.isNotBlank() } ?: "",
+        prefs.getString(directoryKey(), prefs.getString(KEY_START_PATH, null))?.takeIf { it.isNotBlank() } ?: "",
     )
     val workingDirectory: StateFlow<String> = _workingDir.asStateFlow()
 
     fun setWorkingDirectory(path: String) {
         val clean = path.trim()
         _workingDir.value = clean
-        prefs.edit().putString(KEY_START_PATH, clean).apply()
+        prefs.edit().putString(directoryKey(), clean).apply()
     }
 
     /**
@@ -257,6 +266,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun clearLastUpload() = client.clearLastUpload()
 
     /** Model lists per chat, answered by the kernel itself. */
+    val draftScope: String get() = if (kernelTarget.value == "local") "local" else "remote:${activeComputerId.value ?: savedUrl}"
+    fun claimChat(chatId: String, force: Boolean) = client.claimChat(chatId, force)
+    fun syncChat(chatId: String) = client.syncChat(chatId)
+
     val chatModels: StateFlow<Map<String, ChatModels>> = client.chatModels
 
     /** Ask what the open conversation can switch to (no model runs for this). */
@@ -482,6 +495,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
+        // Migrate the old shared preference only into the currently selected target.
+        if (!prefs.contains(engineKey())) prefs.edit().putString(engineKey(), _defaultEngine.value).apply()
+        if (!prefs.contains(directoryKey())) prefs.edit().putString(directoryKey(), _workingDir.value).apply()
         client.registerNetworkCallback()
         computers.migrateLegacy()
         refreshComputers()

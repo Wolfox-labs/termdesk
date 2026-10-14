@@ -32,6 +32,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -79,6 +81,7 @@ fun HomeSection(
     chats: List<ChatInfo>,
     sessions: List<SessionInfo>,
     onNewChat: () -> Unit,
+    canCreateChat: Boolean,
     onOpenChat: (String) -> Unit,
     onOpenSession: (SessionInfo) -> Unit,
     onBrowseFiles: () -> Unit,
@@ -86,11 +89,18 @@ fun HomeSection(
     onOpenSystem: () -> Unit,
 ) {
     var pickerOpen by remember { mutableStateOf(false) }
-    val selectable = engines.filter { it.selectable }
-    val unavailable = engines.filterNot { it.selectable }
-    val chosen = engines.firstOrNull { it.id == currentEngine && it.selectable }
+    var assistantPickerOpen by remember { mutableStateOf(false) }
+    // Older local agents still return the complete catalogue. Keep that list
+    // from leaking into the phone picker during an app/agent upgrade.
+    val detected = if (kernelTarget == "local") engines.filter { it.available } else engines
+    val selectable = detected.filter { it.selectable }
+    val unavailable = detected.filterNot { it.selectable }
+    val chosen = detected.firstOrNull { it.id == currentEngine && it.selectable }
         ?: selectable.firstOrNull()
     val local = kernelTarget == "local"
+    LaunchedEffect(assistantPickerOpen, connected, kernelTarget) {
+        if (assistantPickerOpen && connected) onRefreshEngines()
+    }
     // The off-line banner text belongs to a screen that has nothing else to say;
     // here the state is already legible from the dot and the numbers, so the
     // subtitle only has to name what is on the other end.
@@ -146,7 +156,7 @@ fun HomeSection(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        if (local && status.sandboxRssBytes > 0) "内存 ${Storage.format(status.sandboxRssBytes)}"
+                        if (local && status.sandboxRssBytes > 0) "沙盒 ${Storage.format(status.sandboxRssBytes)}"
                         else "内存 ${"%.0f%%".format(status.memoryUsedPercent)}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -158,20 +168,20 @@ fun HomeSection(
         Spacer(Modifier.height(16.dp))
 
         // ---- the standing kernel choice --------------------------------------
-        BlockTitle("内核")
+        BlockTitle("运行位置")
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             TargetChip(
-                label = "这台电脑",
+                label = "远程电脑",
                 selected = !local,
                 enabled = true,
                 modifier = Modifier.weight(1f),
                 onClick = { onSetKernelTarget("remote") },
             )
             TargetChip(
-                label = "本机（沙盒）",
+                label = "本机手机",
                 selected = local,
                 enabled = true,
                 modifier = Modifier.weight(1f),
@@ -179,50 +189,30 @@ fun HomeSection(
             )
         }
         Spacer(Modifier.height(8.dp))
-        if (!local) {
-            when {
-                selectable.isEmpty() -> Text(
-                    if (connected) "这台电脑上没有可用的 agent 内核" else "还没连上电脑，读不到内核表",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                else -> {
-                    selectable.forEach { kernel ->
-                        EngineRow(
-                            kernel = kernel,
-                            selected = kernel.id == chosen?.id,
-                            onClick = { onSetEngine(kernel.id) },
-                        )
-                    }
-                    if (unavailable.isNotEmpty()) {
-                        UnavailableEngines(unavailable)
-                    }
-                }
-            }
+        BlockTitle("助手")
+        if (chosen != null) {
+            EngineRow(kernel = chosen, selected = true, onClick = { assistantPickerOpen = true })
         } else {
-            // The sandbox is a kernel host of its own: the agent running inside it
-            // answers the same `kernels.list` as the PC, so whatever it reports
-            // selectable belongs here. This branch used to draw a fixed sentence
-            // instead, which hid a working DSH behind "there is no kernel here".
-            when {
-                selectable.isEmpty() -> Text(
-                    "沙盒里还没有可用的 agent 内核：把 opencode / dsh 之类装进文件系统，这里就会出现。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                else -> {
-                    selectable.forEach { kernel ->
-                        EngineRow(
-                            kernel = kernel,
-                            selected = kernel.id == chosen?.id,
-                            onClick = { onSetEngine(kernel.id) },
-                        )
+            Text(if (connected) "当前设备没有可用的助手" else "连接后可选择助手", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        TextButton(onClick = { assistantPickerOpen = true }, enabled = detected.isNotEmpty()) {
+            Text("更换助手")
+        }
+        if (assistantPickerOpen) {
+            AlertDialog(
+                onDismissRequest = { assistantPickerOpen = false },
+                title = { Text(if (local) "选择本机助手" else "选择电脑助手") },
+                text = {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        selectable.forEach { kernel ->
+                            EngineRow(kernel, kernel.id == chosen?.id) { onSetEngine(kernel.id); assistantPickerOpen = false }
+                        }
+                        if (unavailable.isNotEmpty()) UnavailableEngines(unavailable)
                     }
-                    if (unavailable.isNotEmpty()) {
-                        UnavailableEngines(unavailable)
-                    }
-                }
-            }
+                },
+                confirmButton = { TextButton(onClick = { assistantPickerOpen = false }) { Text("完成") } },
+                dismissButton = { TextButton(onClick = onRefreshEngines, enabled = connected) { Text("重新检测") } },
+            )
         }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
             Text(
@@ -290,6 +280,7 @@ fun HomeSection(
                 Icons.Outlined.ChatBubbleOutline,
                 primary = true,
                 modifier = Modifier.weight(1.4f),
+                enabled = canCreateChat,
                 onClick = onNewChat,
             )
             QuickAction("文件", Icons.Outlined.FolderOpen, modifier = Modifier.weight(1f), onClick = onBrowseFiles)
@@ -303,7 +294,7 @@ fun HomeSection(
         BlockTitle("最近会话")
         if (chats.isEmpty() && sessions.isEmpty()) {
             Text(
-                "还没有会话。新建一个，就能在手机上接着电脑里的助手干活。",
+                if (local) "还没有会话。新建一个，与手机上的助手开始工作。" else "还没有会话。新建一个，接着电脑上的助手继续工作。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -413,6 +404,7 @@ private fun TargetChip(
 ) {
     Box(
         modifier = modifier
+            .alpha(if (enabled) 1f else 0.45f)
             .clip(RoundedCornerShape(10.dp))
             .background(
                 if (selected) MaterialTheme.colorScheme.primaryContainer
@@ -511,6 +503,7 @@ private fun QuickAction(
     icon: ImageVector,
     modifier: Modifier = Modifier,
     primary: Boolean = false,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Column(
@@ -520,7 +513,8 @@ private fun QuickAction(
                 if (primary) MaterialTheme.colorScheme.primaryContainer
                 else MaterialTheme.colorScheme.surfaceVariant,
             )
-            .clickable(onClick = onClick)
+            .alpha(if (enabled) 1f else 0.45f)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(vertical = 11.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

@@ -36,6 +36,7 @@ import { chatEngineIds, getKernel, isAdapterKernel, kernelTier, listKernels } fr
 import { externalKernelRuns, withDescendants } from './kernelruns.js';
 import { detectDesktopAgentInstances } from './appagents.js';
 import { threadSummaryToSession, threadToSessionDetail, discoverThreadIdsFromDisk } from './kernels/codex.js';
+import { ownerForResponse } from './chat/continuity.js';
 
 const STATUS_INTERVAL_MS = 2000;
 
@@ -131,6 +132,38 @@ function resumeVerdict(engineId) {
 
 export function createFrameHandler(ctx) {
   const { send, socket, shellEnabled, terminals, chats } = ctx;
+  const continuity = ctx.continuity;
+  const identity = ctx.identity ?? {};
+
+  const decorateChat = (payload) => {
+    if (!payload || !continuity || typeof payload.id !== 'string') return payload;
+    return { ...payload, ownership: ownerForResponse(payload.id, continuity, identity) };
+  };
+  const decorateList = (items) => (items ?? []).map((item) => decorateChat(item));
+  const actionFailure = (action, target, result, extra = {}) => {
+    send(S2C.ACTION_RESULT, {
+      action,
+      target: target ?? '',
+      ok: false,
+      code: result.code,
+      message: result.message,
+      ownership: result.owner ? { owner: result.owner, mode: result.mode ?? 'observer' } : undefined,
+      ...extra,
+    });
+  };
+  const guardWrite = (chatId, action) => {
+    const chat = chats.get(chatId);
+    if (!chat) {
+      actionFailure(action, chatId, { code: 'no_chat', message: '会话不存在' });
+      return null;
+    }
+    const result = continuity?.checkWrite(chatId, identity, { running: chat.status === 'running' });
+    if (result && !result.ok) {
+      actionFailure(action, chatId, result);
+      return null;
+    }
+    return result ?? { ok: true };
+  };
 
   return async function handleFrame(frame) {
     switch (frame.type) {
@@ -158,7 +191,7 @@ export function createFrameHandler(ctx) {
             .slice(0, Number.isInteger(frame.limit) && frame.limit > 0 ? frame.limit : 200);
           send(S2C.PROCS, { capturedAt: data.capturedAt, total: data.items.length, items });
         } catch (err) {
-          send(S2C.ERROR, { code: 'procs_failed', message: String(err?.message ?? err) });
+          send(S2C.ERROR, { code: 'procs_failed', causeCode: err?.code, message: String(err?.message ?? err) });
         }
         break;
       }
@@ -172,7 +205,7 @@ export function createFrameHandler(ctx) {
           );
           send(S2C.SERVICES, { capturedAt: data.capturedAt, total: data.items.length, items });
         } catch (err) {
-          send(S2C.ERROR, { code: 'services_failed', message: String(err?.message ?? err) });
+          send(S2C.ERROR, { code: err?.code === 'platform_unsupported' ? err.code : 'services_failed', causeCode: err?.code, message: String(err?.message ?? err) });
         }
         break;
       }
@@ -234,7 +267,7 @@ export function createFrameHandler(ctx) {
             target: frame.path,
             ok: true,
             code: 'written',
-            message: `已保存 ${frame.path}`,
+            message: `已保存 ${path.basename(frame.path)}`,
           });
         } catch (err) {
           send(S2C.ACTION_RESULT, {
@@ -242,7 +275,13 @@ export function createFrameHandler(ctx) {
             target: frame.path,
             ok: false,
             code: err?.code ?? 'fs_failed',
-            message: `保存失败：${err?.message ?? err}`,
+            message: err?.code === 'EACCES' || err?.code === 'EPERM'
+              ? '没有写入权限，保存失败；草稿仍保留'
+              : err?.code === 'ENOSPC'
+                ? '设备空间不足，保存失败；草稿仍保留'
+                : err?.code === 'ENOENT'
+                  ? '文件目录已不存在，保存失败；草稿仍保留'
+                  : `保存失败：${err?.message ?? err}`,
           });
         }
         break;
@@ -264,7 +303,9 @@ export function createFrameHandler(ctx) {
             target: frame.name,
             ok: false,
             code: err?.code ?? 'fs_failed',
-            message: `创建失败：${err?.message ?? err}`,
+            message: err?.code === 'EEXIST'
+              ? '这个目录中已存在同名文件或文件夹，请换一个名称'
+              : `创建失败：${err?.message ?? err}`,
           });
         }
         break;
@@ -410,7 +451,11 @@ export function createFrameHandler(ctx) {
       // disagreeing with what a conversation could actually run on.
 
       case C2S.KERNELS_LIST:
-        send(S2C.KERNELS, { kernels: listKernels() });
+        send(S2C.KERNELS, {
+          kernels: listKernels({ installedOnly: ctx.localMode === true }),
+          discovery: 'filesystem',
+          scope: ctx.localMode ? 'local' : 'remote',
+        });
         break;
 
       case C2S.KERNEL_RUNS: {
@@ -673,8 +718,38 @@ export function createFrameHandler(ctx) {
       // The one-shot `ai.*` tasks above are the deprecated legacy surface.
 
       case C2S.CHAT_LIST:
-        send(S2C.CHATS, { chats: chats.list(), approvals: chats.approvals.pending() });
+        send(S2C.CHATS, { chats: decorateList(chats.list()), approvals: chats.approvals.pending() });
         break;
+
+      case C2S.CHAT_CLAIM: {
+        const chat = chats.get(frame.chatId);
+        if (!chat) { actionFailure('chat.claim', frame.chatId, { code: 'no_chat', message: '会话不存在' }); break; }
+        const result = continuity.claim(frame.chatId, identity, { force: frame.force === true, running: chat.status === 'running' });
+        send(S2C.ACTION_RESULT, { action: 'chat.claim', target: frame.chatId, ok: result.ok, code: result.code, message: result.message ?? (result.ok ? '已接管会话' : '当前会话由另一台设备控制'), ownership: ownerForResponse(frame.chatId, continuity, identity) });
+        send(S2C.CHAT, decorateChat(chat.detail()));
+        break;
+      }
+
+      case C2S.CHAT_RELEASE: {
+        if (chats.get(frame.chatId)?.status === 'running') {
+          actionFailure('chat.release', frame.chatId, { code: 'session_running', message: '请先停止当前回合，再释放会话' });
+          break;
+        }
+        const result = continuity.release(frame.chatId, identity);
+        send(S2C.ACTION_RESULT, { action: 'chat.release', target: frame.chatId ?? '', ok: result.ok, code: result.code, message: result.message ?? (result.ok ? '已释放会话' : '当前设备不是控制端'), ownership: ownerForResponse(frame.chatId, continuity, identity) });
+        if (chats.get(frame.chatId)) send(S2C.CHAT, decorateChat(chats.get(frame.chatId).detail()));
+        break;
+      }
+
+      case C2S.CHAT_SYNC: {
+        const chat = chats.get(frame.chatId);
+        if (!chat) { send(S2C.ERROR, { code: 'no_chat', message: '会话不存在' }); break; }
+        continuity.touch(frame.chatId, identity);
+        // Events can be revised or removed without advancing their sequence.
+        // Reconnect therefore uses a full snapshot, including those revisions.
+        send(S2C.CHAT, decorateChat(chat.detail()));
+        break;
+      }
 
       case C2S.CHAT_CREATE: {
         const result = chats.create({
@@ -685,8 +760,9 @@ export function createFrameHandler(ctx) {
           engine: frame.engine,
         });
         if (result.ok) {
-          send(S2C.CHAT, result.chat);
-          send(S2C.CHATS, { chats: chats.list(), approvals: chats.approvals.pending() });
+          if (!continuity.owner(result.chat.id)) continuity.claim(result.chat.id, identity, { running: false });
+          send(S2C.CHAT, decorateChat(result.chat));
+          send(S2C.CHATS, { chats: decorateList(chats.list()), approvals: chats.approvals.pending() });
         } else {
           send(S2C.ACTION_RESULT, {
             action: 'chat.create',
@@ -711,8 +787,8 @@ export function createFrameHandler(ctx) {
             + `${result.ok ? (result.joined ? 'joined' : 'opened') : result.code}`,
           );
           if (result.ok) {
-            send(S2C.CHAT, result.chat);
-            send(S2C.CHATS, { chats: chats.list(), approvals: chats.approvals.pending() });
+            send(S2C.CHAT, decorateChat(result.chat));
+            send(S2C.CHATS, { chats: decorateList(chats.list()), approvals: chats.approvals.pending() });
             // Taking over a session somebody else may be writing is the one part of this
             // the phone cannot see for itself, so the sentence travels as an action
             // result: that path already exists end to end and is drawn on screen, which
@@ -736,6 +812,7 @@ export function createFrameHandler(ctx) {
       }
 
       case C2S.CHAT_CONFIG: {
+        if (!guardWrite(frame.chatId, 'chat.config')) break;
         const result = await chats.setConfig(frame.chatId, {
           model: frame.model,
           effort: frame.effort,
@@ -743,8 +820,9 @@ export function createFrameHandler(ctx) {
           mode: frame.mode,
         });
         if (result.ok) {
-          send(S2C.CHAT, result.chat);
-          send(S2C.CHATS, { chats: chats.list(), approvals: chats.approvals.pending() });
+          if (!continuity.owner(result.chat.id)) continuity.claim(result.chat.id, identity, { running: false });
+          send(S2C.CHAT, decorateChat(result.chat));
+          send(S2C.CHATS, { chats: decorateList(chats.list()), approvals: chats.approvals.pending() });
         } else {
           send(S2C.ACTION_RESULT, {
             action: 'chat.config',
@@ -790,6 +868,7 @@ export function createFrameHandler(ctx) {
       }
 
       case C2S.CHAT_TERMINAL_INPUT: {
+        if (!guardWrite(frame.chatId, 'chat.terminal.input')) break;
         try {
           await chats.chatTerminalWrite(frame.chatId, frame.terminalId, frame.data ?? '');
         } catch (err) {
@@ -807,6 +886,7 @@ export function createFrameHandler(ctx) {
       }
 
       case C2S.CHAT_TERMINAL_STOP: {
+        if (!guardWrite(frame.chatId, 'chat.terminal.stop')) break;
         try {
           const result = await chats.chatTerminalStop(frame.chatId, frame.terminalId);
           send(S2C.ACTION_RESULT, {
@@ -844,6 +924,7 @@ export function createFrameHandler(ctx) {
       }
 
       case C2S.CHAT_SEND: {
+        if (!guardWrite(frame.chatId, 'chat.send')) break;
         const result = await chats.send(frame.chatId, frame.text, {
           model: frame.model,
           effort: frame.effort,
@@ -878,12 +959,13 @@ export function createFrameHandler(ctx) {
         if (!chat) {
           send(S2C.ERROR, { code: 'no_chat', message: '会话不存在' });
         } else {
-          send(S2C.CHAT, chat.detail(Number.isInteger(frame.afterSeq) ? frame.afterSeq : 0));
+          send(S2C.CHAT, decorateChat(chat.detail(Number.isInteger(frame.afterSeq) ? frame.afterSeq : 0)));
         }
         break;
       }
 
       case C2S.CHAT_CANCEL: {
+        if (!guardWrite(frame.chatId, 'chat.cancel')) break;
         const result = chats.cancel(frame.chatId);
         send(S2C.ACTION_RESULT, {
           action: 'chat.cancel',
@@ -896,6 +978,7 @@ export function createFrameHandler(ctx) {
       }
 
       case C2S.CHAT_CLOSE: {
+        if (!guardWrite(frame.chatId, 'chat.close')) break;
         const result = chats.close(frame.chatId);
         send(S2C.ACTION_RESULT, {
           action: 'chat.close',
@@ -904,7 +987,7 @@ export function createFrameHandler(ctx) {
           code: result.ok ? 'closed' : result.code,
           message: result.ok ? '已关闭会话' : result.message,
         });
-        if (result.ok) send(S2C.CHATS, { chats: chats.list() });
+        if (result.ok) { continuity.remove(frame.chatId); send(S2C.CHATS, { chats: decorateList(chats.list()) }); }
         break;
       }
 
@@ -917,6 +1000,8 @@ export function createFrameHandler(ctx) {
       }
 
       case C2S.CHAT_APPROVE: {
+        const pendingApproval = chats.approvals.pending().find((item) => item.requestId === frame.requestId);
+        if (pendingApproval?.chatId && !guardWrite(pendingApproval.chatId, 'chat.approve')) break;
         // The phone answering a "may I run this?" question. An unknown or
         // already-settled request is refused, so a stale tap cannot decide
         // something else that happens to be pending.

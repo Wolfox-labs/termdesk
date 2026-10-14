@@ -62,6 +62,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import dev.termdesk.app.data.ChatDraft
+import dev.termdesk.app.data.ChatDraftStore
+import android.content.Context
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -137,6 +141,8 @@ fun ChatSection(
     codexConfig: CodexConfig?,
     chatModels: Map<String, ChatModels>,
     lastUpload: UploadedFile?,
+    draftScope: String,
+    onClaimChat: (String, Boolean) -> Unit,
     onUploadFile: (android.net.Uri, String) -> Unit,
     onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
@@ -383,6 +389,8 @@ fun ChatSection(
                     sending = sending,
                     models = chatModels[activeChat.id],
                     lastUpload = lastUpload,
+                    draftScope = draftScope,
+                    onClaimChat = onClaimChat,
                     onUploadFile = onUploadFile,
                     onClearUpload = onClearUpload,
                     onSend = onSend,
@@ -636,7 +644,7 @@ private fun SessionBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(48.dp)
+            .heightIn(min = 48.dp)
             .background(MaterialTheme.colorScheme.surface)
             .padding(start = 4.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -652,7 +660,7 @@ private fun SessionBar(
             text = title,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
         )
@@ -736,6 +744,8 @@ private fun ChatDetailPanel(
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
+        Text(chat.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             KernelBadge(chat.engine)
             Spacer(Modifier.width(8.dp))
@@ -809,7 +819,8 @@ private fun ChatDetailPanel(
             )
         } else if (modelIds.size > CHIP_LIMIT) {
             Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "模型",
                     style = MaterialTheme.typography.labelSmall,
@@ -827,6 +838,7 @@ private fun ChatDetailPanel(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
                 }
                 Text(
                     modelIds.size.toString() + " 个可选 · 可搜索",
@@ -892,6 +904,8 @@ private fun RecordedDetailPanel(session: SessionDetail) {
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
+        Text(session.title?.takeIf { it.isNotBlank() } ?: session.id, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             KernelBadge(session.engine)
             Spacer(Modifier.width(8.dp))
@@ -1161,7 +1175,7 @@ private fun EngineScopeRow(
                     .clip(RoundedCornerShape(8.dp))
                     .background(
                         if (isSelected) MaterialTheme.colorScheme.secondaryContainer
-                        else MaterialTheme.colorScheme.surface,
+                        else MaterialTheme.colorScheme.surfaceVariant,
                     )
                     .clickable { onSelect(choice) }
                     .padding(horizontal = 10.dp, vertical = 5.dp),
@@ -1286,7 +1300,7 @@ internal fun ChatRow(
                 chat.title,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(2.dp))
@@ -1341,6 +1355,8 @@ private fun Conversation(
     sending: Boolean,
     models: ChatModels?,
     lastUpload: UploadedFile?,
+    draftScope: String,
+    onClaimChat: (String, Boolean) -> Unit,
     onUploadFile: (android.net.Uri, String) -> Unit,
     onClearUpload: () -> Unit,
     onSend: (String, String) -> Unit,
@@ -1372,21 +1388,32 @@ private fun Conversation(
     // The file picked with `+`, once the PC has actually got it. The prompt then
     // carries its path, which every kernel can read - no kernel-specific image
     // block is invented here.
-    var attachment by remember(chat.id) { mutableStateOf<UploadedFile?>(null) }
+    val context = LocalContext.current
+    val draftStore = remember(context) { ChatDraftStore(context.getSharedPreferences("termdesk.chat-drafts", Context.MODE_PRIVATE)) }
+    val savedDraft = remember(draftScope, chat.id) { draftStore.read(draftScope, chat.id) }
+    var draft by remember(draftScope, chat.id) { mutableStateOf(savedDraft.text) }
+    var attachment by remember(draftScope, chat.id) { mutableStateOf(savedDraft.attachment) }
+    fun updateDraft(value: String) {
+        draft = value
+        draftStore.write(draftScope, chat.id, ChatDraft(draft, attachment))
+    }
+    fun updateAttachment(value: UploadedFile?) {
+        attachment = value
+        draftStore.write(draftScope, chat.id, ChatDraft(draft, attachment))
+    }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) onUploadFile(uri, chat.cwd)
     }
     LaunchedEffect(lastUpload?.path) {
         val done = lastUpload ?: return@LaunchedEffect
         if (done.path.startsWith(chat.cwd.trimEnd('\\', '/'))) {
-            attachment = done
+            updateAttachment(done)
             onClearUpload()
         }
     }
     // Fresh state per chat: opening or switching a conversation always lands at
     // its end, never at a leftover scroll offset from the previous one.
     val listState = key(chat.id) { rememberLazyListState() }
-    var draft by remember(chat.id) { mutableStateOf("") }
     // Follow the stream only while the user is already at (or has returned to)
     // the bottom. Scrolling up hands control back to the reader immediately.
     var stickToBottom by remember(chat.id) { mutableStateOf(true) }
@@ -1426,6 +1453,12 @@ private fun Conversation(
     }
 
     Column(Modifier.fillMaxSize()) {
+        if (chat.ownership.isBusy) {
+            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("由 "+(chat.ownership.owner?.deviceName ?: "另一台设备")+" 控制", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+                TextButton(onClick = { onClaimChat(chat.id, true) }, enabled = connected && !chat.isRunning) { Text(if (chat.isRunning) "生成中" else "接管") }
+            }
+        }
         Box(Modifier.weight(1f)) {
             if (events.isEmpty()) {
                 Text(
@@ -1493,7 +1526,7 @@ private fun Conversation(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = { attachment = null }, modifier = Modifier.size(26.dp)) {
+                IconButton(onClick = { updateAttachment(null) }, modifier = Modifier.size(26.dp)) {
                     Icon(
                         Icons.Outlined.Close,
                         contentDescription = "移除附件",
@@ -1514,19 +1547,19 @@ private fun Conversation(
                     .background(MaterialTheme.colorScheme.surfaceVariant),
             ) {
                 SlashRow("模型", if (modelOptions.isEmpty()) "该内核没有模型清单" else chosenModelLabel, modelOptions.isNotEmpty()) {
-                    draft = ""
+                    updateDraft("")
                     modelPickerOpen = true
                 }
                 SlashRow("权限模式", if (modeOptions.isEmpty()) "该内核没有权限开关" else chosenModeLabel, modeOptions.isNotEmpty()) {
-                    draft = ""
+                    updateDraft("")
                     modePickerOpen = true
                 }
-                SlashRow("附件", "传到电脑，随下一条消息发出", true) {
-                    draft = ""
+                SlashRow("附件", "传到当前设备，随下一条消息发出", true) {
+                    updateDraft("")
                     filePicker.launch(arrayOf("*/*"))
                 }
                 SlashRow("关闭会话", "结束这个对话", true) {
-                    draft = ""
+                    updateDraft("")
                     onClose(chat.id)
                 }
             }
@@ -1535,14 +1568,14 @@ private fun Conversation(
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Composer(
             draft = draft,
-            onDraftChange = { draft = it },
+            onDraftChange = { updateDraft(it) },
             sending = sending,
             running = chat.isRunning,
             // No `connected` here. With the link down this used to grey the arrow out and swallow
             // the tap, which is precisely the state the offline queue exists for: the message is
             // held on the phone, the "待发 N 条 · 连上就发" line explains it, and it goes out when
             // the link returns. A dead button taught the opposite.
-            canSend = chat.ready || chat.isRunning || chat.status != "stopped",
+            canSend = !chat.ownership.isBusy && (chat.ready || chat.isRunning || chat.status != "stopped"),
             pendingCount = pendingSends,
             droppedCount = pendingDropped,
             onSend = {
@@ -1552,8 +1585,8 @@ private fun Conversation(
                     // can read a file, and the transcript then shows what was sent.
                     val full = attachment?.let { "[附件] ${it.name} → ${it.path}\n$text" } ?: text
                     onSend(chat.id, full)
-                    draft = ""
-                    attachment = null
+                    updateDraft("")
+                    updateAttachment(null)
                 }
             },
             onCancel = { onCancel(chat.id) },

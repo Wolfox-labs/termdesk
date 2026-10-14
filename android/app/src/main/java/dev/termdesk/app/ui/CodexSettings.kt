@@ -2,6 +2,7 @@ package dev.termdesk.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -120,6 +121,7 @@ fun SettingsSection(
      * Settings) instead of leaving the whole section from wherever you stand.
      */
     var page by remember { mutableStateOf<String?>(null) }
+    val pageScroll = remember(page) { ScrollState(0) }
     BackHandler(enabled = page != null) { page = null }
 
     LaunchedEffect(templates, config) {
@@ -134,14 +136,22 @@ fun SettingsSection(
 
     val template = templates.find { it.id == providerId }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .imePadding()
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
+    Column(Modifier.fillMaxSize().imePadding()) {
+        if (page != null) {
+            SubPageHeader(
+                title = when (page) {
+                    "kernel" -> "内核"
+                    "appearance" -> "外观"
+                    "storage" -> "存储"
+                    else -> "Codex 配置"
+                },
+                onBack = { page = null },
+            )
+        }
+        Column(
+            Modifier.weight(1f).verticalScroll(pageScroll).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
         val kernelSummary = if (kernelTarget == "local") "本机"
         else "这台电脑 · " + (defaultEngine?.let { id -> engines.find { it.id == id }?.displayName ?: id } ?: "未指定")
         val themeLabel = when (themeMode) {
@@ -157,16 +167,6 @@ fun SettingsSection(
             SettingsRootRow("外观", themeLabel) { page = "appearance" }
             SettingsRootRow("存储", storageLabel) { page = "storage" }
             SettingsRootRow("Codex 配置", codexLabel) { page = "codex" }
-        } else {
-            SubPageHeader(
-                title = when (page) {
-                    "kernel" -> "内核"
-                    "appearance" -> "外观"
-                    "storage" -> "存储"
-                    else -> "Codex 配置"
-                },
-                onBack = { page = null },
-            )
         }
 
         when (page) {
@@ -546,6 +546,8 @@ fun SettingsSection(
         }
             }
         }
+    }
+
     }
 
     if (confirmApply) {

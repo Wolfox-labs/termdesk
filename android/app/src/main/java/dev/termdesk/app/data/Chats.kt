@@ -1,6 +1,39 @@
 package dev.termdesk.app.data
 
 /**
+ * Continuity signals for a live chat.
+ *
+ * These flags describe what a reconnect can safely do: durable means the kernel
+ * can reopen its own session, runtime means the current process is still alive,
+ * and replay means the agent can resend events after an event cursor.
+ */
+data class ChatOwner(
+    val deviceId: String,
+    val deviceName: String,
+    val clientKind: String,
+    val acquiredAt: Long,
+    val lastSeenAt: Long,
+    val leaseExpiresAt: Long,
+)
+
+data class ChatOwnership(
+    val owner: ChatOwner? = null,
+    val mode: String = "available",
+    val queued: Boolean = false,
+    val leaseMs: Long = 0,
+) {
+    val canWrite: Boolean get() = mode == "owner"
+    val isBusy: Boolean get() = owner != null && !canWrite
+}
+data class ChatContinuity(
+    val durable: Boolean = false,
+    val runtime: Boolean = false,
+    val replay: Boolean = false,
+    val eventCursor: Int = 0,
+    val oldestEventSeq: Int = 0,
+)
+
+/**
  * A live conversation held by the PC agent.
  *
  * Unlike [SessionInfo], which describes a conversation recorded on disk by
@@ -35,6 +68,14 @@ data class ChatInfo(
     val lastUsedAt: Long,
     val eventCount: Int,
     val lastError: String?,
+    /** Highest event sequence currently known by the PC agent. */
+    val eventCursor: Int = 0,
+    /** Oldest event sequence still available for replay, when bounded. */
+    val oldestEventSeq: Int = 0,
+    /** Whether reconnect can use durable state, the live runtime, or replay. */
+    val continuity: ChatContinuity = ChatContinuity(),
+    /** Server-authoritative cross-device write ownership. */
+    val ownership: ChatOwnership = ChatOwnership(),
 ) {
     val isRunning: Boolean get() = status == "running"
     val isFailed: Boolean get() = status == "failed"

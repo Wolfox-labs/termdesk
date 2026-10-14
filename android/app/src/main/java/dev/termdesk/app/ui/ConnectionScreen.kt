@@ -1,6 +1,7 @@
 package dev.termdesk.app.ui
 
 import androidx.compose.foundation.background
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -57,6 +58,8 @@ fun ConnectionScreen(
     onDisconnect: () -> Unit,
     onForget: () -> Unit,
 ) {
+    BackHandler(onBack = onClose)
+    var confirmForgetCurrent by remember { mutableStateOf(false) }
     var url by remember { mutableStateOf(initialUrl) }
     var token by remember { mutableStateOf(initialToken) }
     val connecting = link is LinkState.Connecting
@@ -176,7 +179,7 @@ fun ConnectionScreen(
         TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("暂时断开（保留绑定）") }
         if (computers.isNotEmpty()) {
             TextButton(
-                onClick = onForget,
+                onClick = { confirmForgetCurrent = true },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("解绑当前电脑") }
         }
@@ -185,6 +188,15 @@ fun ConnectionScreen(
             text = "扫码配对时不需要手填地址。凭据加密保存在这台手机上，每台电脑一份；解绑其中一台不影响其他电脑。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    if (confirmForgetCurrent) {
+        ConfirmDialog(
+            title = "解绑当前电脑？",
+            body = "这台手机上的凭据会被删除，再连接需要从电脑重新取得配对码。",
+            confirmLabel = "解绑",
+            onConfirm = { confirmForgetCurrent = false; onForget() },
+            onDismiss = { confirmForgetCurrent = false },
         )
     }
 }

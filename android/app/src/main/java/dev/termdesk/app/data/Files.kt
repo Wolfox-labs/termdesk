@@ -38,4 +38,5 @@ data class TextFile(
     val path: String,
     val text: String,
     val sizeBytes: Long,
+    val mtime: String? = null,
 )

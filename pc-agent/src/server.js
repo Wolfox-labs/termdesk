@@ -30,6 +30,7 @@ import { handleLocalKernelRequest } from './localkernel.js';
 import { TerminalManager } from './terminal.js';
 import { listKernels, probeKernels } from './kernels/registry.js';
 import { ChatManager } from './chat.js';
+import { ChatContinuity } from './chat/continuity.js';
 import { Notifier } from './notify.js';
 import { loadRelayConfig, startRelayConnector } from './relay-client.js';
 import { Tunnel, findCloudflared, findTunnelConfig, verifyOwnAgent } from './tunnel.js';
@@ -110,6 +111,7 @@ const terminals = new TerminalManager();
  */
 const notifier = new Notifier({ log: (line) => console.log(line) });
 const chats = new ChatManager({ notifier });
+const continuity = new ChatContinuity();
 
 /**
  * The socket currently receiving streamed terminal/engine/chat frames.
@@ -744,6 +746,7 @@ wss.on('connection', (socket, req) => {
   const peer = req.socket.remoteAddress;
   let authed = false;
   let statusTimer = null;
+  const identity = { deviceId: '', deviceName: '', clientKind: '' };
 
   // Second factor (P5-3): reject the upgrade before any frame is processed.
   const upgradeUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -775,8 +778,11 @@ wss.on('connection', (socket, req) => {
     send,
     socket,
     shellEnabled: SHELL_ENABLED,
+    localMode: args.local,
     terminals,
     chats,
+    continuity,
+    identity,
     // So the phone can confirm what it received; unconfirmed entries are re-sent.
     notifier,
     pushStatus,
@@ -850,6 +856,11 @@ wss.on('connection', (socket, req) => {
         return;
       }
       authed = true;
+      Object.assign(identity, {
+        deviceId: typeof frame.deviceId === 'string' && frame.deviceId.trim() ? frame.deviceId.trim() : 'legacy:' + peer,
+        deviceName: typeof frame.deviceName === 'string' && frame.deviceName.trim() ? frame.deviceName.trim() : (frame.clientKind === 'android' ? '手机' : '桌面端'),
+        clientKind: typeof frame.clientKind === 'string' && frame.clientKind.trim() ? frame.clientKind.trim() : 'legacy',
+      });
       noteAuthSuccess();
       clearTimeout(authTimer);
       // The version check happens AFTER the credential: an unauthenticated peer
@@ -880,6 +891,7 @@ wss.on('connection', (socket, req) => {
         // What we require of a client, so a phone can say which side to update.
         minV: compat.minV,
         agent: `termdesk-pc-agent/${AGENT_VERSION}`,
+        capabilities: ['chat.sync', 'chat.ownership'],
       });
       send(S2C.HELLO, { hostname: os.hostname(), platform: `${os.platform()} ${os.release()}` });
       routedSocket = socket;

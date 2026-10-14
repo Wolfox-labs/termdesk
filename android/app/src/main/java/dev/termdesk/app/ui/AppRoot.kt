@@ -57,6 +57,7 @@ fun AppRoot(
     val processes by vm.processes.collectAsState()
     val services by vm.services.collectAsState()
     val loading by vm.loading.collectAsState()
+    val inventoryError by vm.inventoryError.collectAsState()
     val lastAction by vm.lastAction.collectAsState()
     val pendingNotifications by vm.pendingNotifications.collectAsState()
     val listing by vm.listing.collectAsState()
@@ -107,7 +108,19 @@ fun AppRoot(
      * at every "new conversation"; when nothing has been chosen yet, the first
      * kernel this machine can actually drive is used instead of a guess.
      */
-    val engineForNewChat = defaultEngine ?: engines.firstOrNull { it.selectable }?.id
+    val selectableEngineIds = engines.filter { it.selectable }.map { it.id }.toSet()
+    val engineForNewChat = defaultEngine?.takeIf { it in selectableEngineIds }
+        ?: engines.firstOrNull { it.selectable }?.id
+    val canCreateChat = link is LinkState.Connected && engineForNewChat != null
+
+    // A stale preference must never win over the current agent's discovery result.
+    // Do this only after discovery has returned; an empty list during connection is
+    // not evidence that the saved preference is invalid.
+    LaunchedEffect(kernelTarget, engines, defaultEngine) {
+        if (engines.isNotEmpty() && defaultEngine != engineForNewChat) {
+            vm.setDefaultEngine(engineForNewChat)
+        }
+    }
 
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -137,6 +150,7 @@ fun AppRoot(
     // judgement left on this side is whether they are already looking at that very
     // conversation, which the PC cannot know. An approval is never suppressed: the kernel is
     // blocked until somebody answers it.
+    var backgroundGuideOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
     LaunchedEffect(Unit) {
         AgentNotifications.ensureChannel(context)
@@ -229,6 +243,13 @@ fun AppRoot(
         if (chats.any { it.id == target.chatId }) vm.openChat(target.chatId)
     }
     val connected = link is LinkState.Connected
+    LaunchedEffect(connected, activeChat?.id) {
+        val chatId = activeChat?.id ?: return@LaunchedEffect
+        while (connected) {
+            kotlinx.coroutines.delay(60_000)
+            vm.syncChat(chatId)
+        }
+    }
     // Kernel discovery is metadata only (it never runs a model), so it can be
     // refreshed on every connect: Settings and the new-chat sheet then show what
     // this machine can actually talk to instead of a guessed list. The recorded
@@ -254,7 +275,7 @@ fun AppRoot(
     // while it is on screen (see the effect in ChatSection), so the question is asked
     // when somebody is actually looking at the answer.
 
-    val hostname = when (val state = link) {
+    val hostname = if (kernelTarget == "local") "本机手机" else when (val state = link) {
         is LinkState.Connected -> state.hostname
         is LinkState.NodeOffline -> state.hostname
         else -> "TermDesk"
@@ -305,8 +326,25 @@ fun AppRoot(
             duration = SnackbarDuration.Long,
         )
         if (answer == SnackbarResult.ActionPerformed) {
-            runCatching { context.startActivity(BatteryGuidance.intentFor(context)) }
+            backgroundGuideOpen = true
         }
+    }
+
+    if (backgroundGuideOpen) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { backgroundGuideOpen = false },
+            title = { Text("允许后台运行") },
+            text = { Text("为及时收到消息，请在系统设置中允许 TermDesk 后台运行。\n\nOPPO / ColorOS 可在应用的耗电管理中检查“允许后台活动”；若系统提供自启动管理，也请允许 TermDesk 自启动。菜单名称可能因系统版本不同。") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    backgroundGuideOpen = false
+                    runCatching { context.startActivity(BatteryGuidance.intentFor(context)) }
+                }) { Text("打开系统设置") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { backgroundGuideOpen = false }) { Text("稍后") }
+            },
+        )
     }
 
     // Surface every action outcome, including refusals, so the user is never
@@ -365,6 +403,8 @@ fun AppRoot(
 
             openFile != null -> FileEditor(
                 file = openFile!!,
+                saveResult = lastAction,
+                connected = connected,
                 onSave = vm::writeFile,
                 onClose = vm::closeOpenFile,
             )
@@ -374,6 +414,7 @@ fun AppRoot(
                 hostname = hostname,
                 processes = processes,
                 services = services,
+                inventoryError = inventoryError,
                 listing = listing,
                 loading = loading,
                 transfer = transfer,
@@ -408,6 +449,8 @@ fun AppRoot(
                 codexConfig = codexConfig,
                 chatModels = chatModels,
                 lastUpload = lastUpload,
+                draftScope = vm.draftScope,
+                onClaimChat = vm::claimChat,
                 onUploadFile = vm::uploadFile,
                 onClearUpload = vm::clearLastUpload,
                 onRequestChatModels = vm::requestChatModels,
@@ -429,8 +472,10 @@ fun AppRoot(
                 // A new conversation starts immediately, on the kernel and in the
                 // directory the home page is already showing.
                 onCreateChat = { cwd ->
-                    vm.createChat(cwd = cwd ?: vm.defaultCwd, engine = engineForNewChat)
-                    section = Section.Sessions
+                    if (canCreateChat) {
+                        vm.createChat(cwd = cwd ?: vm.defaultCwd, engine = engineForNewChat)
+                        section = Section.Sessions
+                    }
                 },
                 onOpenChat = { id ->
                     vm.openChat(id)
@@ -450,6 +495,7 @@ fun AppRoot(
                 kernelRunsNote = kernelRunsNote,
                 onLoadKernelRuns = vm::loadKernelRuns,
                 sessionSort = sessionSort,
+                canCreateChat = canCreateChat,
                 onSetSessionSort = vm::setSessionSort,
                 // Ask the file section for that directory and switch to it: the
                 // conversation says WHERE, the file browser is where it can be seen.
@@ -487,8 +533,10 @@ fun AppRoot(
                 onSetWorkingDirectory = vm::setWorkingDirectory,
                 roots = roots,
                 onNewChatNow = {
-                    vm.createChat(cwd = vm.defaultCwd, engine = engineForNewChat)
-                    section = Section.Sessions
+                    if (canCreateChat) {
+                        vm.createChat(cwd = vm.defaultCwd, engine = engineForNewChat)
+                        section = Section.Sessions
+                    }
                 },
                 chatTerminals = chatTerminals,
                 terminalView = terminalView,
@@ -522,11 +570,10 @@ fun AppRoot(
             modifier = Modifier.align(Alignment.BottomCenter),
         ) { data ->
             Snackbar(
+                snackbarData = data,
                 containerColor = MaterialTheme.colorScheme.surfaceVariant,
                 contentColor = MaterialTheme.colorScheme.onSurface,
-            ) {
-                Text(data.visuals.message, style = MaterialTheme.typography.bodySmall)
-            }
+            )
         }
     }
 }

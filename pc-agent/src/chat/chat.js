@@ -243,6 +243,15 @@ export class Chat {
       createdAt: this.createdAt,
       lastUsedAt: this.lastUsedAt,
       eventCount: this.events.length,
+      eventCursor: this.seq,
+      oldestEventSeq: this.events[0]?.seq ?? (this.seq + 1),
+      continuity: {
+        durable: Boolean(this.nativeResume || this.threadId),
+        runtime: Boolean((this.child && this.child.exitCode === null) || this.kernelLive),
+        replay: true,
+        eventCursor: this.seq,
+        oldestEventSeq: this.events[0]?.seq ?? (this.seq + 1),
+      },
       lastError: this.lastError,
       usage: this.usage,
       live: Boolean((this.child && this.child.exitCode === null) || this.kernelLive),
@@ -250,9 +259,20 @@ export class Chat {
   }
 
   detail(afterSeq = 0) {
+    const cursor = Number.isInteger(afterSeq) && afterSeq > 0 ? afterSeq : 0;
+    const oldest = this.events[0]?.seq ?? (this.seq + 1);
+    const delta = cursor > 0 && cursor >= oldest - 1 && cursor <= this.seq;
+    const events = delta ? this.events.filter((e) => e.seq > cursor) : [...this.events];
     return {
       ...this.summary(),
-      events: this.events.filter((e) => e.seq > afterSeq),
+      events,
+      eventSync: {
+        mode: delta ? 'delta' : 'full',
+        afterSeq: cursor,
+        fromSeq: events[0]?.seq ?? null,
+        toSeq: this.seq,
+        complete: true,
+      },
     };
   }
 }

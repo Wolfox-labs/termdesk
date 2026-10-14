@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -60,20 +61,21 @@ class AgentClient(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
 
+    private val deviceId: String = run {
+        val prefs = appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val existing = prefs?.getString(KEY_DEVICE_ID, null)
+        if (!existing.isNullOrBlank()) existing else java.util.UUID.randomUUID().toString().also {
+            prefs?.edit()?.putString(KEY_DEVICE_ID, it)?.apply()
+        }
+    }
+    private val deviceName: String = listOf(Build.MANUFACTURER, Build.MODEL)
+        .map { it.trim() }.filter { it.isNotBlank() }.distinct().joinToString(" ").ifBlank { "Android 手机" }
+
     private val client = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS) // long-lived socket
         .build()
-
-    init {
-        // A queue that did not survive the process would be a queue only for the
-        // length of a train tunnel.
-        runCatching {
-            val saved = pendingSendsFile()?.takeIf { it.exists() }?.readText()
-            if (saved != null) pendingSends.restore(PendingSends.fromJson(saved))
-        }
-    }
 
     private val _link = MutableStateFlow<LinkState>(LinkState.Idle)
     val link: StateFlow<LinkState> = _link.asStateFlow()
@@ -86,6 +88,9 @@ class AgentClient(
 
     private val _services = MutableStateFlow<List<ServiceInfo>>(emptyList())
     val services: StateFlow<List<ServiceInfo>> = _services.asStateFlow()
+
+    private val _inventoryError = MutableStateFlow<String?>(null)
+    val inventoryError: StateFlow<String?> = _inventoryError.asStateFlow()
 
     /** Last action outcome, surfaced to the user as a transient message. */
     private val _lastAction = MutableStateFlow<ActionResult?>(null)
@@ -179,6 +184,9 @@ class AgentClient(
 
     /** Set when the agent reports the shell is not enabled on the PC. */
     private val _termUnavailable = MutableStateFlow<String?>(null)
+    private var terminalOpenPending = false
+    private var terminalClosedByUser = false
+    private var chatSyncSupported = false
     val termUnavailable: StateFlow<String?> = _termUnavailable.asStateFlow()
 
     // ---- Codex provider configuration ----
@@ -346,6 +354,7 @@ class AgentClient(
     private companion object {
         const val PREFS = "termdesk"
         const val KEY_KERNEL_TARGET = "kernelTarget"
+        const val KEY_DEVICE_ID = "deviceId"
 
         /** Characters of one command's output the panel keeps in memory. */
         const val TERMINAL_TEXT_LIMIT = 48 * 1024
@@ -423,7 +432,12 @@ class AgentClient(
     /** Where the queue lives. Null when there is no app context (tests, previews). */
     private fun pendingSendsFile(): File? = appContext?.let {
         val dir = File(it.filesDir, "pending-sends").apply { mkdirs() }
-        File(dir, "queue.json")
+        File(dir, if (_kernelTarget.value == "local") "queue-local.json" else "queue.json")
+    }
+
+    private fun restorePendingSends() {
+        val saved = runCatching { pendingSendsFile()?.takeIf { it.exists() }?.readText() }.getOrNull()
+        pendingSends.restore(PendingSends.fromJson(saved))
     }
 
     private fun persistPendingSends(items: List<PendingSends.Item>) {
@@ -455,7 +469,7 @@ class AgentClient(
 
     private fun cacheFile(name: String): File? = appContext?.let {
         val dir = File(it.filesDir, "history-cache").apply { mkdirs() }
-        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(name.toByteArray()).joinToString("") { b -> "%02x".format(b) }
+        val hash = java.security.MessageDigest.getInstance("SHA-256").digest((if (_kernelTarget.value == "local") "local:$name" else name).toByteArray()).joinToString("") { b -> "%02x".format(b) }
         File(dir, "$hash.json")
     }
     private fun cache(name: String, frame: JSONObject) {
@@ -486,6 +500,7 @@ class AgentClient(
         }
     }
     init {
+        restorePendingSends()
         pruneHistoryCache()
         cached("index")?.let {
             _sessions.value = parseSessionList(it.optJSONArray("sessions"))
@@ -574,6 +589,8 @@ class AgentClient(
     }
 
     fun disconnect() {
+        terminalOpenPending = false
+        chatSyncSupported = false
         generation += 1
         manuallyClosed = true
         reconnectJob?.cancel()
@@ -610,11 +627,13 @@ class AgentClient(
     // ---- P1: inventory and actions ----
 
     fun refreshProcesses(query: String = "") {
+        _inventoryError.value = null
         _loading.value = true
         sendFrame(JSONObject().put("type", "procs.list").put("query", query))
     }
 
     fun refreshServices(query: String = "") {
+        _inventoryError.value = null
         _loading.value = true
         sendFrame(JSONObject().put("type", "services.list").put("query", query))
     }
@@ -645,7 +664,39 @@ class AgentClient(
     fun setKernelTarget(target: String) {
         val clean = if (target == "local") "local" else "remote"
         if (_kernelTarget.value == clean) return
+        // Discovery and paths belong to the selected machine, never to the old socket.
+        disconnect()
+        _engines.value = emptyList()
+        _fsRoots.value = emptyList()
+        _listing.value = null
+        _openFile.value = null
+        _processes.value = emptyList()
+        _services.value = emptyList()
+        _inventoryError.value = null
+        _status.value = null
+        _sessions.value = emptyList()
+        _workspaces.value = emptyList()
+        _chats.value = emptyList()
+        _activeChat.value = null
+        _sessionDetail.value = null
+        _kernelRuns.value = emptyList()
+        _kernelRunsNote.value = null
+        _chatModels.value = emptyMap()
+        _chatTerminals.value = emptyMap()
+        _terminalView.value = null
+        _approvals.value = emptyList()
+        _chatSending.value = false
+        _codexConfig.value = null
+        _codexTemplates.value = emptyList()
+        _termSessions.value = emptyList()
+        _termUnavailable.value = null
+        clearChatTranscript()
+        clearSearch()
+        calls.clear()
+        _loading.value = false
+        _sessionsLoading.value = false
         _kernelTarget.value = clean
+        restorePendingSends()
         appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             ?.edit()?.putString(KEY_KERNEL_TARGET, clean)?.apply()
         _termLines.value = emptyList()
@@ -686,14 +737,17 @@ class AgentClient(
      * no longer the same thing as "the only terminal there will ever be".
      */
     fun openTerminal() {
-        sendFrame(JSONObject().put("type", "term.open"))
+        if (terminalOpenPending) return
+        terminalClosedByUser = false
+        terminalOpenPending = sendFrame(JSONObject().put("type", "term.open"))
     }
 
     /** Show a terminal that already exists; its scrollback comes back with it. */
     fun attachTerminal(sessionId: String) {
-        if (sessionId == _termSession.value) return
+        if (sessionId == _termSession.value || terminalOpenPending) return
+        terminalClosedByUser = false
         _termBusy.value = false
-        sendFrame(JSONObject().put("type", "term.open").put("sessionId", sessionId))
+        terminalOpenPending = sendFrame(JSONObject().put("type", "term.open").put("sessionId", sessionId))
     }
 
     /** Ask the agent which terminals it is holding, for the switcher. */
@@ -730,13 +784,14 @@ class AgentClient(
 
     fun closeTerminal() {
         val sid = _termSession.value ?: return
+        terminalClosedByUser = true
+        terminalOpenPending = false
         sendFrame(JSONObject().put("type", "term.close").put("sessionId", sid))
         _termSession.value = null
         _termCwd.value = null
         _termLines.value = emptyList()
         _termBusy.value = false
-        // Ask what is left: the "term.list" handler picks the next one, or makes
-        // a fresh shell when this was the last.
+        // Refresh the switcher without creating a replacement for an explicit close.
         listTerminals()
     }
 
@@ -889,6 +944,23 @@ class AgentClient(
         _sessionDetail.value = null
         clearChatTranscript()
         sendFrame(JSONObject().put("type", "chat.read").put("chatId", chatId))
+    }
+
+    /** Ask the PC for the write lease of this conversation. */
+    fun claimChat(chatId: String, force: Boolean = false) {
+        sendFrame(JSONObject().put("type", "chat.claim").put("chatId", chatId).put("force", force))
+    }
+
+    /** Release the write lease when leaving a conversation intentionally. */
+    fun releaseChat(chatId: String) {
+        sendFrame(JSONObject().put("type", "chat.release").put("chatId", chatId))
+    }
+
+    /** Reconcile transcript and ownership after reconnect or foreground resume. */
+    fun syncChat(chatId: String) {
+        // Full snapshots also reconcile in-place streaming edits and removals.
+        // Capability absence means an older agent: its chat.read remains valid.
+        sendFrame(JSONObject().put("type", if (chatSyncSupported) "chat.sync" else "chat.read").put("chatId", chatId))
     }
 
     /** Send one user message. The answer streams back as `chat.event` frames. */
@@ -1596,6 +1668,9 @@ class AgentClient(
                     .put("type", "auth")
                     .put("token", token)
                     .put("v", ProtocolVersion.PROTOCOL_VERSION)
+                    .put("deviceId", deviceId)
+                    .put("deviceName", deviceName)
+                    .put("clientKind", "android")
                     .toString(),
             )
         }
@@ -1622,6 +1697,8 @@ class AgentClient(
                     }
                 }
                 "auth.ok" -> {
+                    chatSyncSupported = supportsChatSync(frame)
+                    terminalOpenPending = false
                     if (frame.has("nodeOnline") && !frame.optBoolean("nodeOnline")) {
                         _link.value = LinkState.NodeOffline(frame.optString("hostname", "电脑"))
                         return
@@ -1656,7 +1733,7 @@ class AgentClient(
                     // Anything written while the link was down goes out now, in
                     // order, behind the reads that just re-established the view.
                     replayPendingSends()
-                    _activeChat.value?.let { sendFrame(JSONObject().put("type", "chat.read").put("chatId", it.id)) }
+                    _activeChat.value?.let { syncChat(it.id) }
                 }
                 "auth.fail" -> {
                     // Not a network problem, and not something retrying can fix: the
@@ -1679,10 +1756,12 @@ class AgentClient(
                 "status" -> _status.value = parseStatus(frame.optJSONObject("status"))
                 "procs" -> {
                     _loading.value = false
+                    _inventoryError.value = null
                     _processes.value = parseProcesses(frame.optJSONArray("items"))
                 }
                 "services" -> {
                     _loading.value = false
+                    _inventoryError.value = null
                     _services.value = parseServices(frame.optJSONArray("items"))
                 }
                 "fs.listing" -> {
@@ -1726,14 +1805,25 @@ class AgentClient(
                         path = frame.optString("path"),
                         text = frame.optString("text"),
                         sizeBytes = frame.optLong("sizeBytes"),
+                        mtime = frame.optString("mtime").takeIf { it.isNotBlank() },
                     )
                 }
                 "fs.written" -> {
-                    // Keep the editor in sync with what was actually stored.
+                    // The server echoes the written text so the editor can move its
+                    // dirty baseline forward immediately after a successful save.
                     val path = frame.optString("path")
-                    _openFile.value = _openFile.value?.takeIf { it.path == path }
+                    val current = _openFile.value
+                    if (current != null && current.path == path) {
+                        _openFile.value = current.copy(
+                            text = if (frame.has("text")) frame.optString("text") else current.text,
+                            sizeBytes = frame.optLong("sizeBytes", current.sizeBytes),
+                            mtime = if (frame.has("mtime")) frame.optString("mtime") else current.mtime,
+                        )
+                    }
                 }
                 "term.opened" -> {
+                    terminalOpenPending = false
+                    if (terminalClosedByUser) return
                     _termSession.value = frame.optString("sessionId")
                     _termUnavailable.value = null
                     // REPLACE the scrollback, never merge it. Opening a terminal
@@ -1765,11 +1855,8 @@ class AgentClient(
                 "term.list" -> {
                     val sessions = TerminalInfo.list(frame.optJSONArray("sessions"))
                     _termSessions.value = sessions
-                    // Closing the last one leaves nothing on screen, so pick up
-                    // whichever session survives - or make one, if none did. The
-                    // phone always has a terminal to show.
-                    if (_termSession.value == null) {
-                        if (sessions.isNotEmpty()) attachTerminal(sessions.first().id) else openTerminal()
+                    if (_termSession.value == null && !terminalClosedByUser && !terminalOpenPending && sessions.isNotEmpty()) {
+                        attachTerminal(sessions.first().id)
                     }
                 }
                 "term.output" -> {
@@ -1816,6 +1903,11 @@ class AgentClient(
                     }
                     val action = frame.optString("action")
                     if (action.startsWith("chat.")) _chatSending.value = false
+                    if (frame.optBoolean("ok") && action in setOf("fs.write", "fs.mkdir", "fs.rename", "fs.delete")) {
+                        // Mutations push a listing without a callId; request the current
+                        // directory explicitly so stale-response protection stays intact.
+                        _listing.value?.path?.let { listDirectory(it) }
+                    }
                     _lastAction.value = ActionResult(
                         action = action,
                         target = frame.optString("target"),
@@ -1871,6 +1963,13 @@ class AgentClient(
                 "error" -> {
                     _loading.value = false
                     val msg = frame.optString("message")
+                    val errorCode = frame.optString("code")
+                    if (errorCode == "procs_failed" || errorCode == "services_failed" || errorCode == "platform_unsupported") {
+                        _inventoryError.value = when {
+                            errorCode == "platform_unsupported" -> "当前设备不支持这类系统信息：$msg"
+                            else -> "系统信息读取失败：$msg"
+                        }
+                    }
                     if (msg.isNotEmpty()) _lastAction.value =
                         ActionResult(frame.optString("code"), "", false, frame.optString("code"), msg)
                     // The agent keeps chats in memory, so a phone that was showing
@@ -1947,6 +2046,7 @@ class AgentClient(
                 "chat.terminal.input" -> appendTerminalInput(frame)
                 "chat" -> {
                     _chatSending.value = false
+                    val previousChatId = _activeChat.value?.id
                     val info = parseChatInfo(frame)
                     if (info != null) {
                         _sessionDetail.value = null
@@ -1959,8 +2059,7 @@ class AgentClient(
                     // reply does not, so ask for the transcript to pick up the
                     // chat's own opening lines.
                     if (frame.has("events")) {
-                        chatEventIndex = LinkedHashMap()
-                        _chatEvents.value = parseChatEvents(frame.optJSONArray("events") ?: JSONArray())
+                        _chatEvents.value = reconcileChatEvents(_chatEvents.value, frame, previousChatId)
                         chatEventIndex = LinkedHashMap(
                             _chatEvents.value.associateBy { it.seq },
                         )
@@ -2005,6 +2104,7 @@ class AgentClient(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             if (epoch != generation) return
+            terminalOpenPending = false
             socket = null
             // Move to the next address BEFORE the backoff, so the next attempt
             // is a different one rather than the same dead relay. The sentence
@@ -2023,6 +2123,7 @@ class AgentClient(
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             if (epoch != generation) return
+            terminalOpenPending = false
             socket = null
             when (code) {
                 // A bad credential will never fix itself by retrying.

@@ -40,6 +40,8 @@ data class KernelInfo(
      * while the PC was already driving them.
      */
     val selectableOnPc: Boolean? = null,
+    /** Normalized session/configuration contract from the PC registry. */
+    val manifest: KernelManifest? = null,
 ) {
     val selectable: Boolean get() = selectableOnPc ?: (available && tier == "native")
 
@@ -94,3 +96,54 @@ data class KernelRun(
     /** True when the row is an instance of a desktop app rather than one process. */
     val fromDesktopApp: Boolean get() = source == "desktop-app"
 }
+/** A single editable or discoverable agent setting. */
+data class KernelConfigField(
+    val id: String,
+    val type: String,
+    val support: String,
+    val apply: String,
+    val label: String? = null,
+    val valuesSource: String? = null,
+    val min: Long? = null,
+    val max: Long? = null,
+    val unit: String? = null,
+)
+
+data class KernelSessionCapabilities(
+    val list: Boolean = false,
+    val read: Boolean = false,
+    val resume: Boolean = false,
+    val fork: Boolean = false,
+    val nativeTranscript: Boolean = false,
+)
+
+data class KernelTurnCapabilities(
+    val cancel: String = "none",
+    val queue: Boolean = false,
+    val liveTerminals: Boolean = false,
+)
+
+data class KernelModelCapabilities(
+    val source: String = "default",
+    val dynamic: Boolean = false,
+    val switch: Boolean = false,
+    val add: Boolean = false,
+)
+
+data class KernelConfigCapabilities(
+    val scope: String = "none",
+    val liveApply: Boolean = false,
+    val requiresRestart: Boolean = false,
+    val schema: List<KernelConfigField> = emptyList(),
+)
+
+data class KernelManifest(
+    val version: Int = 1,
+    val known: Boolean = false,
+    val transport: String? = null,
+    val driver: String = "none",
+    val session: KernelSessionCapabilities = KernelSessionCapabilities(),
+    val turn: KernelTurnCapabilities = KernelTurnCapabilities(),
+    val model: KernelModelCapabilities = KernelModelCapabilities(),
+    val config: KernelConfigCapabilities = KernelConfigCapabilities(),
+)

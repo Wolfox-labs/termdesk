@@ -31,7 +31,7 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Memory
-import androidx.compose.material.icons.outlined.PowerSettingsNew
+import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.HorizontalDivider
@@ -109,6 +109,7 @@ fun AppShell(
     hostname: String,
     processes: List<ProcessInfo>,
     services: List<ServiceInfo>,
+    inventoryError: String?,
     listing: DirectoryListing?,
     loading: Boolean,
     transfer: TransferState?,
@@ -143,6 +144,8 @@ fun AppShell(
     codexConfig: CodexConfig?,
     chatModels: Map<String, ChatModels>,
     lastUpload: UploadedFile?,
+    draftScope: String,
+    onClaimChat: (String, Boolean) -> Unit,
     onUploadFile: (android.net.Uri, String) -> Unit,
     onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
@@ -178,6 +181,7 @@ fun AppShell(
     kernelRunsNote: String?,
     onLoadKernelRuns: () -> Unit,
     sessionSort: SessionSort,
+    canCreateChat: Boolean,
     onSetSessionSort: (SessionSort) -> Unit,
     /** Open the file section at a directory (from a conversation). */
     onOpenFilesAt: (String) -> Unit,
@@ -281,6 +285,7 @@ fun AppShell(
                     onRemoveLocalKernel = onRemoveLocalKernel,
                     processes = processes,
                     services = services,
+                    inventoryError = inventoryError,
                     listing = listing,
                     loading = loading,
                     transfer = transfer,
@@ -315,6 +320,8 @@ fun AppShell(
                     codexConfig = codexConfig,
                     chatModels = chatModels,
                     lastUpload = lastUpload,
+                    draftScope = draftScope,
+                    onClaimChat = onClaimChat,
                     onUploadFile = onUploadFile,
                     onClearUpload = onClearUpload,
                     onRequestChatModels = onRequestChatModels,
@@ -367,6 +374,7 @@ fun AppShell(
                     onSetWorkingDirectory = onSetWorkingDirectory,
                     roots = roots,
                     onNewChatNow = onNewChatNow,
+                    canCreateChat = canCreateChat,
                     onGoto = onSectionChange,
                     chatTerminals = chatTerminals,
                     terminalView = terminalView,
@@ -472,8 +480,8 @@ private fun TopBar(
         }
         IconButton(onClick = onDisconnect) {
             Icon(
-                imageVector = Icons.Outlined.PowerSettingsNew,
-                contentDescription = "断开连接",
+                imageVector = Icons.Outlined.Devices,
+                contentDescription = "设备管理",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -615,6 +623,7 @@ private fun SectionBody(
     status: HostStatus?,
     processes: List<ProcessInfo>,
     services: List<ServiceInfo>,
+    inventoryError: String?,
     listing: DirectoryListing?,
     loading: Boolean,
     transfer: TransferState?,
@@ -649,6 +658,8 @@ private fun SectionBody(
     codexConfig: CodexConfig?,
     chatModels: Map<String, ChatModels>,
     lastUpload: UploadedFile?,
+    draftScope: String,
+    onClaimChat: (String, Boolean) -> Unit,
     onUploadFile: (android.net.Uri, String) -> Unit,
     onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
@@ -717,6 +728,7 @@ private fun SectionBody(
     onSetWorkingDirectory: (String) -> Unit,
     roots: List<String>,
     onNewChatNow: () -> Unit,
+    canCreateChat: Boolean,
     onGoto: (Section) -> Unit,
     chatTerminals: Map<String, List<ChatTerminal>>,
     terminalView: TerminalView?,
@@ -747,6 +759,7 @@ private fun SectionBody(
             chats = chats,
             sessions = sessions,
             onNewChat = onNewChatNow,
+            canCreateChat = canCreateChat,
             onOpenChat = onOpenChat,
             onOpenSession = { session ->
                 onOpenSession(session)
@@ -761,6 +774,7 @@ private fun SectionBody(
             status = status,
             processes = processes,
             services = services,
+            inventoryError = inventoryError,
             loading = loading,
             onRefreshProcesses = onRefreshProcesses,
             onRefreshServices = onRefreshServices,
@@ -821,6 +835,8 @@ private fun SectionBody(
             codexConfig = codexConfig,
             chatModels = chatModels,
             lastUpload = lastUpload,
+            draftScope = draftScope,
+            onClaimChat = onClaimChat,
             onUploadFile = onUploadFile,
             onClearUpload = onClearUpload,
             onRequestChatModels = onRequestChatModels,

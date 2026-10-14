@@ -149,7 +149,9 @@ check('the command reports its own exit code', exit.code === 0, String(exit.code
 ws.send(JSON.stringify({ type: 'kernels.list' }));
 const kernels = await waitFrame((f) => f.type === 'kernels', 15000, 'kernels');
 const list = kernels.kernels ?? [];
-check('the kernel table answers', list.length > 0, `${list.length}`);
+check('the local kernel table is a detected list, even when empty',
+  Array.isArray(kernels.kernels) && kernels.scope === 'local' && kernels.discovery === 'filesystem', `${list.length}`);
+check('uninstalled catalogue entries are absent from local discovery', list.every((k) => k.available === true));
 check('nothing is offered that this host cannot run',
   list.every((k) => !k.available || k.selectable === true), list.map((k) => `${k.id}=${k.available}`).join(' '));
 

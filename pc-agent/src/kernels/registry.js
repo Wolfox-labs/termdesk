@@ -27,6 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { AcpKernel } from './acp.js';
+import { manifestFor } from './manifest.js';
 
 const NPM_ROOT = path.join(os.homedir(), 'AppData', 'Roaming', 'npm');
 const LOCAL_PROGRAMS = path.join(os.homedir(), 'AppData', 'Local', 'Programs');
@@ -57,12 +58,42 @@ function firstFile(candidates) {
 function firstOnPath(names) {
   const dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
   for (const name of names) {
+    const candidates = process.platform === 'win32' && !path.extname(name)
+      ? [name, ...(process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';').filter(Boolean).map((ext) => name + ext.toLowerCase())]
+      : [name];
     for (const dir of dirs) {
-      const found = fileOrNull(path.join(dir, name));
-      if (found) return found;
+      for (const candidate of candidates) {
+        const found = executableOrNull(path.join(dir, candidate));
+        if (found) return found;
+      }
     }
   }
   return null;
+}
+
+/** A command must exist and be executable on this host, not just have a name. */
+function executableOrNull(candidate) {
+  const found = fileOrNull(candidate);
+  if (!found) return null;
+  if (process.platform !== 'win32') {
+    try { fs.accessSync(found, fs.constants.X_OK); } catch { return null; }
+    // An executable bit on a copied Windows binary does not make it runnable
+    // inside the Android/Linux sandbox.
+    let fd;
+    try {
+      fd = fs.openSync(found, 'r');
+      const header = Buffer.alloc(2);
+      fs.readSync(fd, header, 0, 2, 0);
+      if (header.toString('ascii') === 'MZ') return null;
+    } catch { return null; } finally { if (fd !== undefined) fs.closeSync(fd); }
+  }
+  return found;
+}
+
+function resolveExecutable(candidate) {
+  if (!candidate || typeof candidate !== 'string') return null;
+  if (path.isAbsolute(candidate) || candidate.includes('/') || candidate.includes('\\')) return executableOrNull(candidate);
+  return firstOnPath([candidate]);
 }
 
 /**
@@ -256,8 +287,7 @@ function table() {
 }
 
 /** Extra ACP kernels from the environment, so a new one needs no code change. */
-function envKernels() {
-  const raw = process.env.TERMDESK_ACP_KERNELS;
+function envKernels(raw = process.env.TERMDESK_ACP_KERNELS) {
   if (!raw) return [];
   let parsed;
   try { parsed = JSON.parse(raw); } catch { return []; }
@@ -292,8 +322,7 @@ function envKernels() {
  * this way are trusted by default (the declarer states the contract) unless the
  * entry says `verified: false`.
  */
-function envCliKernels() {
-  const raw = process.env.TERMDESK_CLI_KERNELS;
+function envCliKernels(raw = process.env.TERMDESK_CLI_KERNELS) {
   if (!raw) return [];
   let parsed;
   try { parsed = JSON.parse(raw); } catch { return []; }
@@ -324,8 +353,26 @@ function envCliKernels() {
     }));
 }
 
+/** Optional installed-kernel registrations; adding one needs no brand-name edit. */
+function fileKernels() {
+  const directory = process.env.TERMDESK_KERNEL_MANIFEST_DIR || path.join(os.homedir(), '.termdesk', 'kernels');
+  let files;
+  try { files = fs.readdirSync(directory).filter((name) => name.endsWith('.json')).sort(); } catch { return []; }
+  const items = files.flatMap((name) => {
+    try {
+      const value = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'));
+      return Array.isArray(value) ? value : [value];
+    } catch { return []; }
+  }).filter((item) => item && typeof item.id === 'string' && typeof item.bin === 'string');
+  return [
+    ...envKernels(JSON.stringify(items.filter((item) => !item.transport || item.transport === 'acp'))),
+    ...envCliKernels(JSON.stringify(items.filter((item) => item.transport === 'cli'))),
+  ].map((entry) => ({ ...entry, detail: '检测到本机接入配置中的助手' }));
+}
+
 function allEntries() {
-  return [...table(), ...envKernels(), ...envCliKernels()];
+  const entries = [...table(), ...fileKernels(), ...envKernels(), ...envCliKernels()];
+  return [...new Map(entries.map((entry) => [entry.id, entry])).values()];
 }
 
 /**
@@ -337,8 +384,20 @@ function allEntries() {
 export function kernelCommand(entry) {
   const resolved = entry.resolve();
   if (!resolved) return null;
-  if (typeof resolved === 'string') return { bin: resolved, args: [], script: null };
-  return { bin: resolved.bin, args: [...(resolved.args ?? [])], script: resolved.args?.[0] ?? null };
+  if (typeof resolved === 'string' && entry.transport === 'sdk' && /\.[cm]?js$/i.test(resolved)) {
+    // DSH's JS entry is launched through Node; the script needs to be readable,
+    // not executable. Check the runtime and script independently.
+    const script = fileOrNull(resolved);
+    const runtime = executableOrNull(process.execPath);
+    return script && runtime ? { bin: runtime, args: [script], script } : null;
+  }
+  const bin = resolveExecutable(typeof resolved === 'string' ? resolved : resolved.bin);
+  if (!bin) return null;
+  if (typeof resolved === 'string') return { bin, args: [], script: null };
+  const args = [...(resolved.args ?? [])];
+  const script = args[0] && !args[0].startsWith('-') ? args[0] : null;
+  if (script && !fileOrNull(script)) return null;
+  return { bin, args, script };
 }
 
 /**
@@ -356,8 +415,8 @@ function shimVerified(entry) {
   return forced.includes(entry.id);
 }
 
-export function listKernels() {
-  return allEntries().map((entry) => {
+export function listKernels({ installedOnly = false } = {}) {
+  const descriptors = allEntries().map((entry) => {
     const command = kernelCommand(entry);
     const available = Boolean(command);
     return {
@@ -392,8 +451,10 @@ export function listKernels() {
       // Where a new conversation's default model comes from. Declared per kernel
       // because the three answers are genuinely different - see kernels/contract.js.
       modelRoute: entry.modelRoute ?? 'default',
+      manifest: manifestFor(entry),
     };
   });
+  return installedOnly ? descriptors.filter((kernel) => kernel.available) : descriptors;
 }
 
 /** One descriptor by id, or null. */

@@ -130,7 +130,7 @@ fun TerminalSection(
     // backend this app is connected to. It used to be remote-only, which left the
     // local kernel with no session at all: every command then answered "no session"
     // instead of running.
-    LaunchedEffect(sessionId, unavailable) {
+    LaunchedEffect(kernel) {
         if (sessionId == null && unavailable == null) onOpen()
     }
 
@@ -171,9 +171,9 @@ fun TerminalSection(
             // so this is the way between them - and the way to start another.
             Text(
                 text = when {
-                    kernel == "local" -> (sessionId?.let { "$it · bash" } ?: "本地内核 · bash")
                     unavailable != null -> "不可用"
-                    sessionId == null -> "连接中…"
+                    sessionId == null -> "暂无终端"
+                    kernel == "local" -> "$sessionId · bash"
                     else -> "${sessionId} · PowerShell"
                 },
                 style = MaterialTheme.typography.labelMedium,
@@ -365,11 +365,16 @@ fun TerminalSection(
                 }
             } else if (lines.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        "输入命令开始",
+                        if (sessionId == null) "终端已关闭" else "终端已就绪 · 输入命令，或点击下方快捷命令",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (sessionId == null) {
+                        TextButton(onClick = onNewTerminal) { Text("新建终端") }
+                    }
+                    }
                 }
             } else {
                 LazyColumn(

@@ -51,6 +51,9 @@ export const C2S = {
   // it, because a kernel only declares its model list once a session exists.
   CHAT_MODELS: 'chat.models',
   CHAT_READ: 'chat.read',
+  CHAT_CLAIM: 'chat.claim',
+  CHAT_RELEASE: 'chat.release',
+  CHAT_SYNC: 'chat.sync',
   CHAT_CANCEL: 'chat.cancel',
   CHAT_CLOSE: 'chat.close',
   CHAT_APPROVE: 'chat.approve',

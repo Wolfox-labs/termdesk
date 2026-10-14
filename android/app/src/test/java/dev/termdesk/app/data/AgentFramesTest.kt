@@ -230,6 +230,62 @@ class AgentFramesTest {
         assertFalse("a fresh conversation is not running", chat.isRunning)
     }
 
+    @Test
+    fun `kernel manifest preserves truthful configuration support`() {
+        val frame = JSONObject()
+            .put("version", 1)
+            .put("known", true)
+            .put("driver", "app-server")
+            .put("session", JSONObject().put("resume", true).put("nativeTranscript", true))
+            .put("model", JSONObject().put("dynamic", false).put("switch", true))
+            .put(
+                "config",
+                JSONObject().put(
+                    "schema",
+                    JSONArray()
+                        .put(JSONObject().put("id", "contextWindow").put("type", "number").put("support", "supported"))
+                        .put(JSONObject().put("id", "maxOutput").put("type", "number").put("support", "planned")),
+                ),
+            )
+
+        val manifest = parseKernelManifest(frame)
+
+        assertNotNull(manifest)
+        assertTrue(manifest!!.session.resume)
+        assertTrue(manifest.session.nativeTranscript)
+        assertEquals("supported", manifest.config.schema.first { it.id == "contextWindow" }.support)
+        assertEquals("planned", manifest.config.schema.first { it.id == "maxOutput" }.support)
+    }
+
+    @Test
+    fun `chat continuity fields are parsed and absent fields stay safe`() {
+        val frame = JSONObject()
+            .put("id", "c-continuity")
+            .put("eventCursor", 19)
+            .put("oldestEventSeq", 7)
+            .put(
+                "continuity",
+                JSONObject()
+                    .put("durable", true)
+                    .put("runtime", true)
+                    .put("replay", true)
+                    .put("eventCursor", 19)
+                    .put("oldestEventSeq", 7),
+            )
+
+        val chat = parseChatInfo(frame)
+
+        assertNotNull(chat)
+        assertEquals(19, chat!!.eventCursor)
+        assertEquals(7, chat.oldestEventSeq)
+        assertTrue(chat.continuity.durable)
+        assertTrue(chat.continuity.runtime)
+        assertTrue(chat.continuity.replay)
+        assertEquals(19, chat.continuity.eventCursor)
+        assertEquals(7, chat.continuity.oldestEventSeq)
+        assertEquals(ChatContinuity(), parseChatContinuity(null))
+    }
+
     // ---- file search results ------------------------------------------------
 
     @Test

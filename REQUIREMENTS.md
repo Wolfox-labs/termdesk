@@ -285,7 +285,7 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 | C→S | `kernels.runs`（这台电脑上**本代理没有启动**的 agent 进程，即用户在终端里自己跑的） |
 | C→S | `codex.get` · `codex.apply` · `codex.restore` |
 | C→S | `sessions.list` · `sessions.read`（磁盘上的历史会话，只读） |
-| C→S | `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` · `chat.config` · `chat.models` · `chat.approve` · `chat.terminals` · `chat.terminal.read` · `chat.terminal.input` · `chat.terminal.stop` |
+| C→S | `chat.claim` · `chat.release` · `chat.sync` · `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` · `chat.config` · `chat.models` · `chat.approve` · `chat.terminals` · `chat.terminal.read` · `chat.terminal.input` · `chat.terminal.stop` |
 | S→C | `auth.ok` · `auth.fail` · `hello` · `status` · `procs` · `services` |
 | S→C | `fs.listing` · `fs.file` · `fs.written` · `fs.roots` |
 | S→C | `term.opened` · `term.output` · `term.exit` · `term.list` |

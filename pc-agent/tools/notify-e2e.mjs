@@ -130,6 +130,13 @@ try {
   check('a conversation is created', Boolean(chatA), String(chatA));
   a.ws.send(JSON.stringify({ type: 'chat.send', chatId: chatA, text: 'first', requestId: 'a-1' }));
   await waitForTurnEnd(a);
+  // Turn completion and its notification are separate frames. Wait for the
+  // notification itself rather than racing the next WebSocket callback.
+  const notificationDeadline = Date.now() + 5000;
+  while (Date.now() < notificationDeadline
+    && !a.frames.some((f) => f.type === 'notify' && f.kind === 'turn_done' && f.chatId === chatA)) {
+    await sleep(25);
+  }
   stopA();
   check('a client that is attached is told about the finished turn',
     a.frames.some((f) => f.type === 'notify' && f.kind === 'turn_done' && f.chatId === chatA),
