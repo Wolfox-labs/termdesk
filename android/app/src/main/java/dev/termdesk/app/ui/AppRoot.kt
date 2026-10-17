@@ -81,6 +81,9 @@ fun AppRoot(
     val termUnavailable by vm.termUnavailable.collectAsState()
     val codexConfig by vm.codexConfig.collectAsState()
     val codexTemplates by vm.codexTemplates.collectAsState()
+    val codexTarget by vm.codexTarget.collectAsState()
+    val computers by vm.computerList.collectAsState()
+    val activeComputerId by vm.activeComputerId.collectAsState()
     val chats by vm.chats.collectAsState()
     val chatModels by vm.chatModels.collectAsState()
     val lastUpload by vm.lastUpload.collectAsState()
@@ -455,8 +458,13 @@ fun AppRoot(
                 onClearUpload = vm::clearLastUpload,
                 onRequestChatModels = vm::requestChatModels,
                 codexTemplates = codexTemplates,
-                onCodexLoad = vm::loadCodexConfig,
-                onCodexApply = vm::applyCodexProvider,
+                codexTarget = codexTarget,
+                codexTargets = computers.sortedBy { if (it.id == activeComputerId) 0 else 1 },
+                onOpenCodex = vm::openCodexConfig,
+                onCloseCodex = vm::closeCodexConfig,
+                onSelectCodexTarget = vm::selectCodexTarget,
+                onCodexLoad = vm::reloadCodexConfig,
+                onCodexApply = vm::applyCodexConfig,
                 onCodexRestore = vm::restoreCodexBackup,
                 defaultCwd = vm.defaultCwd,
                 chats = chats,

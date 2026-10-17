@@ -7,6 +7,7 @@
  * or two well-typed frames.
  */
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 import { C2S, S2C, encodeFrame } from './protocol.js';
 import { withCallId } from './callid.js';
@@ -31,8 +32,21 @@ import {
   restoreBackup,
   PROVIDER_TEMPLATES,
 } from './codexconfig.js';
-import { listSessions, readSession, sessionRoots } from './sessions.js';
-import { chatEngineIds, getKernel, isAdapterKernel, kernelTier, listKernels } from './kernels/registry.js';
+import { listSessions, readSession, deleteSession, sessionRoots } from './sessions.js';
+import {
+  chatEngineIds,
+  clearKernelPath,
+  getKernel,
+  isAdapterKernel,
+  kernelStorePaths,
+  kernelTier,
+  listKernels,
+  probeKernel,
+  registerKernel,
+  removeKernel,
+  setKernelEnabled,
+  setKernelPath,
+} from './kernels/registry.js';
 import { externalKernelRuns, withDescendants } from './kernelruns.js';
 import { detectDesktopAgentInstances } from './appagents.js';
 import { threadSummaryToSession, threadToSessionDetail, discoverThreadIdsFromDisk } from './kernels/codex.js';
@@ -52,6 +66,7 @@ const STATUS_INTERVAL_MS = 2000;
  * @param {() => Promise<void>} ctx.pushStatus
  * @param {() => void} ctx.stopStatus
  * @param {(ms: number) => void} ctx.startStatusTimer
+ * @param {{ list: () => Promise<object[]>, rename: Function, revoke: Function, remove: Function }} [ctx.deviceAdmin]
  */
 /**
  * The Codex session list: kernel first, rollout filenames for discovery.
@@ -379,7 +394,7 @@ export function createFrameHandler(ctx) {
           break;
         }
         const session = existing ?? terminals.create();
-        terminals.attach((sid, text, stream) => {
+        if (!ctx.terminalOutputManaged) terminals.attach((sid, text, stream) => {
           if (socket.readyState === socket.OPEN) {
             socket.send(encodeFrame(S2C.TERM_OUTPUT, { sessionId: sid, text, stream }));
           }
@@ -452,11 +467,101 @@ export function createFrameHandler(ctx) {
 
       case C2S.KERNELS_LIST:
         send(S2C.KERNELS, {
+          // Every call re-stats the machine; there is no cached "installed"
+          // list to go stale behind a refresh button.
           kernels: listKernels({ installedOnly: ctx.localMode === true }),
           discovery: 'filesystem',
           scope: ctx.localMode ? 'local' : 'remote',
+          scannedAt: Date.now(),
+          // Said out loud so the console can point at the file instead of
+          // pretending the choice is stored somewhere invisible.
+          store: kernelStorePaths(),
         });
         break;
+
+      case C2S.KERNELS_MANAGE: {
+        const action = String(frame.action ?? '');
+        let result;
+        if (action === 'enable' || action === 'disable') {
+          result = setKernelEnabled(String(frame.id ?? ''), action === 'enable');
+        } else if (action === 'register') {
+          result = registerKernel(frame.entry ?? {});
+        } else if (action === 'remove') {
+          result = removeKernel(String(frame.id ?? ''));
+        } else if (action === 'setPath') {
+          result = setKernelPath(String(frame.id ?? ''), frame.path);
+        } else if (action === 'clearPath') {
+          result = clearKernelPath(String(frame.id ?? ''));
+        } else if (action === 'probe') {
+          result = await probeKernel(String(frame.id ?? ''));
+        } else {
+          result = { ok: false, code: 'bad_action', message: `未知的内核操作 "${action}"` };
+        }
+        send(S2C.ACTION_RESULT, {
+          action: `kernels.${action}`,
+          target: String(frame.id ?? frame.entry?.id ?? ''),
+          ...result,
+        });
+        if (result.ok) {
+          send(S2C.KERNELS, {
+            kernels: listKernels({ installedOnly: ctx.localMode === true }),
+            discovery: 'filesystem',
+            scope: ctx.localMode ? 'local' : 'remote',
+            scannedAt: Date.now(),
+            store: kernelStorePaths(),
+          });
+        }
+        break;
+      }
+
+      // ---- devices this computer knows ----------------------------------
+      //
+      // The console pairs, renames and revokes phones. Local devices live in the
+      // agent's own registry; relay devices are the relay's, and the server hands
+      // both through one facade so the UI does not care which side owns a row.
+
+      case C2S.DEVICES_LIST: {
+        if (!ctx.deviceAdmin) {
+          send(S2C.ERROR, { code: 'devices_unavailable', message: '这个代理版本还不支持设备管理' });
+          break;
+        }
+        try {
+          send(S2C.DEVICES, { devices: await ctx.deviceAdmin.list() });
+        } catch (err) {
+          send(S2C.ERROR, { code: 'devices_failed', message: String(err?.message ?? err) });
+        }
+        break;
+      }
+
+      case C2S.DEVICE_RENAME:
+      case C2S.DEVICE_REVOKE:
+      case C2S.DEVICE_REMOVE: {
+        if (!ctx.deviceAdmin) {
+          send(S2C.ERROR, { code: 'devices_unavailable', message: '这个代理版本还不支持设备管理' });
+          break;
+        }
+        const action = frame.type === C2S.DEVICE_RENAME
+          ? 'rename'
+          : (frame.type === C2S.DEVICE_REVOKE ? 'revoke' : 'remove');
+        try {
+          const result = await ctx.deviceAdmin[action](String(frame.id ?? ''), frame.name);
+          send(S2C.ACTION_RESULT, {
+            action: `devices.${action}`,
+            target: String(frame.id ?? ''),
+            ...result,
+          });
+          if (result.ok) send(S2C.DEVICES, { devices: await ctx.deviceAdmin.list() });
+        } catch (err) {
+          send(S2C.ACTION_RESULT, {
+            action: `devices.${action}`,
+            target: String(frame.id ?? ''),
+            ok: false,
+            code: 'devices_failed',
+            message: String(err?.message ?? err),
+          });
+        }
+        break;
+      }
 
       case C2S.KERNEL_RUNS: {
         // Agents the person started themselves, in their own terminal. The agent
@@ -537,9 +642,15 @@ export function createFrameHandler(ctx) {
       case C2S.CODEX_APPLY: {
         const result = await applyProviderConfig({
           providerId: frame.providerId,
+          providerName: frame.providerName,
+          baseUrl: frame.baseUrl,
+          wireApi: frame.wireApi,
+          models: Array.isArray(frame.models) ? frame.models : undefined,
           model: frame.model,
           apiKey: frame.apiKey,
+          clearApiKey: frame.clearApiKey === true,
           reasoningEffort: frame.reasoningEffort,
+          reasoningLevels: Array.isArray(frame.reasoningLevels) ? frame.reasoningLevels : undefined,
           contextWindow: Number.isInteger(frame.contextWindow) ? frame.contextWindow : undefined,
         });
         send(S2C.ACTION_RESULT, {
@@ -708,6 +819,59 @@ export function createFrameHandler(ctx) {
         break;
       }
 
+      case C2S.SESSIONS_DELETE: {
+        try {
+          const result = await deleteSession({
+            engine: frame.engine,
+            id: frame.sessionId,
+            sessionPath: frame.path,
+          });
+          send(S2C.ACTION_RESULT, {
+            action: 'sessions.delete',
+            target: String(frame.sessionId ?? ''),
+            ...result,
+          });
+        } catch (err) {
+          send(S2C.ACTION_RESULT, {
+            action: 'sessions.delete',
+            target: String(frame.sessionId ?? ''),
+            ok: false,
+            code: 'delete_failed',
+            message: String(err?.message ?? err),
+          });
+        }
+        break;
+      }
+
+      case C2S.PATH_REVEAL: {
+        const target = String(frame.path ?? '').trim();
+        if (!target) {
+          actionFailure('path.reveal', '', { code: 'bad_path', message: '需要一个路径' });
+          break;
+        }
+        try {
+          // Detached and silent: this window should not own Explorer's lifetime,
+          // and a file manager that fails to start must not take the agent down.
+          const opener = process.platform === 'win32'
+            ? spawn('explorer.exe', [`/select,${target}`], { detached: true, stdio: 'ignore' })
+            : process.platform === 'darwin'
+              ? spawn('open', ['-R', target], { detached: true, stdio: 'ignore' })
+              : spawn('xdg-open', [path.dirname(target)], { detached: true, stdio: 'ignore' });
+          opener.on('error', () => {});
+          opener.unref();
+          send(S2C.ACTION_RESULT, {
+            action: 'path.reveal',
+            target,
+            ok: true,
+            code: 'revealed',
+            message: '已在电脑上打开所在位置',
+          });
+        } catch (error) {
+          actionFailure('path.reveal', target, { code: 'reveal_failed', message: String(error?.message ?? error) });
+        }
+        break;
+      }
+
       // ---- Unified chat pipeline (engine = dsh | codex) ----
       //
       // This is the product path for talking to an AI on the machine. Each
@@ -753,6 +917,16 @@ export function createFrameHandler(ctx) {
       }
 
       case C2S.CHAT_CREATE: {
+        // A disabled kernel is still installed, but the console turned it off on
+        // this machine; starting a chat on it would silently undo that choice.
+        const wanted = listKernels().find((item) => item.id === frame.engine);
+        if (wanted && wanted.enabled === false) {
+          actionFailure('chat.create', frame.engine, {
+            code: 'kernel_disabled',
+            message: `${wanted.label} 已在这台电脑禁用；先在控制台启用它`,
+          });
+          break;
+        }
         const result = chats.create({
           cwd: frame.cwd,
           provider: frame.provider,

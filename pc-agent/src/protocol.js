@@ -33,6 +33,14 @@ export const C2S = {
   TERM_CLOSE: 'term.close',
   TERM_LIST: 'term.list',
   KERNELS_LIST: 'kernels.list',
+  // Management, not just discovery: the console pairs, renames and revokes the
+  // phones this machine knows, and turns kernels on or off without uninstalling
+  // them.
+  DEVICES_LIST: 'devices.list',
+  DEVICE_RENAME: 'devices.rename',
+  DEVICE_REVOKE: 'devices.revoke',
+  DEVICE_REMOVE: 'devices.remove',
+  KERNELS_MANAGE: 'kernels.manage',
   // Agent processes running on this machine that THIS agent did not start. The
   // phone asks when it wants to show "what is actually running over there",
   // including the agents the person launched in their own terminal.
@@ -42,6 +50,11 @@ export const C2S = {
   CODEX_RESTORE: 'codex.restore',
   SESSIONS_LIST: 'sessions.list',
   SESSIONS_READ: 'sessions.read',
+  SESSIONS_DELETE: 'sessions.delete',
+  // Show a file the console is talking about in Explorer/Finder. A management
+  // window that names a path should be able to open it, and a browser tab
+  // cannot do that for a path on the PC.
+  PATH_REVEAL: 'path.reveal',
   CHAT_LIST: 'chat.list',
   CHAT_CREATE: 'chat.create',
   CHAT_RESUME: 'chat.resume',
@@ -94,6 +107,7 @@ export const S2C = {
   TERM_EXIT: 'term.exit',
   TERM_LIST: 'term.list',
   KERNELS: 'kernels',
+  DEVICES: 'devices',
   // What is running on the PC that this agent did not start, so the phone can
   // show it instead of only showing conversations the agent itself created.
   KERNEL_RUNS: 'kernels.runs',

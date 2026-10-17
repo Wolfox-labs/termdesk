@@ -454,8 +454,8 @@ fun ChatSection(
                             GroupedSessionList(
                                 chats = visibleChats,
                                 sessions = emptyList(),
-                                emptyTitle = "还没有进行中的对话",
-                                emptyHint = "在 $defaultCwd 中新建一个，就能在手机上和电脑里的助手连续对话。",
+                                emptyTitle = "暂无进行中的会话",
+                                emptyHint = "工作目录：$defaultCwd",
                                 onOpenChat = onOpenChat,
                                 onCloseChat = onCloseChat,
                                 onOpenSession = onOpenSession,
@@ -469,7 +469,7 @@ fun ChatSection(
                                 chats = visibleChats,
                                 sessions = visibleSessions,
                                 emptyTitle = "没有找到历史会话",
-                                emptyHint = "电脑上记录过的对话会出现在这里，点开即可阅读或继续。",
+                                emptyHint = "显示当前设备上的历史记录。",
                                 onOpenChat = onOpenChat,
                                 onCloseChat = onCloseChat,
                                 onOpenSession = onOpenSession,
@@ -504,7 +504,7 @@ fun ChatSection(
                     onClick = { deferredApproval = null },
                     modifier = Modifier.padding(bottom = 18.dp),
                 ) {
-                    Text("内核还在等你确认 · 点这里回答")
+                    Text("助手正在等待确认 · 查看请求")
                 }
             }
         } else {
@@ -603,7 +603,7 @@ private fun ApprovalDialog(
         // A visible way out, so the sentence above it is not a promise about a gesture nobody
         // can guess.
         dismissButton = {
-            TextButton(onClick = onDefer) { Text("稍后再说") }
+            TextButton(onClick = onDefer) { Text("稍后处理") }
         },
         containerColor = MaterialTheme.colorScheme.surfaceVariant,
     )
@@ -731,7 +731,7 @@ private fun ChatDetailPanel(
     val currentLabel = when {
         chat.model.isNotBlank() -> labelOf(chat.model)
         declaredCurrent != null -> labelOf(declaredCurrent)
-        else -> "内核默认"
+        else -> "默认"
     }
     val levels = remember(catalog, chat.model) {
         catalog.firstOrNull { it.slug == chat.model }?.reasoningLevels
@@ -751,7 +751,7 @@ private fun ChatDetailPanel(
             Spacer(Modifier.width(8.dp))
             Text(
                 text = buildString {
-                    append(chat.model.ifBlank { "内核默认模型" })
+                    append(chat.model.ifBlank { "默认模型" })
                     append(" · 思考 ")
                     append(chat.effort.ifBlank { "默认" })
                     when {
@@ -841,7 +841,7 @@ private fun ChatDetailPanel(
                 }
                 }
                 Text(
-                    modelIds.size.toString() + " 个可选 · 可搜索",
+                    modelIds.size.toString() + " 个模型",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -872,10 +872,10 @@ private fun ChatDetailPanel(
             val note = models?.note
             Text(
                 when {
-                    models == null && chat.engine != "codex" -> "正在读取这个内核的模型清单…"
+                    models == null && chat.engine != "codex" -> "正在读取模型列表…"
                     !note.isNullOrBlank() -> note
-                    chat.engine == "codex" -> "Codex 的模型清单见设置（models.json）"
-                    else -> "该内核没有声明模型清单，由它自己决定。"
+                    chat.engine == "codex" -> "模型列表需在 Codex 中配置。"
+                    else -> "此助手未提供模型列表。"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1380,9 +1380,9 @@ private fun Conversation(
     val chosenModelLabel = when {
         chat.model.isNotBlank() -> models?.labelOf(chat.model) ?: chat.model
         models?.current != null -> models.labelOf(models.current!!)
-        else -> "内核默认"
+        else -> "默认"
     }
-    val chosenModeLabel = chosenMode?.let { id -> modeOptions.firstOrNull { it.first == id }?.second ?: id } ?: "内核默认"
+    val chosenModeLabel = chosenMode?.let { id -> modeOptions.firstOrNull { it.first == id }?.second ?: id } ?: "默认"
     var modelPickerOpen by remember(chat.id) { mutableStateOf(false) }
     var modePickerOpen by remember(chat.id) { mutableStateOf(false) }
     // The file picked with `+`, once the PC has actually got it. The prompt then
@@ -1462,7 +1462,7 @@ private fun Conversation(
         Box(Modifier.weight(1f)) {
             if (events.isEmpty()) {
                 Text(
-                    "还没有内容。发一条消息开始对话。",
+                    "发送消息开始对话",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(16.dp),
@@ -1546,15 +1546,15 @@ private fun Conversation(
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surfaceVariant),
             ) {
-                SlashRow("模型", if (modelOptions.isEmpty()) "该内核没有模型清单" else chosenModelLabel, modelOptions.isNotEmpty()) {
+                SlashRow("模型", if (modelOptions.isEmpty()) "此助手未提供模型列表" else chosenModelLabel, modelOptions.isNotEmpty()) {
                     updateDraft("")
                     modelPickerOpen = true
                 }
-                SlashRow("权限模式", if (modeOptions.isEmpty()) "该内核没有权限开关" else chosenModeLabel, modeOptions.isNotEmpty()) {
+                SlashRow("权限模式", if (modeOptions.isEmpty()) "此助手不支持切换权限模式" else chosenModeLabel, modeOptions.isNotEmpty()) {
                     updateDraft("")
                     modePickerOpen = true
                 }
-                SlashRow("附件", "传到当前设备，随下一条消息发出", true) {
+                SlashRow("附件", "上传至当前设备，随消息发送", true) {
                     updateDraft("")
                     filePicker.launch(arrayOf("*/*"))
                 }
@@ -1713,7 +1713,7 @@ private fun Composer(
     Column(Modifier.fillMaxWidth()) {
         if (pendingCount > 0) {
             Text(
-                text = "待发 $pendingCount 条 · 连上就发",
+                text = "待发 $pendingCount 条 · 重连后自动发送",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 12.dp, top = 4.dp),
@@ -1740,7 +1740,7 @@ private fun Composer(
             value = draft,
             onValueChange = onDraftChange,
             modifier = Modifier.weight(1f),
-            placeholder = { Text("说点什么…", style = MaterialTheme.typography.bodyMedium) },
+            placeholder = { Text("输入消息", style = MaterialTheme.typography.bodyMedium) },
             textStyle = MaterialTheme.typography.bodyMedium,
             maxLines = 5,
             shape = RoundedCornerShape(11.dp),

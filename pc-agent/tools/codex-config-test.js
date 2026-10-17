@@ -138,6 +138,38 @@ try {
   check('honours a context-window override', ctx.ok && catalog3.models.every((m) => m.context_window === 65536),
     String(catalog3.models[0]?.context_window));
 
+  // --- a provider that is not a template ---
+  const customArgs = {
+    providerId: 'my-gateway',
+    providerName: 'My Gateway',
+    baseUrl: 'https://gw.example.com/v1',
+    wireApi: 'chat',
+    models: ['my-model'],
+    model: 'my-model',
+    reasoningLevels: ['low', 'high'],
+    contextWindow: 32768,
+  };
+  const custom = await applyProviderConfig(customArgs);
+  check('accepts a custom provider', custom.ok === true, custom.message);
+  const afterCustom = fs.readFileSync(CONFIG, 'utf8');
+  check('writes the custom base URL', /base_url\s*=\s*"https:\/\/gw\.example\.com\/v1"/.test(afterCustom));
+  check('writes the custom wire API', /wire_api\s*=\s*"chat"/.test(afterCustom));
+  check('selects the custom provider', /^model_provider\s*=\s*"my-gateway"/m.test(afterCustom));
+  check('keeps the template provider untouched', /\[model_providers\.deepseek\]/.test(afterCustom));
+  const customCatalog = JSON.parse(fs.readFileSync(path.join(SANDBOX, 'models.json'), 'utf8'));
+  check('catalog includes the custom model', customCatalog.models.some((m) => m.slug === 'my-model'));
+
+  const customKey = await applyProviderConfig({ ...customArgs, apiKey: 'gw-key-without-sk' });
+  check('custom keys are not prefix-checked', customKey.ok === true, customKey.message);
+  const cleared = await applyProviderConfig({ ...customArgs, clearApiKey: true });
+  check('clears the stored key on request', cleared.ok === true, cleared.message);
+  check('the cleared key is gone from the file', !/gw-key-without-sk/.test(fs.readFileSync(CONFIG, 'utf8')));
+
+  const badUrl = await applyProviderConfig({ ...customArgs, baseUrl: 'not-a-url' });
+  check('rejects a malformed base URL', badUrl.ok === false && badUrl.code === 'bad_base_url', badUrl.message);
+  const badModel = await applyProviderConfig({ ...customArgs, models: ['bad model'] });
+  check('rejects a malformed model slug', badModel.ok === false && badModel.code === 'bad_model', badModel.message);
+
   // --- backups ---
   const backups = await fsp.readdir(path.join(SANDBOX, 'termdesk-backups'));
   check('created backups before writing', backups.filter((b) => b.startsWith('config-')).length >= 2,

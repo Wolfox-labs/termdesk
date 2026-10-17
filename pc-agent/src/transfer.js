@@ -86,7 +86,7 @@ const TRANSFER_ROUTES = new Set([
 export async function handleTransferRequest(req, res, url, token) {
   if (!TRANSFER_ROUTES.has(url.pathname)) return false;
 
-  if (!tokenMatches(token, bearerToken(req))) {
+  if (!(typeof token === 'function' ? token(bearerToken(req)) : tokenMatches(token, bearerToken(req)))) {
     unauthorized(res);
     return true;
   }

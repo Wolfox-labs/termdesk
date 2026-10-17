@@ -12,6 +12,7 @@ import { encodeFrame } from '../src/protocol.js';
 import { buildCodexExecArgs, killProcessTree, findCodex } from '../src/engines.js';
 import { notificationToChatEvents, turnToChatEvents } from '../src/kernels/codex.js';
 import { ChatManager, CHAT_ENGINES } from '../src/chat.js';
+import { chatEngineIds } from '../src/kernels/registry.js';
 
 let passes = 0;
 let failures = 0;
@@ -27,7 +28,11 @@ function check(name, ok, detail = '') {
 
 // --- engine vocabulary -----------------------------------------------------
 
-check('CHAT_ENGINES is codex+dsh', CHAT_ENGINES.includes('codex') && CHAT_ENGINES.includes('dsh'),
+// CHAT_ENGINES is derived from the kernel table, so which engines are listed is
+// a property of THIS machine (DSH is absent until it is installed). The test
+// therefore pins the derivation, not a hard-coded brand list.
+check('CHAT_ENGINES is the registry\'s selectable list',
+  CHAT_ENGINES.join(',') === chatEngineIds().join(','),
   CHAT_ENGINES.join(','));
 // The task surface that used to be mirrored by ENGINES is gone: the kernel
 // table in kernels/registry.js is the only list now, and CHAT_ENGINES is
@@ -158,14 +163,23 @@ function assertSafeRecord(name, record) {
 
 {
   const mgr = new ChatManager();
+  const hasDsh = chatEngineIds().includes('dsh');
   try {
     const dsh = mgr.create({ title: 'default' });
-    check('create defaults to engine=dsh (compat)', dsh.ok === true && dsh.chat?.engine === 'dsh',
-      dsh.chat?.engine);
-    check('dsh chat summary carries engine', dsh.chat?.engine === 'dsh');
-    check('dsh chat still reports provider/model', Boolean(dsh.chat?.provider && dsh.chat?.model),
-      `${dsh.chat?.provider} / ${dsh.chat?.model}`);
-    check('new chat starts idle and not ready', dsh.chat?.status === 'idle' && dsh.chat?.ready === false);
+    if (hasDsh) {
+      check('create defaults to engine=dsh (compat)', dsh.ok === true && dsh.chat?.engine === 'dsh',
+        dsh.chat?.engine);
+      check('dsh chat summary carries engine', dsh.chat?.engine === 'dsh');
+      check('dsh chat still reports provider/model', Boolean(dsh.chat?.provider && dsh.chat?.model),
+        `${dsh.chat?.provider} / ${dsh.chat?.model}`);
+      check('new chat starts idle and not ready', dsh.chat?.status === 'idle' && dsh.chat?.ready === false);
+    } else {
+      // The compatibility default is still dsh, so on a machine without it the
+      // refusal is the honest answer - there is no silent fallback to another
+      // kernel that the caller never asked for.
+      check('without an engine, a machine without dsh refuses instead of guessing',
+        dsh.ok === false && dsh.code === 'bad_engine', dsh.message);
+    }
 
     const codex = mgr.create({ title: 'cx', engine: 'codex', provider: 'deepseek', model: 'deepseek-flash' });
     check('create accepts engine=codex', codex.ok === true && codex.chat?.engine === 'codex');
@@ -188,7 +202,8 @@ function assertSafeRecord(name, record) {
     check('chat detail reports engine', mgr.get(codex.chat.id)?.detail()?.engine === 'codex');
 
     // Transcript of a fresh chat must not smuggle a `type` field into items.
-    const detail = mgr.get(dsh.chat.id).detail();
+    const sample = (hasDsh ? dsh : codex).chat;
+    const detail = mgr.get(sample.id).detail();
     check('transcript items never carry type',
       detail.events.every((e) => e.type === undefined),
       detail.events.map((e) => e.kind).join(','));

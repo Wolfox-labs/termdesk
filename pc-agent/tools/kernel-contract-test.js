@@ -57,8 +57,6 @@ const EXPECTED = {
   mimo: { driver: 'acp', resume: true, live: false, cancel: 'close-session' },
   'command-code': { driver: 'acp', resume: true, live: false, cancel: 'close-session' },
   qoder: { driver: 'acp', resume: true, live: false, cancel: 'close-session' },
-  antigravity: { driver: 'none', resume: false, live: false, cancel: 'none' },
-  doubao: { driver: 'none', resume: false, live: false, cancel: 'none' },
 };
 
 for (const [id, want] of Object.entries(EXPECTED)) {

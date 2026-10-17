@@ -512,7 +512,7 @@ private fun SearchResultsList(
             Text(
                 text = buildString {
                     append("\u201c${results.query}\u201d 找到 ${results.items.size} 项")
-                    if (results.truncated) append(" · 已达上限，缩小关键词更准")
+                    if (results.truncated) append(" · 结果未全部显示，请缩小搜索范围")
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -593,7 +593,7 @@ private fun PathEditDialog(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "在电脑上打开这个目录。路径必须位于允许的根目录内。",
+                    "输入当前设备上的目录路径，需位于允许访问的目录内。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

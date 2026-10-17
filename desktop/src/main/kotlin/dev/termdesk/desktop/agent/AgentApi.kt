@@ -80,6 +80,10 @@ data class PairInfo(
     val hostname: String? = null,
     val port: Int? = null,
     val qr: QrGrid? = null,
+    /** Local pairing mints one phone; these say which one and until when. */
+    val token: String? = null,
+    val deviceId: String? = null,
+    val expiresAt: Long? = null,
 )
 
 /**

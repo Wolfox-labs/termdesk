@@ -14,8 +14,11 @@ import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.ChatTerminal
 import dev.termdesk.app.data.TerminalInfo
 import dev.termdesk.app.data.TerminalView
+import dev.termdesk.app.data.CodexApplyRequest
 import dev.termdesk.app.data.CodexConfig
+import dev.termdesk.app.data.CodexConfigClient
 import dev.termdesk.app.data.CodexProviderTemplate
+import dev.termdesk.app.data.CodexTargetState
 import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.LocalAgentState
@@ -126,19 +129,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun clearTerminal() = client.clearTerminal()
 
     // ---- Codex provider configuration ----
+    //
+    // This is the computer's config, never this phone's sandbox: the page opens its
+    // own short connection to the selected paired computer, so reading or writing
+    // it does not depend on where conversations currently run.
+    private val codex = CodexConfigClient(viewModelScope)
+    val codexTarget: StateFlow<CodexTargetState> = codex.state
+
+    /** Kept for the conversation's model picker, which asks the active agent. */
     val codexConfig: StateFlow<CodexConfig?> = client.codexConfig
     val codexTemplates: StateFlow<List<CodexProviderTemplate>> = client.codexTemplates
 
     fun loadCodexConfig() = client.loadCodexConfig()
-    fun applyCodexProvider(
-        providerId: String,
-        model: String,
-        apiKey: String?,
-        reasoningEffort: String?,
-        contextWindow: Long?,
-    ) = client.applyCodexProvider(providerId, model, apiKey, reasoningEffort, contextWindow)
 
-    fun restoreCodexBackup(name: String?) = client.restoreCodexBackup(name)
+    fun openCodexConfig() {
+        val active = computers.active() ?: return
+        selectCodexTarget(active.id)
+    }
+
+    fun selectCodexTarget(id: String) {
+        val target = computers.list().firstOrNull { it.id == id } ?: return
+        val token = computers.credentialFor(id)
+        if (token.isBlank()) {
+            codex.close()
+            client.reportLocalMessage("${target.name} 的凭据不在了，请重新配对")
+            return
+        }
+        codex.open(target, token, client.configClientId, client.configClientName)
+    }
+
+    fun closeCodexConfig() = codex.close()
+    fun reloadCodexConfig() = codex.reload()
+    fun applyCodexConfig(request: CodexApplyRequest) = codex.apply(request)
+    fun restoreCodexBackup(name: String?) = codex.restore(name)
 
     // ---- local kernel (the sandbox that runs on this phone) ----
 

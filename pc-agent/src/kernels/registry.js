@@ -269,22 +269,6 @@ function table() {
         ]);
       },
     },
-    {
-      id: 'antigravity',
-      label: 'Antigravity',
-      tier: 'unsupported',
-      transport: null,
-      detail: '只有图形界面与语言服务进程，没有可编程的会话接口',
-      resolve: (rejections) => fileOrNull(path.join(LOCAL_PROGRAMS, 'antigravity', 'Antigravity.exe')),
-    },
-    {
-      id: 'doubao',
-      label: '豆包',
-      tier: 'unsupported',
-      transport: null,
-      detail: '桌面聊天应用，未提供命令行或协议接口',
-      resolve: (rejections) => fileOrNull(path.join(os.homedir(), 'AppData', 'Local', 'Doubao', 'Application', 'Doubao.exe')),
-    },
   ];
 }
 
@@ -380,10 +364,193 @@ function fileKernels() {
   ].map((entry) => ({ ...entry, detail: '检测到本机接入配置中的助手' }));
 }
 
-function allEntries() {
-  const entries = [...table(), ...fileKernels(), ...envKernels(), ...envCliKernels()];
-  return [...new Map(entries.map((entry) => [entry.id, entry])).values()];
+/**
+ * A path the person chose for a kernel, kept beside the agent's own state.
+ *
+ * Auto-discovery is a guess about where an installer put something; it is a good
+ * guess and often wrong. Overriding the path is how a console fixes that without
+ * this project learning every vendor's install layout, and it is deliberately
+ * NOT an install: nothing is copied, downloaded or executed to record it.
+ */
+function kernelPathFile() {
+  return process.env.TERMDESK_KERNEL_PATHS || path.join(os.homedir(), '.termdesk', 'kernel-paths.json');
 }
+
+function kernelManifestDir() {
+  return process.env.TERMDESK_KERNEL_MANIFEST_DIR || path.join(os.homedir(), '.termdesk', 'kernels');
+}
+
+function readKernelPaths() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(kernelPathFile(), 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([id, value]) => typeof id === 'string' && typeof value === 'string' && value.trim()),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeKernelPaths(paths) {
+  const file = kernelPathFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, JSON.stringify(paths, null, 2) + '\n', { mode: 0o600 });
+}
+
+function allEntries() {
+  const overrides = readKernelPaths();
+  const entries = [...table(), ...fileKernels(), ...envKernels(), ...envCliKernels()];
+  const deduped = [...new Map(entries.map((entry) => [entry.id, entry])).values()];
+  return deduped.map((entry) => {
+    const override = overrides[entry.id];
+    if (!override) return entry;
+    return {
+      ...entry,
+      // Keep the discoverer around: the console offers "恢复自动检测", and that
+      // needs the answer the override replaced, not a second copy of the search.
+      pathOverride: override,
+      autoResolve: entry.resolve,
+      resolve: () => override,
+    };
+  });
+}
+
+// ---- management: enable/disable, register, remove ----------------------------
+//
+// The console is allowed to change what this machine offers without installing
+// or uninstalling the agent itself. Disabling is a local preference; registering
+// writes a manifest into the same directory fileKernels() already reads, so the
+// discovery path stays the single source of truth.
+
+function kernelStateFile() {
+  return process.env.TERMDESK_KERNEL_STATE || path.join(os.homedir(), '.termdesk', 'kernel-state.json');
+}
+
+function readKernelState() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(kernelStateFile(), 'utf8'));
+    return { disabled: Array.isArray(parsed?.disabled) ? parsed.disabled.filter((x) => typeof x === 'string') : [] };
+  } catch {
+    return { disabled: [] };
+  }
+}
+
+function writeKernelState(state) {
+  const file = kernelStateFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 });
+}
+
+export function setKernelEnabled(id, enabled) {
+  const known = allEntries().find((entry) => entry.id === id);
+  if (!known) return { ok: false, code: 'unknown_kernel', message: `没有这个内核："${id}"` };
+  const state = readKernelState();
+  const set = new Set(state.disabled);
+  if (enabled) set.delete(id); else set.add(id);
+  writeKernelState({ ...state, disabled: [...set] });
+  return { ok: true, code: enabled ? 'enabled' : 'disabled', message: enabled ? `已启用 ${known.label ?? id}` : `已禁用 ${known.label ?? id}（不会卸载它）` };
+}
+
+export function registerKernel(entry = {}) {
+  const id = String(entry.id ?? '').trim();
+  if (!/^[a-z0-9][a-z0-9_-]{1,40}$/.test(id)) {
+    return { ok: false, code: 'bad_id', message: '标识只能用小写字母、数字、_ 和 -，2–41 个字符' };
+  }
+  if (table().some((item) => item.id === id)) {
+    return { ok: false, code: 'builtin', message: `"${id}" 是内置内核，不能覆盖；换一个标识` };
+  }
+  const label = String(entry.label ?? '').trim();
+  const bin = String(entry.bin ?? '').trim();
+  if (!label) return { ok: false, code: 'bad_label', message: '需要名称' };
+  if (!bin) return { ok: false, code: 'bad_bin', message: '需要可执行文件路径或命令名' };
+  const args = Array.isArray(entry.args) ? entry.args.map((a) => String(a)) : [];
+  const transport = ['acp', 'cli'].includes(entry.transport) ? entry.transport : 'acp';
+  const manifest = {
+    id,
+    label,
+    bin,
+    args,
+    transport,
+    tier: transport === 'acp' ? 'acp' : 'shim',
+    detail: String(entry.detail ?? '由控制台注册').slice(0, 200),
+  };
+  const file = path.join(kernelManifestDir(), `${id}.json`);
+  if (fs.existsSync(file)) return { ok: false, code: 'exists', message: `已经有一个自定义内核叫 "${id}"` };
+  fs.mkdirSync(kernelManifestDir(), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 });
+  return { ok: true, code: 'registered', message: `已注册 ${label}`, manifest };
+}
+
+export function removeKernel(id) {
+  const file = path.join(kernelManifestDir(), `${id}.json`);
+  if (!fs.existsSync(file)) {
+    return { ok: false, code: 'not_custom', message: `"${id}" 不是控制台注册的内核；内置内核只能禁用` };
+  }
+  fs.rmSync(file, { force: true });
+  const state = readKernelState();
+  writeKernelState({ ...state, disabled: state.disabled.filter((x) => x !== id) });
+  return { ok: true, code: 'removed', message: `已移除自定义内核 ${id}` };
+}
+
+/**
+ * Point a kernel at another executable.
+ *
+ * Built-in kernels keep the answer as an override next to the agent's own state;
+ * a console-registered kernel keeps it in its own manifest, because the manifest
+ * IS its definition. Validation is the same check discovery uses, so a path that
+ * is saved is a path that can actually be spawned.
+ */
+export function setKernelPath(id, value) {
+  const entry = allEntries().find((item) => item.id === id);
+  if (!entry) return { ok: false, code: 'unknown_kernel', message: `没有这个内核："${id}"` };
+  const target = String(value ?? '').trim();
+  if (!target) return { ok: false, code: 'bad_path', message: '路径不能为空' };
+  if (!path.isAbsolute(target)) {
+    return { ok: false, code: 'bad_path', message: '需要完整路径，例如 C:\\Program Files\\...\\codex.exe' };
+  }
+  const rejections = [];
+  const resolved = resolveExecutable(target, rejections);
+  if (!resolved) {
+    const why = rejections[0]?.reason ?? '这个路径不存在，或不是可执行文件';
+    return { ok: false, code: 'bad_path', message: why };
+  }
+  const manifest = path.join(kernelManifestDir(), `${id}.json`);
+  if (fs.existsSync(manifest)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+      fs.writeFileSync(manifest, JSON.stringify({ ...parsed, bin: resolved }, null, 2) + '\n', { mode: 0o600 });
+      return { ok: true, code: 'saved', message: `${entry.label ?? id} 改用 ${resolved}` };
+    } catch (error) {
+      return { ok: false, code: 'write_failed', message: `写不了清单：${error.message}` };
+    }
+  }
+  const paths = readKernelPaths();
+  paths[id] = resolved;
+  try {
+    writeKernelPaths(paths);
+  } catch (error) {
+    return { ok: false, code: 'write_failed', message: `写不了路径表：${error.message}` };
+  }
+  return { ok: true, code: 'saved', message: `${entry.label ?? id} 改用 ${resolved}（没有复制或安装任何文件）` };
+}
+
+/** Drop the override and go back to discovery. */
+export function clearKernelPath(id) {
+  const paths = readKernelPaths();
+  if (!(id in paths)) {
+    return { ok: false, code: 'no_override', message: '这个内核本来就用自动检测到的位置' };
+  }
+  delete paths[id];
+  writeKernelPaths(paths);
+  return { ok: true, code: 'cleared', message: '已恢复自动检测路径' };
+}
+
+/** Where management state lives, so the console can say it instead of implying it. */
+export function kernelStorePaths() {
+  return { paths: kernelPathFile(), manifests: kernelManifestDir(), state: kernelStateFile() };
+}
+
 
 /**
  * Resolved command for an entry: `{ bin, args, script }` or null when not
@@ -425,28 +592,58 @@ function shimVerified(entry) {
   return forced.includes(entry.id);
 }
 
-export function listKernels({ installedOnly = false } = {}) {
-  const descriptors = allEntries().map((entry) => {
+export function listKernels({ installedOnly = false, includeUnsupported = false } = {}) {
+  const disabled = new Set(readKernelState().disabled);
+  const customIds = new Set(fileKernels().map((entry) => entry.id));
+  const descriptors = allEntries()
+    // A desktop chat app with no programmable interface is not a kernel, and
+    // listing it in a console is how a list of "what can run here" stops being
+    // true. Nothing in the table is unsupported now; the filter stays for a
+    // manifest that declares it, so such an entry is never offered as a kernel.
+    .filter((entry) => includeUnsupported || entry.tier !== 'unsupported')
+    .map((entry) => {
     const rejections = [];
     const command = kernelCommand(entry, rejections);
     const manifest = manifestFor(entry);
     const available = Boolean(command);
+    const enabled = !disabled.has(entry.id);
+    // What discovery would have found, even when an override won: the console
+    // shows it beside the override so "恢复自动检测" is not a blind action.
+    const autoCommand = entry.pathOverride
+      ? kernelCommand({ ...entry, resolve: entry.autoResolve })
+      : null;
     return {
       id: entry.id,
       label: entry.label,
       tier: entry.tier,
       transport: entry.transport,
       available,
+      /** A local preference, not an install state: disabling hides it from chat
+       *  selection without uninstalling the agent. */
+      enabled,
+      /** Registered through the console (a manifest in ~/.termdesk/kernels). */
+      custom: customIds.has(entry.id),
+      /** True when the path below was chosen by hand instead of discovered. */
+      override: Boolean(entry.pathOverride),
+      /** Where discovery would look, kept for the "恢复自动检测" row. */
+      autoPath: entry.pathOverride ? (autoCommand?.script ?? autoCommand?.bin ?? null) : null,
       // A shim is selectable only once its manifest has been confirmed by a
       // real run: an unverified manifest is a guess about argv and about which
       // JSON key carries the answer, and offering it would be offering a kernel
       // that may well answer nothing.
-      selectable: available && (
+      selectable: available && enabled && (
         entry.tier === 'native' || entry.tier === 'acp' || (entry.tier === 'shim' && shimVerified(entry))
       ),
       path: command ? (command.script ?? command.bin) : null,
       args: command?.args ?? null,
-      detail: available ? entry.detail : (rejections[0] ? rejections[0].reason + '：' + rejections[0].path : (entry.tier === 'unsupported' ? '未安装' : '未在本机找到')),
+      /** The exact line this agent would spawn, so the console can copy it. */
+      command: (() => {
+        const spec = spawnSpec(entry.id);
+        if (!spec) return null;
+        const quote = (part) => (/\s/.test(part) ? `"${part}"` : part);
+        return [quote(spec.bin), ...spec.args.map(quote)].join(' ');
+      })(),
+      detail: !enabled ? '已在这台电脑禁用（可随时重新启用）' : (available ? entry.detail : (rejections[0] ? rejections[0].reason + '：' + rejections[0].path : (entry.tier === 'unsupported' ? '未安装' : '未在本机找到'))),
       shim: entry.shim ?? null,
       multiTurn: entry.tier === 'native' || entry.tier === 'acp' || (entry.tier === 'shim' && shimVerified(entry)),
       progress: entry.tier === 'native' || entry.tier === 'acp' || entry.tier === 'shim',
@@ -561,6 +758,47 @@ export async function probeKernels() {
     }
   }
   return out;
+}
+
+/**
+ * One kernel, re-read and — for ACP — actually asked to shake hands.
+ *
+ * This is what the console's "重新检测" does. A plain re-list only re-stats the
+ * same path; the interesting question after a path change or an update is
+ * whether the binary still speaks the protocol, so an ACP kernel is spawned
+ * through the same adapter a conversation would use.
+ */
+export async function probeKernel(id) {
+  const entry = allEntries().find((item) => item.id === id);
+  const descriptor = listKernels().find((k) => k.id === id);
+  if (!entry || !descriptor) return { ok: false, code: 'unknown_kernel', message: `没有这个内核："${id}"` };
+  if (!descriptor.available) return { ok: false, code: 'not_installed', message: descriptor.detail };
+  ACP_PROBE_CACHE.delete(id);
+  if (entry.tier !== 'acp') {
+    return {
+      ok: true,
+      code: 'detected',
+      message: `${descriptor.label}：找到 ${descriptor.path ?? descriptor.detail}`,
+      detail: descriptor.detail,
+    };
+  }
+  try {
+    const probe = await probeAcpKernel(entry);
+    ACP_PROBE_CACHE.set(id, { at: Date.now(), detail: probe.detail, acp: probe.caps });
+    return {
+      ok: true,
+      code: 'handshake',
+      message: `${descriptor.label} ${probe.detail}`,
+      detail: probe.detail,
+      acp: probe.caps,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'probe_failed',
+      message: `${descriptor.label} 握手失败：${String(error?.message ?? error).slice(0, 160)}`,
+    };
+  }
 }
 
 /**

@@ -68,8 +68,11 @@ import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.ChatTerminal
 import dev.termdesk.app.data.TerminalView
 import dev.termdesk.app.data.UploadedFile
+import dev.termdesk.app.data.CodexApplyRequest
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
+import dev.termdesk.app.data.CodexTargetState
+import dev.termdesk.app.data.PairedComputer
 import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.KernelRun
@@ -100,11 +103,27 @@ enum class Section(val label: String, val icon: ImageVector) {
     Settings("设置", Icons.Outlined.Settings),
 }
 
-/** Shared by navigation and transient feedback, so messages never cover tabs. */
+/**
+ * Shared by navigation and transient feedback, so messages never cover tabs.
+ *
+ * Settings is a focused, nested surface: its root and every sub-page hide the
+ * four destinations, and leaving Settings restores them on the normal rule.
+ * Kept free of composition state so the rule can be tested directly.
+ */
+internal fun navigationVisible(
+    section: Section,
+    conversationOpen: Boolean,
+    keyboardVisible: Boolean,
+): Boolean {
+    if (keyboardVisible) return false
+    if (section == Section.Settings) return false
+    return !(section == Section.Sessions && conversationOpen)
+}
+
 @Composable
 internal fun primaryNavigationVisible(section: Section, conversationOpen: Boolean): Boolean {
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
-    return !keyboardVisible && !(section == Section.Sessions && conversationOpen)
+    return navigationVisible(section, conversationOpen, keyboardVisible)
 }
 
 /**
@@ -161,8 +180,13 @@ fun AppShell(
     onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
     codexTemplates: List<CodexProviderTemplate>,
+    codexTarget: CodexTargetState,
+    codexTargets: List<PairedComputer>,
+    onOpenCodex: () -> Unit,
+    onCloseCodex: () -> Unit,
+    onSelectCodexTarget: (String) -> Unit,
     onCodexLoad: () -> Unit,
-    onCodexApply: (String, String, String?, String?, Long?) -> Unit,
+    onCodexApply: (CodexApplyRequest) -> Unit,
     onCodexRestore: (String?) -> Unit,
     defaultCwd: String,
     chats: List<ChatInfo>,
@@ -338,6 +362,11 @@ fun AppShell(
                     onClearUpload = onClearUpload,
                     onRequestChatModels = onRequestChatModels,
                     codexTemplates = codexTemplates,
+                    codexTarget = codexTarget,
+                    codexTargets = codexTargets,
+                    onOpenCodex = onOpenCodex,
+                    onCloseCodex = onCloseCodex,
+                    onSelectCodexTarget = onSelectCodexTarget,
                     onCodexLoad = onCodexLoad,
                     onCodexApply = onCodexApply,
                     onCodexRestore = onCodexRestore,
@@ -688,8 +717,13 @@ private fun SectionBody(
     onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
     codexTemplates: List<CodexProviderTemplate>,
+    codexTarget: CodexTargetState,
+    codexTargets: List<PairedComputer>,
+    onOpenCodex: () -> Unit,
+    onCloseCodex: () -> Unit,
+    onSelectCodexTarget: (String) -> Unit,
     onCodexLoad: () -> Unit,
-    onCodexApply: (String, String, String?, String?, Long?) -> Unit,
+    onCodexApply: (CodexApplyRequest) -> Unit,
     onCodexRestore: (String?) -> Unit,
     // P4
     defaultCwd: String,
@@ -840,9 +874,9 @@ private fun SectionBody(
             onClose = onTermClose,
         )
         Section.Sessions -> if (sessionsShowLocalGate(section, kernelTarget, engines)) LocalKernelNotice(
-            title = "本地内核",
-            reason = "沙盒里还没有可用的 agent 内核：装上 opencode / dsh 之类任何一个，会话就能在这里跑起来",
-            actionLabel = "切回这台电脑",
+            title = "手机上暂无可用助手",
+            reason = "需先在手机上安装兼容的助手并配置账号和模型。也可切换到远程电脑。",
+            actionLabel = "切换到远程电脑",
             onAction = { onSetKernelTarget("remote") },
         ) else ChatSection(
             chats = chats,
@@ -898,8 +932,8 @@ private fun SectionBody(
         Section.Settings -> SettingsSection(
             kernelTarget = kernelTarget,
             onSetKernelTarget = onSetKernelTarget,
-            config = codexConfig,
-            templates = codexTemplates,
+            codex = codexTarget,
+            targets = codexTargets,
             themeMode = themeMode,
             onThemeModeChange = onThemeModeChange,
             engines = engines,
@@ -916,6 +950,9 @@ private fun SectionBody(
             onLoad = onCodexLoad,
             onApply = onCodexApply,
             onRestore = onCodexRestore,
+            onOpen = onOpenCodex,
+            onClose = onCloseCodex,
+            onSelectTarget = onSelectCodexTarget,
         )
     }
 }

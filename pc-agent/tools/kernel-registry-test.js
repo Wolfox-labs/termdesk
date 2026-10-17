@@ -5,7 +5,21 @@
  *
  *   node tools/kernel-registry-test.js
  */
-import { listKernels, chatEngineIds, spawnSpec, kernelTier, isAcpKernel, isCliKernel, shimSpec } from '../src/kernels/registry.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import {
+  listKernels,
+  chatEngineIds,
+  spawnSpec,
+  kernelTier,
+  isAcpKernel,
+  isCliKernel,
+  shimSpec,
+  setKernelPath,
+  clearKernelPath,
+} from '../src/kernels/registry.js';
 import { CHAT_ENGINES, ChatManager } from '../src/chat.js';
 
 const results = [];
@@ -95,6 +109,38 @@ check('the refusal explains the tier', String(refused.message).includes('shim'),
 const unknown = manager.create({ engine: 'nope' });
 check('chat.create refuses an unknown engine', unknown.ok === false && unknown.code === 'bad_engine');
 manager.disposeAll();
+
+// ---- path overrides ---------------------------------------------------------
+//
+// The console may point a kernel at another executable. That choice is a local
+// override, not an install, and it must be reversible: discovery's own answer is
+// kept so "恢复自动检测" is one call away.
+{
+  const file = path.join(os.tmpdir(), `termdesk-kernel-paths-${process.pid}-${Date.now()}.json`);
+  process.env.TERMDESK_KERNEL_PATHS = file;
+  try {
+    const before = listKernels().find((k) => k.id === 'codex');
+    const original = before?.path;
+    const saved = setKernelPath('codex', process.execPath);
+    check('setKernelPath saves an existing executable', saved.ok === true, saved.message);
+    const overridden = listKernels().find((k) => k.id === 'codex');
+    check('the descriptor reports the override and keeps the discovered path',
+      overridden?.override === true && overridden?.autoPath === original,
+      JSON.stringify({ override: overridden?.override, autoPath: overridden?.autoPath }));
+    const relative = setKernelPath('codex', 'node.exe');
+    check('a relative path is refused', relative.ok === false && relative.code === 'bad_path', relative.message);
+    const missing = setKernelPath('codex', path.join(os.tmpdir(), 'definitely-not-here.exe'));
+    check('a missing file is refused', missing.ok === false && missing.code === 'bad_path', missing.message);
+    const cleared = clearKernelPath('codex');
+    check('clearKernelPath restores discovery', cleared.ok === true, cleared.message);
+    check('the path is the discovered one again',
+      listKernels().find((k) => k.id === 'codex')?.path === original,
+      listKernels().find((k) => k.id === 'codex')?.path);
+  } finally {
+    delete process.env.TERMDESK_KERNEL_PATHS;
+    fs.rmSync(file, { force: true });
+  }
+}
 
 const failures = results.filter((r) => !r.passed).length;
 console.log(`\nRegistry: ${results.length - failures}/${results.length} passed`);

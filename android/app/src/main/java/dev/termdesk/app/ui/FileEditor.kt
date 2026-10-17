@@ -157,7 +157,7 @@ fun FileEditor(
         AlertDialog(
             onDismissRequest = { askBeforeLeaving = false },
             title = { Text("还有未保存的修改") },
-            text = { Text("离开这些修改就没了。要保存吗？", style = MaterialTheme.typography.bodyMedium) },
+            text = { Text("离开前是否保存修改？", style = MaterialTheme.typography.bodyMedium) },
             confirmButton = {
                 TextButton(onClick = {
                     askBeforeLeaving = false
@@ -171,7 +171,7 @@ fun FileEditor(
             // which is a decision, unlike the silence this replaces.
             dismissButton = {
                 Row {
-                    TextButton(onClick = { askBeforeLeaving = false }) { Text("取消") }
+                    TextButton(onClick = { askBeforeLeaving = false }) { Text("继续编辑") }
                     TextButton(onClick = {
                         askBeforeLeaving = false
                         onClose()

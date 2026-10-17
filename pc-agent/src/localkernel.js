@@ -67,7 +67,7 @@ export function readLocalKernel() {
 /** Handle the two routes. Returns true when the request was handled. */
 export function handleLocalKernelRequest(req, res, url, token) {
   if (!LOCAL_KERNEL_ROUTES.has(url.pathname)) return false;
-  if (!tokenMatches(token, bearerToken(req))) {
+  if (!(typeof token === 'function' ? token(bearerToken(req)) : tokenMatches(token, bearerToken(req)))) {
     json(res, 401, { ok: false, code: 'unauthorized', message: '缺少或错误的令牌' });
     return true;
   }

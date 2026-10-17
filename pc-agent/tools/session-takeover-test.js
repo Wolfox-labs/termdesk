@@ -30,6 +30,10 @@ const check = (name, passed, detail = '') => {
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'termdesk-takeover-'));
 process.env.TERMDESK_DSH_DIR = path.join(tmp, 'dsh');
 process.env.TERMDESK_CODEX_DIR = path.join(tmp, 'codex');
+// These cases inspect resume decisions and held objects only; neither runtime
+// is launched. Their availability must not depend on assistants installed on the host.
+process.env.TERMDESK_DSH = process.execPath;
+process.env.TERMDESK_CODEX = process.execPath;
 
 // One DSH session in the legacy name and one in the v4 name, so both are covered.
 const wsDir = path.join(process.env.TERMDESK_DSH_DIR, 'sessions', '--C-Users-someone-Wrk--');

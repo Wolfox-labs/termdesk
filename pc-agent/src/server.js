@@ -23,20 +23,21 @@ import { WebSocketServer } from 'ws';
 import { C2S, S2C, CLOSE_UNAUTHORIZED, parseFrame, encodeFrame, PROTOCOL_VERSION } from './protocol.js';
 import { judgeClientVersion } from './version.js';
 import { connectionCandidates, describeCandidates } from './fallback.js';
-import { loadOrCreateToken, tokenMatches, tokenPath } from './auth.js';
+import { loadOrCreateToken, tokenPath } from './auth.js';
 import { allowedRoots } from './files.js';
 import { handleTransferRequest } from './transfer.js';
 import { handleLocalKernelRequest } from './localkernel.js';
 import { TerminalManager } from './terminal.js';
 import { listKernels, probeKernels } from './kernels/registry.js';
 import { ChatManager } from './chat.js';
-import { ChatContinuity } from './chat/continuity.js';
+import { ChatContinuity, ownerForResponse } from './chat/continuity.js';
 import { Notifier } from './notify.js';
 import { loadRelayConfig, startRelayConnector } from './relay-client.js';
 import { Tunnel, findCloudflared, findTunnelConfig, verifyOwnAgent } from './tunnel.js';
 import { choosePairingUrl, devicesPage, pairPage, pairPayload, pairingUrlReason, qrMatrix, qrTerminal } from './pair.js';
 import { createFrameHandler, pushStatusFrame } from './handlers.js';
 import { reapOrphans, describeReap } from './spawnledger.js';
+import { DeviceRegistry } from './devices.js';
 
 const DEFAULT_PORT = 7420;
 /** Cap inbound frames: file writes are the largest legitimate payload (~2 MB text). */
@@ -113,16 +114,71 @@ const notifier = new Notifier({ log: (line) => console.log(line) });
 const chats = new ChatManager({ notifier });
 const continuity = new ChatContinuity();
 
-/**
- * The socket currently receiving streamed terminal/engine/chat frames.
- *
- * Only one client is routed at a time ("last authenticated client wins"), and a
- * socket may only detach routing if it is still that client. Without this
- * check, any connection that closes — a rejected token, a port scan, a phone
- * reconnecting — would silently tear down routing for the healthy client and
- * its live output would stop arriving with no error anywhere.
- */
-let routedSocket = null;
+/** Authenticated connections share event sources, never each other's write authority. */
+const connectedClients = new Map();
+const chatFrameTypes = {
+  'chat.event': S2C.CHAT_EVENT, 'chat.status': S2C.CHAT_STATUS,
+  'chat.turn': S2C.CHAT_TURN, 'chat.closed': S2C.CHAT_CLOSED,
+  'chat.approval': S2C.CHAT_APPROVAL, 'chat.terminals': S2C.CHAT_TERMINALS,
+  'chat.terminal.output': S2C.CHAT_TERMINAL_OUTPUT, 'chat.terminal.input': S2C.CHAT_TERMINAL_INPUT,
+};
+
+function broadcast(type, payload, accepts = () => true) {
+  let sent = 0;
+  for (const [socket, client] of connectedClients) {
+    if (socket.readyState !== socket.OPEN || !accepts(client)) continue;
+    try {
+      const body = type === S2C.CHATS ? {
+        ...payload,
+        chats: payload.chats.map((chat) => ({ ...chat, ownership: ownerForResponse(chat.id, continuity, client.identity) })),
+      } : payload;
+      client.send(type, body);
+      sent += 1;
+    } catch { /* One failed connection cannot interrupt other subscribers. */ }
+  }
+  return sent;
+}
+
+function attachStreams() {
+  chats.attach(({ event, ...payload }) => {
+    const terminalEvent = event.startsWith('chat.terminal');
+    broadcast(chatFrameTypes[event] ?? S2C.CHAT_EVENT, payload,
+      (client) => !terminalEvent || client.chatTerminals.has(payload.chatId));
+    if (['chat.status', 'chat.turn', 'chat.closed'].includes(event)) pushChats();
+  });
+  terminals.attach((sessionId, text, stream) => {
+    broadcast(S2C.TERM_OUTPUT, { sessionId, text, stream }, (client) => client.terminalId === sessionId);
+  });
+  // Desktop observations must not consume or replace the phone's notification path.
+  notifier.attach((payload) => {
+    if (!broadcast(S2C.NOTIFY, payload, (client) => client.identity.clientKind !== 'desktop')) {
+      throw new Error('No notification subscriber');
+    }
+  });
+}
+
+function removeClient(socket) {
+  if (!connectedClients.delete(socket)) return;
+  chats.terminalWatch.clear();
+  for (const client of connectedClients.values()) {
+    for (const id of client.chatTerminals) chats.terminalWatch.add(id);
+  }
+  if (connectedClients.size === 0) {
+    terminals.detach();
+    chats.detach();
+    notifier.detach();
+  }
+}
+
+function disconnectCredential(credentialId) {
+  for (const [socket, client] of connectedClients) {
+    if (client.credentialId !== credentialId) continue;
+    // Remove authority synchronously, before the asynchronous close handshake.
+    removeClient(socket);
+    client.send(S2C.AUTH_FAIL, { code: 'device_revoked', reason: 'device revoked' });
+    socket.close(CLOSE_UNAUTHORIZED, 'device revoked');
+  }
+}
 
 function parseArgs(argv) {
   const args = { port: DEFAULT_PORT, host: '0.0.0.0', showToken: false, tunnel: false, local: false };
@@ -382,6 +438,15 @@ const startedAt = Date.now();
 const args = parseArgs(process.argv.slice(2));
 const token = loadOrCreateToken();
 
+/**
+ * The phones this machine has paired locally.
+ *
+ * The master token still works (it is the legacy device), but a new pairing now
+ * mints one secret per phone, so the console can rename or revoke exactly one
+ * phone without invalidating every other pairing.
+ */
+const deviceRegistry = new DeviceRegistry({ masterToken: token });
+
 if (args.showToken) {
   console.log(token);
   console.log(`(also stored at ${tokenPath()})`);
@@ -564,23 +629,28 @@ const server = http.createServer((req, res) => {
       const revoke = url.searchParams.get('revoke');
       const remove = url.searchParams.get('remove');
       let status = null;
-      if (revoke && relayConnector) {
+      if (revoke) {
         try {
-          await relayConnector.revoke(revoke);
-          status = '已吊销这台手机：它下次连接会被拒绝，其他手机不受影响。';
+          status = (await deviceAdmin.revoke(revoke)).message;
         } catch (err) {
           status = '吊销失败：' + String(err?.message ?? err);
         }
       }
-      if (remove && relayConnector) {
+      if (remove) {
         try {
-          await relayConnector.remove(remove);
-          status = '已从名单里移除。如果那台手机还留着凭据，它下次连接会被拒绝。';
+          status = (await deviceAdmin.remove(remove)).message;
         } catch (err) {
           status = '移除失败：' + String(err?.message ?? err);
         }
       }
-      const devices = relayConnector ? await relayConnector.devices().catch(() => []) : [];
+      // The console wants one list. Local pairings live in this machine's own
+      // registry; relay pairings live on the relay. `source` says which side can
+      // revoke a row, so the UI never guesses.
+      const local = deviceRegistry.list().map((d) => ({ ...d, source: 'local' }));
+      const relay = relayConnector
+        ? (await relayConnector.devices().catch(() => [])).map((d) => ({ ...d, source: 'relay' }))
+        : [];
+      const devices = [...local, ...relay];
       if (url.pathname === '/devices.json') {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({
@@ -669,7 +739,10 @@ const server = http.createServer((req, res) => {
         tunnelIsOurs: publicVerdict.url === tunnel.url && publicVerdict.ours,
         lanUrls: localAddresses().map((a) => `ws://${a}:${args.port}`),
       });
-      const payload = pairPayload({ wsUrl, token, name: os.hostname() });
+      // Each scan mints one phone, not a copy of the machine key. The registry
+      // record is what the console lists, renames and revokes later.
+      const phone = deviceRegistry.register({ name: '待命名手机' });
+      const payload = pairPayload({ wsUrl, token: phone.secret, name: os.hostname() });
       if (url.pathname === '/pair.json') {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
@@ -678,7 +751,8 @@ const server = http.createServer((req, res) => {
           urlReason,
           relayError: relayPairError,
           publicDetail: publicVerdict.detail,
-          token,
+          token: phone.secret,
+          deviceId: phone.id,
           payload,
           tunnel: status,
           cloudflared: findCloudflared(),
@@ -697,7 +771,7 @@ const server = http.createServer((req, res) => {
       const html = await pairPage({
         payload,
         wsUrl,
-        token,
+        token: phone.secret,
         tunnel: status,
         urlReason,
         relayError: relayPairError,
@@ -724,10 +798,11 @@ const server = http.createServer((req, res) => {
     return;
   }
   // The local kernel payload is a transfer too: same token, same surface.
-  const kernelHandled = handleLocalKernelRequest(req, res, url, token);
+  const verifyCredential = (presented) => Boolean(deviceRegistry.verify(presented, { address: req.socket.remoteAddress }));
+  const kernelHandled = handleLocalKernelRequest(req, res, url, verifyCredential);
   if (kernelHandled) return;
 
-  handleTransferRequest(req, res, url, token).then((handled) => {
+  handleTransferRequest(req, res, url, verifyCredential).then((handled) => {
     if (!handled) {
       res.writeHead(404, { 'content-type': 'text/plain' });
       res.end('not found\n');
@@ -740,6 +815,69 @@ const server = http.createServer((req, res) => {
   });
 });
 
+/**
+ * One facade over the two places a phone can live: this machine's registry and
+ * the relay's list. Each result says which side owns the row, so a UI does not
+ * offer "revoke" on a record the relay will ignore.
+ */
+const deviceAdmin = {
+  async list() {
+    const local = deviceRegistry.list().map((d) => ({ ...d, source: 'local' }));
+    const relay = relayConnector
+      ? (await relayConnector.devices().catch(() => [])).map((d) => ({ ...d, source: 'relay' }))
+      : [];
+    return [...local, ...relay];
+  },
+
+  async rename(id, name) {
+    const trimmed = String(name ?? '').trim();
+    if (!trimmed) return { ok: false, code: 'bad_name', message: '名称不能为空' };
+    const renamed = deviceRegistry.rename(String(id ?? ''), trimmed);
+    if (renamed) return { ok: true, code: 'renamed', message: `已重命名为 ${renamed.name}` };
+    if (String(id).startsWith('d-')) return { ok: false, code: 'not_found', message: '这台电脑上没有这个设备' };
+    return { ok: false, code: 'not_local', message: '只有本机登记的设备可以改名；中转设备的名称由中转维护' };
+  },
+
+  async revoke(id) {
+    if (String(id) === 'legacy') {
+      return { ok: false, code: 'legacy', message: '这是这台电脑的旧版令牌，不能单独吊销；更换令牌会让所有旧配对失效' };
+    }
+    const revoked = deviceRegistry.revoke(String(id ?? ''));
+    if (revoked) {
+      disconnectCredential(String(id));
+      return { ok: true, code: 'revoked', message: `已吊销 ${revoked.name}，现有连接已断开` };
+    }
+    if (relayConnector) {
+      try {
+        await relayConnector.revoke(String(id ?? ''));
+        return { ok: true, code: 'revoked', message: '已在中转上吊销这台手机' };
+      } catch (err) {
+        return { ok: false, code: 'relay_failed', message: String(err?.message ?? err) };
+      }
+    }
+    return { ok: false, code: 'not_found', message: '没有这个设备' };
+  },
+
+  async remove(id) {
+    if (String(id) === 'legacy') {
+      return { ok: false, code: 'legacy', message: '旧版令牌的记录不能删除；它代表这台电脑的原始令牌' };
+    }
+    if (deviceRegistry.remove(String(id ?? ''))) {
+      disconnectCredential(String(id));
+      return { ok: true, code: 'removed', message: '已从本机名单删除' };
+    }
+    if (relayConnector) {
+      try {
+        await relayConnector.remove(String(id ?? ''));
+        return { ok: true, code: 'removed', message: '已从中转名单删除' };
+      } catch (err) {
+        return { ok: false, code: 'relay_failed', message: String(err?.message ?? err) };
+      }
+    }
+    return { ok: false, code: 'not_found', message: '没有这个设备' };
+  },
+};
+
 const wss = new WebSocketServer({ server, maxPayload: MAX_FRAME_BYTES });
 
 wss.on('connection', (socket, req) => {
@@ -747,6 +885,7 @@ wss.on('connection', (socket, req) => {
   let authed = false;
   let statusTimer = null;
   const identity = { deviceId: '', deviceName: '', clientKind: '' };
+  const client = { identity, credentialId: null, terminalId: null, chatTerminals: new Set(), send: null };
 
   // Second factor (P5-3): reject the upgrade before any frame is processed.
   const upgradeUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -756,8 +895,11 @@ wss.on('connection', (socket, req) => {
   }
 
   const send = (type, payload) => {
+    if (type === S2C.TERM_OPENED) client.terminalId = payload.sessionId;
+    if (type === S2C.CHAT_TERMINALS || type === S2C.CHAT_TERMINAL) client.chatTerminals.add(payload.chatId);
     if (socket.readyState === socket.OPEN) socket.send(encodeFrame(type, payload));
   };
+  client.send = send;
 
   const stopStatus = () => {
     if (statusTimer !== null) {
@@ -783,6 +925,8 @@ wss.on('connection', (socket, req) => {
     chats,
     continuity,
     identity,
+    deviceAdmin,
+    terminalOutputManaged: true,
     // So the phone can confirm what it received; unconfirmed entries are re-sent.
     notifier,
     pushStatus,
@@ -817,6 +961,10 @@ wss.on('connection', (socket, req) => {
   }, 10_000);
 
   socket.on('message', async (raw, isBinary) => {
+    if (authed && !connectedClients.has(socket)) {
+      socket.close(CLOSE_UNAUTHORIZED, 'device revoked');
+      return;
+    }
     if (isBinary) {
       send(S2C.ERROR, { code: 'unsupported', message: 'binary frames are not supported' });
       return;
@@ -848,7 +996,10 @@ wss.on('connection', (socket, req) => {
         socket.close(CLOSE_UNAUTHORIZED, 'unauthenticated');
         return;
       }
-      if (!tokenMatches(token, frame.token)) {
+      // One secret per phone (plus the legacy master token): the registry both
+      // authenticates and says which device this is.
+      const verified = deviceRegistry.verify(frame.token, { address: peer });
+      if (!verified) {
         send(S2C.AUTH_FAIL, { reason: 'invalid token' });
         noteAuthFailure();
         clearTimeout(authTimer);
@@ -857,7 +1008,9 @@ wss.on('connection', (socket, req) => {
       }
       authed = true;
       Object.assign(identity, {
-        deviceId: typeof frame.deviceId === 'string' && frame.deviceId.trim() ? frame.deviceId.trim() : 'legacy:' + peer,
+        deviceId: verified.legacy && typeof frame.deviceId === 'string' && frame.deviceId.trim()
+          ? frame.deviceId.trim()
+          : (verified.id || 'legacy:' + peer),
         deviceName: typeof frame.deviceName === 'string' && frame.deviceName.trim() ? frame.deviceName.trim() : (frame.clientKind === 'android' ? '手机' : '桌面端'),
         clientKind: typeof frame.clientKind === 'string' && frame.clientKind.trim() ? frame.clientKind.trim() : 'legacy',
       });
@@ -894,64 +1047,24 @@ wss.on('connection', (socket, req) => {
         capabilities: ['chat.sync', 'chat.ownership'],
       });
       send(S2C.HELLO, { hostname: os.hostname(), platform: `${os.platform()} ${os.release()}` });
-      routedSocket = socket;
-      // Notifications follow the same rule as everything else streamed: the last
-      // authenticated client is the one being told things. Anything that happened while
-      // nobody was attached is delivered now, marked `whileAway` so the phone can say so
-      // rather than pretending it just happened.
-      notifier.attach((payload) => {
-        if (socket.readyState !== socket.OPEN) throw new Error('socket is not open');
-        socket.send(encodeFrame(S2C.NOTIFY, payload));
-      });
-      // Said once per connection on both sides: whether the phone was attached at the
-      // moment something happened is the first thing to establish when a notification
-      // does not show up, and neither side can see the other's half.
-      console.log('[termdesk] notify 路由：手机已连上，之后的动态直接送');
-      notifier.deliver((payload) => {
-        if (socket.readyState !== socket.OPEN) throw new Error('socket is not open');
-        socket.send(encodeFrame(S2C.NOTIFY, payload));
-      });
-      // Chat frames carry their own type names: a chat has four distinct
-      // stream kinds (event/status/turn/closed).
-      chats.attach((payload) => {
-        if (socket.readyState !== socket.OPEN) return;
-        const { event, ...rest } = payload;
-        const type = S2C[{
-          'chat.event': 'CHAT_EVENT',
-          'chat.status': 'CHAT_STATUS',
-          'chat.turn': 'CHAT_TURN',
-          'chat.closed': 'CHAT_CLOSED',
-          'chat.approval': 'CHAT_APPROVAL',
-          // A conversation's command lines stream under their own names, so the
-          // phone can tell a terminal that changed apart from a transcript item.
-          'chat.terminals': 'CHAT_TERMINALS',
-          'chat.terminal.output': 'CHAT_TERMINAL_OUTPUT',
-          'chat.terminal.input': 'CHAT_TERMINAL_INPUT',
-        }[event]] ?? S2C.CHAT_EVENT;
-        socket.send(encodeFrame(type, rest));
-      });
+      client.credentialId = verified.id;
+      connectedClients.set(socket, client);
+      if (connectedClients.size === 1) attachStreams();
+      if (identity.clientKind !== 'desktop') {
+        notifier.deliver((payload) => send(S2C.NOTIFY, payload));
+      }
       return;
     }
 
+    if (frame.type === C2S.NOTIFY_ACK && identity.clientKind === 'desktop') return;
     await handleFrame(frame);
+    if ([C2S.CHAT_CREATE, C2S.CHAT_RESUME, C2S.CHAT_CLAIM, C2S.CHAT_RELEASE, C2S.CHAT_CLOSE].includes(frame.type)) pushChats();
   });
 
   socket.on('close', () => {
     clearTimeout(authTimer);
     stopStatus();
-    // Only the client that currently owns routing may release it. A rejected or
-    // superseded socket must not detach the live client's streams.
-    if (routedSocket === socket) {
-      routedSocket = null;
-      // Stop routing output to a socket that no longer exists; the sessions
-      // themselves stay alive so a reconnect keeps its scrollback.
-      terminals.detach();
-      chats.detach();
-      // From here on, news is held instead of sent — which is the case a notification
-      // exists for: the phone is away when the work finishes.
-      notifier.detach();
-      console.log('[termdesk] notify 路由：手机断开，之后的动态暂存到它回来');
-    }
+    removeClient(socket);
   });
 
   socket.on('error', (err) => {
@@ -1007,11 +1120,10 @@ wss.on('error', onListenError);
  * list while a chat exists on the PC.
  */
 function pushChats() {
-  if (!routedSocket || routedSocket.readyState !== routedSocket.OPEN) return;
-  routedSocket.send(encodeFrame(S2C.CHATS, {
+  broadcast(S2C.CHATS, {
     chats: chats.list(),
     approvals: chats.approvals.pending(),
-  }));
+  });
 }
 
 let relayConnector = null;

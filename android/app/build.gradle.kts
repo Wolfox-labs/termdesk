@@ -92,8 +92,8 @@ android {
         // knowingly. Set TERMDESK_MODERN_TARGET_SDK=1 to build at 35 instead,
         // which gives up the local kernel and keeps everything else.
         targetSdk = if (System.getenv("TERMDESK_MODERN_TARGET_SDK") == "1") 35 else 28
-        versionCode = 8
-        versionName = "0.33.0-demo.2"
+        versionCode = 10
+        versionName = "1.0.0"
     }
 
     /**
@@ -102,7 +102,7 @@ android {
      * `~/.termdesk/keystore/termdesk-release.properties` names the keystore and
      * its passwords; nothing secret is committed. Without that file a release
      * build would come out unsigned — an APK nobody can install — so the build
-     * says so instead of producing one (see documents/打包与试用.md for how the
+     * says so instead of producing one (see documents/运行与开发.md for how the
      * key was made and why losing it matters).
      */
     val signingProps = file(

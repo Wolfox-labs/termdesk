@@ -67,15 +67,11 @@ fun HomeSection(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("继续你的工作", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("继续会话，也能处理文件和终端。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             BlockTitle("运行位置")
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 TargetChip("远程电脑", Icons.Outlined.Computer, !local, Modifier.weight(1f)) { onSetKernelTarget("remote") }
-                TargetChip("本机手机", Icons.Outlined.Smartphone, local, Modifier.weight(1f)) { onSetKernelTarget("local") }
+                TargetChip("这台手机", Icons.Outlined.Smartphone, local, Modifier.weight(1f)) { onSetKernelTarget("local") }
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Icon(if (connected) Icons.Outlined.CheckCircle else Icons.Outlined.Info, null,
@@ -84,10 +80,10 @@ fun HomeSection(
                 Spacer(Modifier.width(8.dp))
                 Text(
                     when {
-                        connected && local -> "手机沙盒已就绪"
+                        connected && local -> "手机运行环境已就绪"
                         connected -> "已连接 · $hostname"
-                        local -> "手机沙盒未就绪 · 可在设置中检查"
-                        else -> "连接电脑后，即可在这里继续工作"
+                        local -> "手机运行环境未就绪"
+                        else -> "未连接电脑"
                     }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -109,9 +105,10 @@ fun HomeSection(
             if (!canCreateChat) {
                 Text(
                     when {
-                        !connected -> "请先连接运行设备，再开始新会话。"
-                        chosen == null -> "尚无可用助手。可重新检测，或在设置中查看接入说明。"
-                        else -> "当前暂时无法新建会话，请检查设备状态。"
+                        !connected && local -> "在设置中检查手机运行环境。"
+                        !connected -> "在设备管理中连接电脑。"
+                        chosen == null -> "在当前设备安装助手后，点击“重新检测”。"
+                        else -> "当前助手不可用，请重新选择。"
                     }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
                 )
@@ -131,9 +128,7 @@ fun HomeSection(
             }
             if (chats.isEmpty() && sessions.isEmpty()) {
                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(20.dp)) {
-                    Text("从第一个会话开始", style = MaterialTheme.typography.titleSmall)
-                    Spacer(Modifier.height(6.dp))
-                    Text("这里会保留最近的工作，方便下次继续。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("暂无会话", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
                 chats.sortedByDescending { it.lastUsedAt }.take(4).forEach { chat ->
@@ -146,7 +141,7 @@ fun HomeSection(
         }
         if (connected && status != null) {
             Text(
-                if (local) "手机沙盒 · 代理内存 ${status.sandboxRssBytes.takeIf { it > 0 }?.let { Storage.format(it) } ?: "—"}"
+                if (local) "手机代理内存 ${status.sandboxRssBytes.takeIf { it > 0 }?.let { Storage.format(it) } ?: "—"}"
                 else "主机状态 · CPU ${status.cpuUsagePercent?.let { "%.0f%%".format(it) } ?: "—"} · 内存 ${"%.0f%%".format(status.memoryUsedPercent)}",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -159,7 +154,7 @@ fun HomeSection(
             title = { Text(if (local) "选择本机助手" else "选择电脑助手") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("根据当前设备检测；可用不代表已登录或已配置模型。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("列出当前设备上的助手；账号和模型需在助手中配置。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (selectable.isEmpty()) Text("未检测到可用助手", modifier = Modifier.padding(vertical = 12.dp))
                     selectable.forEach { kernel ->
                         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
@@ -171,7 +166,7 @@ fun HomeSection(
                                 Text(kernel.displayName, style = MaterialTheme.typography.titleSmall)
                             }
                             kernel.manifest?.let { manifest ->
-                                Text(if (manifest.session.resume) "支持历史会话延续" else "支持当前会话内连续对话", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 34.dp))
+                                Text(if (manifest.session.resume) "可继续历史会话" else "仅支持当前会话续聊", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 34.dp))
                             }
                         }
                     }
@@ -307,7 +302,7 @@ private fun WorkingDirectoryDialog(
             TextButton(
                 onClick = { if (typed.isNotBlank()) onPick(typed.trim()) },
                 enabled = typed.isNotBlank(),
-            ) { Text("用这个目录") }
+            ) { Text("选择目录") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
@@ -325,7 +320,7 @@ private fun WorkingDirectoryDialog(
 private fun shortStamp(raw: String): String = formatChatTime(raw)
 
 /** The tail of a path is what tells them apart on a 400dp screen. */
-private fun shortPath(path: String): String {    if (path.isBlank()) return "（还没定）"
+private fun shortPath(path: String): String {    if (path.isBlank()) return "未选择"
     val parts = path.trimEnd('\\', '/').split('\\', '/').filter { it.isNotBlank() }
     return when {
         parts.isEmpty() -> path

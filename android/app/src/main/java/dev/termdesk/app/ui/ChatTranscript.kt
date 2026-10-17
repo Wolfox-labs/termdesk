@@ -325,7 +325,7 @@ internal fun UserLine(event: ChatEvent) {
             // looking like "ignored".
             if (event.queued) {
                 Text(
-                    text = "排队中 · 这一轮答完就发",
+                    text = "排队中 · 本轮结束后发送",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
@@ -560,7 +560,12 @@ internal fun engineSummaryLabel(label: String, text: String): String {
  */
 @Composable
 internal fun TurnMarker(event: ChatEvent) {
-    val reason = event.state
+    val label = when (event.state) {
+        "ended", "completed" -> "已完成"
+        "failed", "error" -> "回复失败"
+        "cancelled", "interrupted" -> "已停止"
+        else -> "回合结束"
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -572,7 +577,7 @@ internal fun TurnMarker(event: ChatEvent) {
             color = MaterialTheme.colorScheme.outline,
         )
         Text(
-            text = if (reason == null) " 完成 " else " 完成 · $reason ",
+            text = " $label ",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,

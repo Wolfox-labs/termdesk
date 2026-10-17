@@ -313,8 +313,7 @@ fun TerminalSection(
                 text = {
                     Column {
                         Text(
-                            "填一个目录，终端就切过去。相对路径以当前目录为基准；" +
-                                "目录不存在时 shell 会报错，位置不会变。",
+                            "输入完整路径，或相对于当前目录的路径。",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -367,7 +366,7 @@ fun TerminalSection(
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        if (sessionId == null) "终端已关闭" else "终端已就绪 · 输入命令，或点击下方快捷命令",
+                        if (sessionId == null) "终端已关闭" else "等待输入命令",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

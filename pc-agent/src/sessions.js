@@ -698,3 +698,46 @@ export async function readSession({ engine, id, sessionPath }) {
 export function sessionRoots() {
   return { codex: codexRoot(), dsh: dshRoot() };
 }
+
+/**
+ * Delete one recorded session.
+ *
+ * Only the two roots TermDesk already reads are writable, and only after
+ * `insideRoot` has resolved the client-supplied path — the same gate the reader
+ * uses. A DSH session is a directory; a Codex session is one rollout file.
+ * Anything else (ACP kernels keep their own stores) is refused rather than
+ * guessed at.
+ */
+export async function deleteSession({ engine, id, sessionPath } = {}) {
+  if (!sessionPath) {
+    return { ok: false, code: 'no_path', message: '这条记录没有给出文件路径，无法删除' };
+  }
+  if (engine === 'codex') {
+    const file = insideRoot(sessionPath, codexRoot());
+    if (!file) {
+      return { ok: false, code: 'outside_root', message: '拒绝删除：文件不在 Codex 会话目录内' };
+    }
+    let stat;
+    try { stat = fs.statSync(file); } catch { return { ok: false, code: 'not_found', message: '文件已经不存在' }; }
+    if (!stat.isFile()) return { ok: false, code: 'not_file', message: '这不是一个会话文件' };
+    fs.rmSync(file, { force: true });
+    return { ok: true, code: 'deleted', message: `已删除 Codex 记录${id ? ` ${id}` : ''}`, removed: file };
+  }
+  if (engine === 'dsh') {
+    const file = insideRoot(sessionPath, dshRoot());
+    if (!file) {
+      return { ok: false, code: 'outside_root', message: '拒绝删除：文件不在 DSH 会话目录内' };
+    }
+    const dir = path.dirname(file);
+    if (!insideRoot(dir, dshRoot())) {
+      return { ok: false, code: 'outside_root', message: '拒绝删除：目录不在 DSH 会话目录内' };
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    return { ok: true, code: 'deleted', message: `已删除 DSH 记录${id ? ` ${id}` : ''}`, removed: dir };
+  }
+  return {
+    ok: false,
+    code: 'unsupported_engine',
+    message: `这个内核的记录由它自己保管，控制台不直接删：${engine || '未知内核'}`,
+  };
+}

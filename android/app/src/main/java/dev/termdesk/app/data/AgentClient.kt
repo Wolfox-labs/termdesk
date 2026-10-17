@@ -71,6 +71,10 @@ class AgentClient(
     private val deviceName: String = listOf(Build.MANUFACTURER, Build.MODEL)
         .map { it.trim() }.filter { it.isNotBlank() }.distinct().joinToString(" ").ifBlank { "Android 手机" }
 
+    /** The identity this phone presents when it opens a second, config-only link. */
+    val configClientId: String get() = deviceId
+    val configClientName: String get() = deviceName
+
     private val client = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
         .connectTimeout(12, TimeUnit.SECONDS)
@@ -239,8 +243,10 @@ class AgentClient(
         val installer = localKernelInstaller ?: return
         val base = httpBaseUrl()
         val tok = lastToken
-        if (base == null || tok == null) return
-        scope.launch { installer.loadManifest(base, tok) }
+        scope.launch(Dispatchers.IO) {
+            installer.refresh()
+            if (base != null && tok != null) installer.loadManifest(base, tok)
+        }
     }
 
     fun removeLocalKernel() {
@@ -813,32 +819,13 @@ class AgentClient(
     }
 
     // ---- Codex operations ----
+    //
+    // Only the read lives here: the conversation's model picker needs the catalog
+    // of the agent the conversation runs on. Editing a computer's config goes
+    // through CodexConfigClient, which targets a chosen computer independently.
 
     fun loadCodexConfig() {
         sendFrame(JSONObject().put("type", "codex.get"))
-    }
-
-    fun applyCodexProvider(
-        providerId: String,
-        model: String,
-        apiKey: String?,
-        reasoningEffort: String?,
-        contextWindow: Long?,
-    ) {
-        val frame = JSONObject()
-            .put("type", "codex.apply")
-            .put("providerId", providerId)
-            .put("model", model)
-        if (!apiKey.isNullOrBlank()) frame.put("apiKey", apiKey)
-        if (!reasoningEffort.isNullOrBlank()) frame.put("reasoningEffort", reasoningEffort)
-        if (contextWindow != null && contextWindow > 0) frame.put("contextWindow", contextWindow)
-        sendFrame(frame)
-    }
-
-    fun restoreCodexBackup(name: String?) {
-        val frame = JSONObject().put("type", "codex.restore")
-        if (!name.isNullOrBlank()) frame.put("name", name)
-        sendFrame(frame)
     }
 
     /** Refresh the PC kernel table. Metadata only: it never runs a model. */
@@ -1756,7 +1743,11 @@ class AgentClient(
                         manuallyClosed = true
                         return
                     }
-                    _link.value = LinkState.Failed("这台电脑不认这个凭据（$reason）：可能已被吊销，或这个地址换了中转。请在电脑上打开 /pair 重新配对")
+                    _link.value = LinkState.Failed(
+                        if (frame.optString("code") == "device_revoked") "此设备的连接权限已被撤销，请重新配对。"
+                        else "配对凭据无效或已被吊销，请在电脑端重新配对。",
+                    )
+                    _loading.value = false
                     manuallyClosed = true // a bad token will never fix itself by retrying
                 }
                 "status" -> _status.value = parseStatus(frame.optJSONObject("status"))
@@ -1989,6 +1980,10 @@ class AgentClient(
                 }
                 // The kernel table, straight from the PC registry.
                 "kernels" -> _engines.value = parseKernels(frame.optJSONArray("kernels"))
+                // Desktop console management traffic; the phone has no page for it
+                // and must not treat "there are phones paired with this PC" as chat
+                // state.
+                "devices" -> Unit
                 // A queued message arrived: the agent echoed the id we minted, so
                 // it can leave the queue. An `action.result` counts too, because a
                 // refusal is also an answer — keeping it queued would retry a
@@ -2024,6 +2019,11 @@ class AgentClient(
                 // ---- live chat frames ----
                 "chats" -> {
                     _chats.value = parseChatList(frame.optJSONArray("chats"))
+                    _activeChat.value?.let { active ->
+                        _chats.value.firstOrNull { it.id == active.id }?.let { summary ->
+                            _activeChat.value = summary
+                        }
+                    }
                     // The agent's pending list is authoritative, so a question it
                     // already settled (a timeout, or while this phone was away)
                     // disappears instead of leaving a stale dialog behind.
@@ -2135,7 +2135,9 @@ class AgentClient(
                 // A bad credential will never fix itself by retrying.
                 4401 -> {
                     manuallyClosed = true
-                    _link.value = LinkState.Failed("连接已断开 ($code $reason)")
+                    if (_link.value !is LinkState.Failed && _link.value !is LinkState.ProtocolMismatch) {
+                        _link.value = LinkState.Failed("连接权限已失效，请重新配对。")
+                    }
                 }
                 /**
                  * The relay allows one connected phone per computer, and says so

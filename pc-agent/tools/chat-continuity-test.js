@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ChatContinuity } from '../src/chat/continuity.js';
-import { ChatManager } from '../src/chat.js';
+import { ChatManager, Chat } from '../src/chat.js';
 import { createFrameHandler } from '../src/handlers.js';
 
 const phone = { deviceId: 'phone', deviceName: 'OPPO' };
@@ -55,8 +55,8 @@ test('forced idle takeover prevents the previous device from writing', () => {
 });
 test('reconnect sync returns an authoritative snapshot even with a current cursor', async () => {
   const chats = new ChatManager();
-  const result = chats.create({ engine: 'dsh', cwd: process.cwd() });
-  const chat = chats.get(result.chat.id);
+  const chat = new Chat({ id: 'snapshot-chat', engine: 'dsh', cwd: process.cwd() });
+  chats.chats.set(chat.id, chat); // Snapshot behavior does not require an installed runtime.
   const frames = [];
   const leases = new ChatContinuity();
   leases.claim(chat.id, phone);
@@ -68,9 +68,7 @@ test('reconnect sync returns an authoritative snapshot even with a current curso
   assert.equal(snapshot.ownership.mode, 'owner');
 });
 test('a cursor outside retained history falls back to a full snapshot', () => {
-  const chats = new ChatManager();
-  const result = chats.create({ engine: 'dsh', cwd: process.cwd() });
-  const chat = chats.get(result.chat.id);
+  const chat = new Chat({ id: 'snapshot-chat', engine: 'dsh', cwd: process.cwd() });
   const snapshot = chat.detail(chat.seq + 100);
   assert.equal(snapshot.eventSync.mode, 'full');
   assert.equal(snapshot.events.length, chat.events.length);

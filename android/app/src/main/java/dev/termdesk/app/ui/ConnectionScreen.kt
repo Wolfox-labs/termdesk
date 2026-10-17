@@ -82,7 +82,7 @@ fun ConnectionScreen(
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "每台电脑各配一次；换电脑不用重新配对",
+            text = "连接电脑",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -109,7 +109,7 @@ fun ConnectionScreen(
         Spacer(Modifier.height(28.dp))
 
         Text(
-            text = if (computers.isEmpty()) "用电脑上 /pair 页面的二维码配对" else "再加一台电脑",
+            text = if (computers.isEmpty()) "输入电脑提供的连接地址和配对码" else "添加电脑",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -118,7 +118,7 @@ fun ConnectionScreen(
         OutlinedTextField(
             value = url,
             onValueChange = { url = it.trim() },
-            label = { Text("节点地址") },
+            label = { Text("连接地址") },
             placeholder = { Text("wss://你的节点域名") },
             singleLine = true,
             enabled = !connecting,
@@ -135,7 +135,8 @@ fun ConnectionScreen(
         OutlinedTextField(
             value = token,
             onValueChange = { token = it.trim() },
-            label = { Text(if (knownCredential) "一次性配对码（留空＝用已保存的凭据）" else "一次性配对码") },
+            label = { Text("配对码") },
+            supportingText = if (knownCredential) ({ Text("留空使用已保存的凭据") }) else null,
             visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
             enabled = !connecting,
@@ -175,8 +176,8 @@ fun ConnectionScreen(
             )
         }
 
-        TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("返回工作台 / 离线查看") }
-        TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("暂时断开（保留绑定）") }
+        TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("返回工作台") }
+        TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) { Text("断开连接（保留配对）") }
         if (computers.isNotEmpty()) {
             TextButton(
                 onClick = { confirmForgetCurrent = true },
@@ -185,7 +186,7 @@ fun ConnectionScreen(
         }
         Spacer(Modifier.height(28.dp))
         Text(
-            text = "扫码配对时不需要手填地址。凭据加密保存在这台手机上，每台电脑一份；解绑其中一台不影响其他电脑。",
+            text = "连接信息保存在手机上。下次可直接选择已配对的电脑。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -257,7 +258,7 @@ private fun ComputerRow(
     if (confirmForget) {
         ConfirmDialog(
             title = "解绑这台电脑？",
-            body = "这台手机上的凭据会被删掉，想再连上得在电脑上重新取一个配对码。",
+            body = "将删除这台电脑的连接凭据。再次连接需要重新配对。",
             confirmLabel = "解绑",
             onConfirm = {
                 confirmForget = false
