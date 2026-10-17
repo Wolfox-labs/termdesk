@@ -7,6 +7,8 @@ import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
@@ -243,12 +245,10 @@ fun AppRoot(
         if (chats.any { it.id == target.chatId }) vm.openChat(target.chatId)
     }
     val connected = link is LinkState.Connected
-    LaunchedEffect(connected, activeChat?.id) {
-        val chatId = activeChat?.id ?: return@LaunchedEffect
-        while (connected) {
-            kotlinx.coroutines.delay(60_000)
-            vm.syncChat(chatId)
-        }
+    // On-demand repair; stream events carry normal updates. Returning to the
+    // foreground or reconnecting must also repair changed/deleted old events.
+    LaunchedEffect(connected, activeChat?.id, windowVisible) {
+        if (connected && windowVisible) activeChat?.id?.let(vm::syncChat)
     }
     // Kernel discovery is metadata only (it never runs a model), so it can be
     // refreshed on every connect: Settings and the new-chat sheet then show what
@@ -282,9 +282,9 @@ fun AppRoot(
     }
     val connectionLabel = when (val state = link) {
         is LinkState.NodeOffline -> "VPS 已连接 · ${state.hostname} 内核离线，上线后自动恢复"
-        is LinkState.Connecting -> "正在连接节点 · 已缓存记录仍可查看"
+        is LinkState.Connecting -> "正在连接 · 已缓存内容仍可查看"
         is LinkState.ProtocolMismatch -> "版本不匹配 · ${state.reason}"
-        is LinkState.Failed -> "连接暂不可用 · 点击查看：${state.reason}"
+        is LinkState.Failed -> "暂时无法连接 · 点击管理设备"
         else -> "离线模式 · 点击连接或管理设备"
     }
 
@@ -334,7 +334,7 @@ fun AppRoot(
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { backgroundGuideOpen = false },
             title = { Text("允许后台运行") },
-            text = { Text("为及时收到消息，请在系统设置中允许 TermDesk 后台运行。\n\nOPPO / ColorOS 可在应用的耗电管理中检查“允许后台活动”；若系统提供自启动管理，也请允许 TermDesk 自启动。菜单名称可能因系统版本不同。") },
+            text = { Text("为及时收到消息，请在系统设置中允许 TermDesk 后台运行。\n\n小米 / Redmi 可检查“省电策略”和“后台自启动”；OPPO 可检查“允许后台活动”。菜单名称以当前系统为准。") },
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
                     backgroundGuideOpen = false
@@ -440,7 +440,7 @@ fun AppRoot(
                 onTerminalNew = vm::openTerminal,
                 onTerminalList = vm::listTerminals,
                 termUnavailable = termUnavailable,
-                onTermOpen = vm::openTerminal,
+                onTermOpen = vm::ensureTerminal,
                 onSetKernelTarget = vm::setKernelTarget,
                 onTermRun = vm::runCommand,
                 onTermInterrupt = vm::interruptCommand,
@@ -567,7 +567,10 @@ fun AppRoot(
 
         SnackbarHost(
             hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(
+                bottom = if (!connectionOpen && openFile == null && preview == null &&
+                    primaryNavigationVisible(section, activeChat != null || sessionDetail != null)) 80.dp else 0.dp,
+            ),
         ) { data ->
             Snackbar(
                 snackbarData = data,

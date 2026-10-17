@@ -20,6 +20,10 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.activity.compose.BackHandler
@@ -38,6 +42,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
@@ -86,7 +92,7 @@ import dev.termdesk.app.ui.theme.ThemeMode
 
 /** Sections of the app. */
 enum class Section(val label: String, val icon: ImageVector) {
-    Home("主页", Icons.Outlined.Home),
+    Home("工作台", Icons.Outlined.Home),
     Sessions("会话", Icons.Outlined.ChatBubbleOutline),
     Files("文件", Icons.Outlined.FolderOpen),
     Terminal("终端", Icons.Outlined.Terminal),
@@ -94,14 +100,19 @@ enum class Section(val label: String, val icon: ImageVector) {
     Settings("设置", Icons.Outlined.Settings),
 }
 
+/** Shared by navigation and transient feedback, so messages never cover tabs. */
+@Composable
+internal fun primaryNavigationVisible(section: Section, conversationOpen: Boolean): Boolean {
+    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    return !keyboardVisible && !(section == Section.Sessions && conversationOpen)
+}
+
 /**
  * Phone-sized workstation shell.
  *
- * There is no permanent navigation rail: a 400dp phone cannot spare 56dp of
- * every screen for it, so sections live in a drawer opened from the leading
- * button. The bar is never stacked either — the sessions area supplies its own
- * single row, so a conversation title and the section name never fight for the
- * same strip.
+ * Frequent destinations use bottom navigation. The drawer also exposes system
+ * and settings. Navigation hides for focused conversations and keyboard input;
+ * the sessions area supplies its own top row so titles are never stacked.
  */
 @Composable
 fun AppShell(
@@ -229,6 +240,7 @@ fun AppShell(
     // Sections live in a drawer rather than a permanent rail: a phone is about
     // 400dp wide and the rail charged every screen 56dp for it.
     var sectionDrawerOpen by remember { mutableStateOf(false) }
+    val showNavigation = primaryNavigationVisible(section, activeChat != null || recordedSession != null)
 
     // System back walks up the app before it leaves it: the drawer first, then
     // the slide-over panel, then back to the home page. The conversation
@@ -263,7 +275,7 @@ fun AppShell(
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .clickable { onDisconnect() }
                         .padding(10.dp),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -385,6 +397,18 @@ fun AppShell(
                     onCloseTerminalView = onCloseTerminalView,
                 )
             }
+            if (showNavigation) {
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, windowInsets = WindowInsets(0, 0, 0, 0)) {
+                    listOf(Section.Home, Section.Sessions, Section.Files, Section.Terminal).forEach { destination ->
+                        NavigationBarItem(
+                            selected = section == destination,
+                            onClick = { onSectionChange(destination) },
+                            icon = { Icon(destination.icon, contentDescription = null) },
+                            label = { Text(destination.label) },
+                        )
+                    }
+                }
+            }
         }
 
         // Scrim: tap anywhere outside the panel to dismiss it.
@@ -451,7 +475,7 @@ private fun TopBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(48.dp)
+            .heightIn(min = 56.dp)
             .background(MaterialTheme.colorScheme.surface)
             .padding(start = 4.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically,

@@ -230,6 +230,7 @@ class AgentClient(
             _lastAction.value = ActionResult(
                 "kernel.local", "install", result.installed, if (result.installed) "ready" else "failed", result.note,
             )
+            if (result.installed && _kernelTarget.value == "local") connectLocal()
         }
     }
 
@@ -740,6 +741,11 @@ class AgentClient(
         if (terminalOpenPending) return
         terminalClosedByUser = false
         terminalOpenPending = sendFrame(JSONObject().put("type", "term.open"))
+    }
+
+    /** Entering a page must not undo the user's explicit close. */
+    fun ensureTerminal() {
+        if (_termSession.value == null && !terminalClosedByUser) openTerminal()
     }
 
     /** Show a terminal that already exists; its scrollback comes back with it. */
@@ -2059,7 +2065,7 @@ class AgentClient(
                     // reply does not, so ask for the transcript to pick up the
                     // chat's own opening lines.
                     if (frame.has("events")) {
-                        _chatEvents.value = reconcileChatEvents(_chatEvents.value, frame, previousChatId)
+                        _chatEvents.value = reconcileChatEvents(frame)
                         chatEventIndex = LinkedHashMap(
                             _chatEvents.value.associateBy { it.seq },
                         )

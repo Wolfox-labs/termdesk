@@ -72,7 +72,7 @@ export function manifestFor(entryOrId, lookup) {
     field('maxOutput', 'number', 'planned', 'next-turn', {
       label: '最大输出', min: 1, unit: 'tokens',
     }),
-    field('inputModalities', 'multi-enum', isCodex ? 'discovered' : (isAcp ? 'discovered' : 'planned'), 'profile', {
+    field('inputModalities', 'multi-enum', isCodex ? 'discovered' : 'planned', 'profile', {
       label: '输入模态', valuesSource: 'model-capabilities',
     }),
     field('outputModalities', 'multi-enum', 'planned', 'profile', {
@@ -111,7 +111,7 @@ export function manifestFor(entryOrId, lookup) {
     },
     config: {
       // A profile is machine-wide; a session is attached to one native thread.
-      scope: isCodex ? 'profile' : (isAcp ? 'session' : (transport === 'sdk' ? 'runtime' : 'session')),
+      scope: !transport ? 'none' : (isCodex ? 'profile' : (isAcp ? 'session' : (transport === 'sdk' ? 'runtime' : 'session'))),
       liveApply: isAcp || isCodex,
       requiresRestart: transport === 'sdk',
       schema,

@@ -147,7 +147,7 @@ try {
 
   // The CLI's own session index feeds the history list.
   let listed = null;
-  client.ws.send(JSON.stringify({ type: 'sessions.list' }));
+  client.ws.send(JSON.stringify({ type: 'sessions.list', engine: 'faketool' }));
   try {
     listed = await waitFrame(client, (f) => f.type === 'sessions', 20000, 'sessions frame');
   } catch { /* reported below */ }

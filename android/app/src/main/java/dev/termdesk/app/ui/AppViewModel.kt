@@ -98,6 +98,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val termUnavailable: StateFlow<String?> = client.termUnavailable
 
     fun openTerminal() = client.openTerminal()
+    fun ensureTerminal() = client.ensureTerminal()
     fun attachTerminal(sessionId: String) = client.attachTerminal(sessionId)
     fun listTerminals() = client.listTerminals()
     fun runCommand(command: String) = client.runCommand(command)

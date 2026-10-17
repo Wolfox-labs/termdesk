@@ -24,8 +24,8 @@ const MAX_TERMINAL_OUTPUT_CHARS = 64 * 1024;
 /**
  * The transcript is bounded for the same reason the terminal output is: a long
  * conversation must not be able to grow this process without limit. The oldest
- * events are dropped first, and `seq` keeps increasing, so an incremental client
- * can still tell "newer" from "older" after a drop.
+ * events are dropped first. Clients repair their bounded copy with an on-demand
+ * authoritative snapshot, including edits and deletions of older events.
  */
 const MAX_EVENTS_PER_CHAT = 1200;
 
@@ -243,36 +243,20 @@ export class Chat {
       createdAt: this.createdAt,
       lastUsedAt: this.lastUsedAt,
       eventCount: this.events.length,
-      eventCursor: this.seq,
-      oldestEventSeq: this.events[0]?.seq ?? (this.seq + 1),
-      continuity: {
-        durable: Boolean(this.nativeResume || this.threadId),
-        runtime: Boolean((this.child && this.child.exitCode === null) || this.kernelLive),
-        replay: true,
-        eventCursor: this.seq,
-        oldestEventSeq: this.events[0]?.seq ?? (this.seq + 1),
-      },
       lastError: this.lastError,
       usage: this.usage,
       live: Boolean((this.child && this.child.exitCode === null) || this.kernelLive),
     };
   }
 
-  detail(afterSeq = 0) {
-    const cursor = Number.isInteger(afterSeq) && afterSeq > 0 ? afterSeq : 0;
-    const oldest = this.events[0]?.seq ?? (this.seq + 1);
-    const delta = cursor > 0 && cursor >= oldest - 1 && cursor <= this.seq;
-    const events = delta ? this.events.filter((e) => e.seq > cursor) : [...this.events];
+  // Full, bounded, authoritative snapshots repair edits and deletions of old
+  // events. A sequence-only delta cannot do that. afterSeq is ignored for old
+  // callers; clients request a snapshot on open, reconnect or explicit refresh.
+  detail() {
     return {
       ...this.summary(),
-      events,
-      eventSync: {
-        mode: delta ? 'delta' : 'full',
-        afterSeq: cursor,
-        fromSeq: events[0]?.seq ?? null,
-        toSeq: this.seq,
-        complete: true,
-      },
+      events: [...this.events],
+      eventSync: { mode: 'full', complete: true },
     };
   }
 }

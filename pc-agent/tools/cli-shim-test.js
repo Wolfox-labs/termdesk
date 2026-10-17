@@ -1,11 +1,7 @@
 /**
- * Static/live checks for the CLI shim adapter, against a stub CLI and against
- * the one real CLI that is installed.
- *
- * No model call anywhere: the stub (tools/fake-cli-agent.mjs) behaves the way
- * QoderWork and Command Code were recorded to behave, and the real qoderclicn is
- * driven only far enough to prove the argv and the NDJSON mapping - it refuses
- * before any model runs (the CLI on this machine is not logged in).
+ * CLI shim checks use a synthetic CLI by default. The optional real Qoder
+ * prompt probe requires explicit authorization for that agent and model, then
+ * TERMDESK_ALLOW_LIVE_QODER=1. Being logged out is never a safety boundary.
  *
  *   node tools/cli-shim-test.js
  */
@@ -200,9 +196,11 @@ const REAL_LINES = [
 // --- the adapter against the REAL CLI (it refuses before any model runs) -----
 
 {
-  const spec = spawnSpec('qoder');
+  // A logged-out machine today may be logged in tomorrow. Default tests never
+  // invoke a real prompt. This probe requires explicit agent/model permission.
+  const spec = process.env.TERMDESK_ALLOW_LIVE_QODER === '1' ? spawnSpec('qoder') : null;
   if (!spec) {
-    console.log('  SKIP  real qoderclicn is not installed on this machine');
+    console.log('  SKIP  real Qoder prompt probe disabled (explicit authorization required)');
   } else {
     const kernel = new CliKernel({
       id: 'qoder',

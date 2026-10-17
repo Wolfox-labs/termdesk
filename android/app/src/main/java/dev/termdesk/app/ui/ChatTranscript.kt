@@ -307,18 +307,17 @@ internal fun parentDirectoryOf(path: String): String? {
 
 @Composable
 internal fun UserLine(event: ChatEvent) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+    Row(Modifier.fillMaxWidth()) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .clip(RoundedCornerShape(11.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer)
-                .padding(horizontal = 11.dp, vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
         ) {
+            Text("你", style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
             MarkdownText(
                 text = event.text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             // A message typed while the answer was still coming waits its turn on the PC.
             // It is drawn the moment it is typed — a message that disappears until later
@@ -328,7 +327,7 @@ internal fun UserLine(event: ChatEvent) {
                 Text(
                     text = "排队中 · 这一轮答完就发",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
@@ -339,7 +338,10 @@ internal fun UserLine(event: ChatEvent) {
 @Composable
 internal fun AssistantLine(event: ChatEvent) {
     Row(Modifier.fillMaxWidth()) {
-        Column(Modifier.fillMaxWidth(0.98f)) {
+        Column(Modifier.fillMaxWidth()) {
+            Text("助手", style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
             MarkdownText(
                 text = event.text,
                 style = MaterialTheme.typography.bodyMedium,
@@ -435,14 +437,15 @@ internal fun EngineOutputLine(event: ChatEvent, label: String) {
 
 @Composable
 internal fun EngineNoteLine(event: ChatEvent) {
+    var expanded by remember(event.seq) { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(
             event.text.ifBlank { event.kind },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
+            maxLines = if (expanded) Int.MAX_VALUE else 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).clickable(onClickLabel = if (expanded) "收起记录" else "展开记录") { expanded = !expanded },
         )
     }
 }

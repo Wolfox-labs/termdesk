@@ -258,32 +258,11 @@ class AgentFramesTest {
     }
 
     @Test
-    fun `chat continuity fields are parsed and absent fields stay safe`() {
-        val frame = JSONObject()
-            .put("id", "c-continuity")
-            .put("eventCursor", 19)
-            .put("oldestEventSeq", 7)
-            .put(
-                "continuity",
-                JSONObject()
-                    .put("durable", true)
-                    .put("runtime", true)
-                    .put("replay", true)
-                    .put("eventCursor", 19)
-                    .put("oldestEventSeq", 7),
-            )
-
-        val chat = parseChatInfo(frame)
-
-        assertNotNull(chat)
-        assertEquals(19, chat!!.eventCursor)
-        assertEquals(7, chat.oldestEventSeq)
-        assertTrue(chat.continuity.durable)
-        assertTrue(chat.continuity.runtime)
-        assertTrue(chat.continuity.replay)
-        assertEquals(19, chat.continuity.eventCursor)
-        assertEquals(7, chat.continuity.oldestEventSeq)
-        assertEquals(ChatContinuity(), parseChatContinuity(null))
+    fun `unused legacy cursor metadata does not affect a chat`() {
+        val chat = parseChatInfo(JSONObject().put("id", "c").put("eventCursor", 19)
+            .put("continuity", JSONObject().put("durable", true)))
+        assertEquals("c", chat!!.id)
+        assertFalse(chat.ownership.canWrite)
     }
 
     // ---- file search results ------------------------------------------------

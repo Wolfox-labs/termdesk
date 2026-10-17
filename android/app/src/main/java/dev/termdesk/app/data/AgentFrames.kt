@@ -118,18 +118,6 @@ import org.json.JSONObject
             leaseMs = o.optLong("leaseMs"),
         )
     }
-
-    internal fun parseChatContinuity(o: JSONObject?): ChatContinuity {
-        if (o == null) return ChatContinuity()
-        return ChatContinuity(
-            durable = o.optBoolean("durable", false),
-            runtime = o.optBoolean("runtime", false),
-            replay = o.optBoolean("replay", false),
-            eventCursor = o.optInt("eventCursor"),
-            oldestEventSeq = o.optInt("oldestEventSeq"),
-        )
-    }
-
     internal fun parseChatInfo(o: JSONObject): ChatInfo? {
         val id = o.optString("id")
         if (id.isEmpty()) return null
@@ -153,9 +141,6 @@ import org.json.JSONObject
             lastUsedAt = o.optLong("lastUsedAt"),
             eventCount = o.optInt("eventCount"),
             lastError = if (o.isNull("lastError")) null else o.optString("lastError"),
-            eventCursor = o.optInt("eventCursor"),
-            oldestEventSeq = o.optInt("oldestEventSeq"),
-            continuity = parseChatContinuity(o.optJSONObject("continuity")),
             ownership = parseChatOwnership(o.optJSONObject("ownership")),
         )
     }

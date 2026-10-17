@@ -129,7 +129,7 @@ fun FileEditor(
             }
             Button(
                 onClick = { saving = true; onSave(file.path, draft) },
-                enabled = dirty && !saving,
+                enabled = dirty && !saving && connected,
             ) {
                 Icon(Icons.Outlined.Save, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
@@ -164,7 +164,7 @@ fun FileEditor(
                     leaveAfterSave = true
                     saving = true
                     onSave(file.path, draft)
-                }) { Text("保存并离开") }
+                }, enabled = connected) { Text("保存并离开") }
             },
             // Three answers, because two would force a choice between losing work and being
             // stuck: 取消 goes back to the editor, and the third one discards deliberately —

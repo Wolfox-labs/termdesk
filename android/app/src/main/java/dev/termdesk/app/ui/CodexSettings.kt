@@ -140,7 +140,7 @@ fun SettingsSection(
         if (page != null) {
             SubPageHeader(
                 title = when (page) {
-                    "kernel" -> "内核"
+                    "kernel" -> "运行设备与助手"
                     "appearance" -> "外观"
                     "storage" -> "存储"
                     else -> "Codex 配置"
@@ -163,10 +163,20 @@ fun SettingsSection(
         val codexLabel = config?.model?.takeIf { it.isNotBlank() } ?: "未配置"
 
         if (page == null) {
-            SettingsRootRow("内核", kernelSummary) { page = "kernel" }
+            SettingsRootRow("运行设备与助手", kernelSummary) { page = "kernel" }
             SettingsRootRow("外观", themeLabel) { page = "appearance" }
             SettingsRootRow("存储", storageLabel) { page = "storage" }
             SettingsRootRow("Codex 配置", codexLabel) { page = "codex" }
+            Spacer(Modifier.height(12.dp))
+            Card {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val version = remember { context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty() }
+                Text("TermDesk", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("手机上的 AI 工作台", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(6.dp))
+                Text("$version · 演示版", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("助手在所选设备上运行。模型服务、账号和费用由对应助手管理。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
 
         when (page) {
@@ -227,6 +237,7 @@ fun SettingsSection(
             }
         }
                 }
+                if (kernelTarget != "local") LocalKernelCard(localKernel, onInstallLocalKernel, onRemoveLocalKernel)
             }
             "appearance" -> {
         // --- appearance ------------------------------------------------------
@@ -612,7 +623,7 @@ private fun LocalKernelCard(state: LocalKernelState, onInstall: () -> Unit, onRe
     Card {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "本机内核",
+                "手机运行环境",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
@@ -624,6 +635,15 @@ private fun LocalKernelCard(state: LocalKernelState, onInstall: () -> Unit, onRe
                 else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (state.installed) "终端与本机代理可在手机内运行。AI 助手需另行安装和配置。"
+            else "从已连接的电脑下载运行环境，安装后可使用本机文件与终端。AI 助手需另行配置。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(state.note, style = MaterialTheme.typography.bodySmall,
+            color = if (state.stage == LocalKernelStage.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
         if (state.busy) {
             Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -633,7 +653,7 @@ private fun LocalKernelCard(state: LocalKernelState, onInstall: () -> Unit, onRe
             if (state.installed) {
                 TextButton(onClick = onRemove, enabled = !state.busy) { Text("删除", style = MaterialTheme.typography.labelMedium) }
             } else {
-                TextButton(onClick = onInstall, enabled = !state.busy) { Text("安装", style = MaterialTheme.typography.labelMedium) }
+                TextButton(onClick = onInstall, enabled = !state.busy) { Text("下载并安装", style = MaterialTheme.typography.labelMedium) }
             }
         }
     }
@@ -650,19 +670,13 @@ private fun SettingsRootRow(label: String, value: String, onClick: () -> Unit) {
                 .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                label,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                value,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
+                Text(label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(4.dp))
+                Text(value, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
             Spacer(Modifier.width(6.dp))
             Icon(
                 Icons.Outlined.ChevronRight,
@@ -732,10 +746,9 @@ private fun EngineRow(
     onSelect: () -> Unit,
 ) {
     val status = when {
-        !engine.available -> "未安装"
-        engine.tier == "acp" -> "ACP·未接入"
-        engine.tier == "shim" -> "CLI·需 shim"
-        else -> "可用"
+        engine.selectable -> "可用"
+        !engine.available -> "暂不可用"
+        else -> "尚未接入"
     }
     Row(
         modifier = Modifier

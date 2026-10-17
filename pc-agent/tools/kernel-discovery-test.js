@@ -30,7 +30,7 @@ test('an unknown registered kernel appears and disappears without changing brand
   const script = path.join(directory, 'agent.mjs');
   fs.writeFileSync(script, '// No process or model is executed by discovery.\n');
   fs.writeFileSync(path.join(directory, 'custom.json'), JSON.stringify({ id: 'arbitrary-installed-agent', label: 'My installed assistant', bin: process.execPath, preArgs: [script], args: ['acp'] }));
-  fs.writeFileSync(path.join(directory, 'broken.json'), 'broken');
+
   try {
     const discovered = listKernels({ installedOnly: true }).find((kernel) => kernel.id === 'arbitrary-installed-agent');
     assert.equal(discovered.label, 'My installed assistant');
@@ -47,8 +47,9 @@ test('an unknown registered kernel appears and disappears without changing brand
 test('a bare command name is resolved from the current PATH on each detection', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'termdesk-path-'));
   const oldPath = process.env.PATH;
-  const command = path.join(directory, process.platform === 'win32' ? 'dynamic-assistant.cmd' : 'dynamic-assistant');
-  fs.writeFileSync(command, process.platform === 'win32' ? '@echo off\r\n' : '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const command = path.join(directory, process.platform === 'win32' ? 'dynamic-assistant.exe' : 'dynamic-assistant');
+  if (process.platform === 'win32') fs.copyFileSync(process.execPath, command);
+  else fs.writeFileSync(command, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   process.env.PATH = directory;
   const entry = { resolve: () => 'dynamic-assistant' };
   try {

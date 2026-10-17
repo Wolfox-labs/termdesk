@@ -2,66 +2,31 @@ package dev.termdesk.app.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ChatBubbleOutline
-import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.Memory
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.automirrored.outlined.ArrowForward
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.termdesk.app.data.ChatInfo
-import dev.termdesk.app.data.HostStatus
-import dev.termdesk.app.data.KernelInfo
-import dev.termdesk.app.data.SessionInfo
-import dev.termdesk.app.data.Storage
-import dev.termdesk.app.data.WorkspaceInfo
-import dev.termdesk.app.ui.theme.MeterChars
+import dev.termdesk.app.data.*
+import dev.termdesk.app.ui.theme.Semantic
 
-/**
- * The landing page.
- *
- * What it answers, in order: is the computer reachable, what will a new
- * conversation run on, where will it work, and how do I get back into what I was
- * doing. Everything that used to be asked per conversation (which kernel) is a
- * single standing choice here instead.
- */
+/** The working context and one clear next action, followed by recent work. */
 @Composable
 fun HomeSection(
     hostname: String,
@@ -90,447 +55,194 @@ fun HomeSection(
 ) {
     var pickerOpen by remember { mutableStateOf(false) }
     var assistantPickerOpen by remember { mutableStateOf(false) }
-    // Older local agents still return the complete catalogue. Keep that list
-    // from leaking into the phone picker during an app/agent upgrade.
-    val detected = if (kernelTarget == "local") engines.filter { it.available } else engines
-    val selectable = detected.filter { it.selectable }
-    val unavailable = detected.filterNot { it.selectable }
-    val chosen = detected.firstOrNull { it.id == currentEngine && it.selectable }
-        ?: selectable.firstOrNull()
     val local = kernelTarget == "local"
+    val detected = if (local) engines.filter { it.available } else engines
+    val selectable = detected.filter { it.selectable }
+    val chosen = selectable.firstOrNull { it.id == currentEngine } ?: selectable.firstOrNull()
     LaunchedEffect(assistantPickerOpen, connected, kernelTarget) {
         if (assistantPickerOpen && connected) onRefreshEngines()
     }
-    // The off-line banner text belongs to a screen that has nothing else to say;
-    // here the state is already legible from the dot and the numbers, so the
-    // subtitle only has to name what is on the other end.
-    val subtitle = when {
-        local && !connected -> "手机沙盒代理未运行"
-        local -> "沙盒里的代理已就绪"
-        connected -> "已连接"
-        else -> connectionLabel
-    }
 
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
-        // ---- where this phone is pointed -------------------------------------
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(9.dp)
-                    .clip(CircleShape)
-                    .background(if (connected) MeterChars.ok else MaterialTheme.colorScheme.outline),
-            )
-            Spacer(Modifier.width(9.dp))
-            Column(Modifier.weight(1f)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("继续你的工作", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text("继续会话，也能处理文件和终端。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            BlockTitle("运行位置")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                TargetChip("远程电脑", Icons.Outlined.Computer, !local, Modifier.weight(1f)) { onSetKernelTarget("remote") }
+                TargetChip("本机手机", Icons.Outlined.Smartphone, local, Modifier.weight(1f)) { onSetKernelTarget("local") }
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (connected) Icons.Outlined.CheckCircle else Icons.Outlined.Info, null,
+                    tint = if (connected) Semantic.current.success else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    if (local) "本机（手机沙盒）" else hostname,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
+                    when {
+                        connected && local -> "手机沙盒已就绪"
+                        connected -> "已连接 · $hostname"
+                        local -> "手机沙盒未就绪 · 可在设置中检查"
+                        else -> "连接电脑后，即可在这里继续工作"
+                    }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            // Shown for BOTH hosts, and the second line says which one you are
-            // looking at. On the PC these are the machine's numbers; in the
-            // sandbox they are the sandbox's own, because Android denies an app
-            // the system-wide view (measured: /proc/stat -> Permission denied,
-            // os.cpus() empty, while /proc/<own pid>/stat and /proc/meminfo are
-            // readable). So "内存 61%" and "内存 52.0 MB" mean different things
-            // on purpose, and neither is a guess.
-            if (status != null && connected) {
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        "CPU ${status.cpuUsagePercent?.let { "%.0f%%".format(it) } ?: "—"}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        if (local && status.sandboxRssBytes > 0) "沙盒 ${Storage.format(status.sandboxRssBytes)}"
-                        else "内存 ${"%.0f%%".format(status.memoryUsedPercent)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+        }
+
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            ContextRow(Icons.Outlined.AutoAwesome, "助手", chosen?.displayName ?: if (connected) "未检测到可用助手" else "连接后检测", "选择助手", connected) { assistantPickerOpen = true }
+            HorizontalDivider(Modifier.padding(vertical = 6.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = .5f))
+            ContextRow(Icons.Outlined.FolderOpen, "工作目录", shortPath(workingDirectory), "选择工作目录", connected) { pickerOpen = true }
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = onNewChat, enabled = canCreateChat, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = RoundedCornerShape(14.dp)) {
+                Icon(Icons.Outlined.Add, null, Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("新建会话", style = MaterialTheme.typography.titleSmall)
+            }
+            if (!canCreateChat) {
+                Text(
+                    when {
+                        !connected -> "请先连接运行设备，再开始新会话。"
+                        chosen == null -> "尚无可用助手。可重新检测，或在设置中查看接入说明。"
+                        else -> "当前暂时无法新建会话，请检查设备状态。"
+                    }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        }
+
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            QuickAction("文件", Icons.Outlined.FolderOpen, Modifier.weight(1f), onBrowseFiles)
+            QuickAction("终端", Icons.Outlined.Terminal, Modifier.weight(1f), onOpenTerminal)
+            QuickAction("系统", Icons.Outlined.Memory, Modifier.weight(1f), onOpenSystem)
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                BlockTitle("最近会话", Modifier.weight(1f))
+                if (!connected) Text("已缓存", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (chats.isEmpty() && sessions.isEmpty()) {
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(20.dp)) {
+                    Text("从第一个会话开始", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(6.dp))
+                    Text("这里会保留最近的工作，方便下次继续。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                chats.sortedByDescending { it.lastUsedAt }.take(4).forEach { chat ->
+                    RecentRow(chat.title.ifBlank { "未命名会话" }, listOf(chat.engine, shortPath(chat.cwd), if (chat.isRunning) "进行中" else "可继续").joinToString(" · ")) { onOpenChat(chat.id) }
+                }
+                sessions.take(if (chats.isEmpty()) 5 else 3).forEach { session ->
+                    RecentRow(session.title?.takeIf { it.isNotBlank() } ?: "未命名会话", listOfNotNull(session.engine, session.cwd?.let { shortPath(it) }, session.updatedAt?.let { shortStamp(it) }).joinToString(" · ")) { onOpenSession(session) }
                 }
             }
         }
-
-        Spacer(Modifier.height(16.dp))
-
-        // ---- the standing kernel choice --------------------------------------
-        BlockTitle("运行位置")
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            TargetChip(
-                label = "远程电脑",
-                selected = !local,
-                enabled = true,
-                modifier = Modifier.weight(1f),
-                onClick = { onSetKernelTarget("remote") },
-            )
-            TargetChip(
-                label = "本机手机",
-                selected = local,
-                enabled = true,
-                modifier = Modifier.weight(1f),
-                onClick = { onSetKernelTarget("local") },
+        if (connected && status != null) {
+            Text(
+                if (local) "手机沙盒 · 代理内存 ${status.sandboxRssBytes.takeIf { it > 0 }?.let { Storage.format(it) } ?: "—"}"
+                else "主机状态 · CPU ${status.cpuUsagePercent?.let { "%.0f%%".format(it) } ?: "—"} · 内存 ${"%.0f%%".format(status.memoryUsedPercent)}",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.height(8.dp))
-        BlockTitle("助手")
-        if (chosen != null) {
-            EngineRow(kernel = chosen, selected = true, onClick = { assistantPickerOpen = true })
-        } else {
-            Text(if (connected) "当前设备没有可用的助手" else "连接后可选择助手", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        TextButton(onClick = { assistantPickerOpen = true }, enabled = detected.isNotEmpty()) {
-            Text("更换助手")
-        }
-        if (assistantPickerOpen) {
-            AlertDialog(
-                onDismissRequest = { assistantPickerOpen = false },
-                title = { Text(if (local) "选择本机助手" else "选择电脑助手") },
-                text = {
-                    Column(Modifier.verticalScroll(rememberScrollState())) {
-                        selectable.forEach { kernel ->
-                            EngineRow(kernel, kernel.id == chosen?.id) { onSetEngine(kernel.id); assistantPickerOpen = false }
+    }
+
+    if (assistantPickerOpen) {
+        AlertDialog(
+            onDismissRequest = { assistantPickerOpen = false },
+            title = { Text(if (local) "选择本机助手" else "选择电脑助手") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("根据当前设备检测；可用不代表已登录或已配置模型。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (selectable.isEmpty()) Text("未检测到可用助手", modifier = Modifier.padding(vertical = 12.dp))
+                    selectable.forEach { kernel ->
+                        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                            .selectable(kernel.id == chosen?.id, role = Role.RadioButton) { onSetEngine(kernel.id); assistantPickerOpen = false }
+                            .padding(vertical = 12.dp, horizontal = 8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                RadioButton(selected = kernel.id == chosen?.id, onClick = null)
+                                Spacer(Modifier.width(10.dp))
+                                Text(kernel.displayName, style = MaterialTheme.typography.titleSmall)
+                            }
+                            kernel.manifest?.let { manifest ->
+                                Text(if (manifest.session.resume) "支持历史会话延续" else "支持当前会话内连续对话", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 34.dp))
+                            }
                         }
-                        if (unavailable.isNotEmpty()) UnavailableEngines(unavailable)
                     }
-                },
-                confirmButton = { TextButton(onClick = { assistantPickerOpen = false }) { Text("完成") } },
-                dismissButton = { TextButton(onClick = onRefreshEngines, enabled = connected) { Text("重新检测") } },
-            )
-        }
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-            Text(
-                if (chosen == null && !local) "刷新内核表" else "刷新",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { onRefreshEngines() }
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-            )
-            Icon(
-                Icons.Outlined.Refresh,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(14.dp),
-            )
-        }
-
-        Spacer(Modifier.height(14.dp))
-
-        // ---- where work happens ----------------------------------------------
-        BlockTitle("工作目录")
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .clickable { pickerOpen = true }
-                .padding(horizontal = 12.dp, vertical = 11.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    shortPath(workingDirectory),
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (workspaces.isNotEmpty()) {
-                    Text(
-                        "最近用过 ${workspaces.size} 个目录 · 点击更换",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    Text(
-                        "点击更换",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    val unavailable = detected.filterNot { it.selectable }
+                    if (unavailable.isNotEmpty()) {
+                        Text("暂不可用", style = MaterialTheme.typography.labelMedium)
+                        unavailable.forEach { kernel ->
+                            Text("${kernel.displayName} · ${kernel.detail}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
                 }
-            }
-            Text("更换", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-        }
-
-        Spacer(Modifier.height(10.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            QuickAction(
-                "新建会话",
-                Icons.Outlined.ChatBubbleOutline,
-                primary = true,
-                modifier = Modifier.weight(1.4f),
-                enabled = canCreateChat,
-                onClick = onNewChat,
-            )
-            QuickAction("文件", Icons.Outlined.FolderOpen, modifier = Modifier.weight(1f), onClick = onBrowseFiles)
-            QuickAction("终端", Icons.Outlined.Terminal, modifier = Modifier.weight(1f), onClick = onOpenTerminal)
-            QuickAction("系统", Icons.Outlined.Memory, modifier = Modifier.weight(1f), onClick = onOpenSystem)
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        // ---- back into what was already running -------------------------------
-        BlockTitle("最近会话")
-        if (chats.isEmpty() && sessions.isEmpty()) {
-            Text(
-                if (local) "还没有会话。新建一个，与手机上的助手开始工作。" else "还没有会话。新建一个，接着电脑上的助手继续工作。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            // Live conversations first: they are the ones with a runtime behind
-            // them right now. Then what the kernels recorded on disk, which is
-            // what "what was I doing on this machine" actually means.
-            chats.forEach { chat ->
-                RecentRow(
-                    title = chat.title.ifBlank { "未命名会话" },
-                    subtitle = listOfNotNull(
-                        chat.engine.ifBlank { null },
-                        shortPath(chat.cwd).ifBlank { null },
-                        chat.status.takeIf { it.isNotBlank() && it != "idle" },
-                    ).joinToString(" · "),
-                    action = "继续",
-                    onClick = { onOpenChat(chat.id) },
-                )
-            }
-            sessions.take(if (chats.isEmpty()) 6 else 4).forEach { session ->
-                RecentRow(
-                    title = session.title?.takeIf { it.isNotBlank() } ?: session.id.take(10),
-                    subtitle = listOfNotNull(
-                        session.engine,
-                        session.cwd?.let { shortPath(it) }?.takeIf { it.isNotBlank() },
-                        session.updatedAt?.let { shortStamp(it) },
-                    ).joinToString(" · "),
-                    action = if (session.canResume) "接上" else "看",
-                    onClick = { onOpenSession(session) },
-                )
-            }
-        }
-
-        Spacer(Modifier.height(24.dp))
-    }
-
-    if (pickerOpen) {
-        WorkingDirectoryDialog(
-            current = workingDirectory,
-            candidates = (workspaces.map { it.cwd } + roots + workingDirectory)
-                .filter { it.isNotBlank() }
-                .distinct(),
-            onPick = {
-                onSetWorkingDirectory(it)
-                pickerOpen = false
             },
-            onDismiss = { pickerOpen = false },
+            confirmButton = { TextButton(onClick = { assistantPickerOpen = false }) { Text("完成") } },
+            dismissButton = { TextButton(onClick = onRefreshEngines, enabled = connected) { Text("重新检测") } },
         )
+    }
+    if (pickerOpen) WorkingDirectoryDialog(workingDirectory,
+        (workspaces.map { it.cwd } + roots + workingDirectory).filter { it.isNotBlank() }.distinct(),
+        onPick = { onSetWorkingDirectory(it); pickerOpen = false }, onDismiss = { pickerOpen = false })
+}
+
+@Composable
+private fun BlockTitle(text: String, modifier: Modifier = Modifier) {
+    Text(text, modifier, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+}
+
+@Composable
+private fun TargetChip(label: String, icon: ImageVector, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Row(modifier.clip(RoundedCornerShape(14.dp))
+        .background(if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)
+        .selectable(selected, role = Role.RadioButton, onClick = onClick).heightIn(min = 52.dp).padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+        Icon(icon, null, Modifier.size(20.dp), tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
     }
 }
 
-/** One line of "this is what was running", live or recorded. */
 @Composable
-private fun RecentRow(
-    title: String,
-    subtitle: String,
-    action: String,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+private fun ContextRow(icon: ImageVector, label: String, value: String, action: String, enabled: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(enabled = enabled, onClickLabel = action, onClick = onClick).heightIn(min = 60.dp).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        Text(
-            action,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-        )
+        Icon(Icons.Outlined.ChevronRight, action, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
-private fun BlockTitle(text: String) {    Text(
-        text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(bottom = 6.dp),
-    )
-}
-
-@Composable
-private fun TargetChip(
-    label: String,
-    selected: Boolean,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    Box(
-        modifier = modifier
-            .alpha(if (enabled) 1f else 0.45f)
-            .clip(RoundedCornerShape(10.dp))
-            .background(
-                if (selected) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceVariant,
-            )
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(vertical = 10.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-        )
+private fun QuickAction(label: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
+    Column(modifier.clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceVariant)
+        .clickable(onClick = onClick).padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, null, Modifier.size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge)
     }
 }
 
 @Composable
-private fun EngineRow(kernel: KernelInfo, selected: Boolean, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(9.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(7.dp)
-                .clip(CircleShape)
-                .background(
-                    if (selected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.outline,
-                ),
-        )
-        Spacer(Modifier.width(10.dp))
-        Text(
-            kernel.displayName,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (kernel.tier.isNotBlank() && kernel.tier != "native") {
-            Text(
-                kernel.tier,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+private fun RecentRow(title: String, subtitle: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).heightIn(min = 72.dp).padding(vertical = 12.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(4.dp))
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-    }
-}
-
-/** The kernels this machine found but cannot drive yet — with the PC's own reason. */
-@Composable
-private fun UnavailableEngines(engines: List<KernelInfo>) {
-    var open by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth()) {
-        Text(
-            if (open) "收起不可用的 ${engines.size} 个" else "另有 ${engines.size} 个不可用 ▾",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .clickable { open = !open }
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-        )
-        if (open) {
-            engines.forEach { kernel ->
-                Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp)) {
-                    Text(
-                        kernel.displayName,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (kernel.detail.isNotBlank()) {
-                        Text(
-                            kernel.detail,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.outline,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun QuickAction(
-    label: String,
-    icon: ImageVector,
-    modifier: Modifier = Modifier,
-    primary: Boolean = false,
-    enabled: Boolean = true,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(
-                if (primary) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceVariant,
-            )
-            .alpha(if (enabled) 1f else 0.45f)
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(vertical = 11.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = if (primary) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (primary) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-        )
+        Spacer(Modifier.width(8.dp))
+        Icon(Icons.AutoMirrored.Outlined.ArrowForward, "打开会话", Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

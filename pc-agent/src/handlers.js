@@ -604,6 +604,7 @@ export function createFrameHandler(ctx) {
           if (wantDsh) all.push(...(await listSessions({ engine: 'dsh' })));
           if (wantCodex) {
             try {
+              if (!getKernel('codex')?.available) throw new Error('当前设备未检测到可运行的 Codex');
               const codexList = await listCodexSessions(chats);
               all.push(...codexList.sessions);
               codexSource = codexList.source;
@@ -959,7 +960,7 @@ export function createFrameHandler(ctx) {
         if (!chat) {
           send(S2C.ERROR, { code: 'no_chat', message: '会话不存在' });
         } else {
-          send(S2C.CHAT, decorateChat(chat.detail(Number.isInteger(frame.afterSeq) ? frame.afterSeq : 0)));
+          send(S2C.CHAT, decorateChat(chat.detail()));
         }
         break;
       }

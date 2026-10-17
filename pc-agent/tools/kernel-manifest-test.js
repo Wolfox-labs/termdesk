@@ -41,6 +41,11 @@ check('max output is declared planned until the full write path exists',
 check('arbitrary phone-side model registration is not claimed yet',
   list.every((kernel) => kernel.manifest.model.add === false));
 
+check('ACP input modalities are planned until the adapter discovers them',
+  byId.opencode.manifest.config.schema.find((field) => field.id === 'inputModalities').support === 'planned');
+check('a kernel without transport has no configuration scope',
+  manifestFor({ id: 'no-transport', transport: null }).config.scope === 'none');
+check('all resume fields derive from the capability contract', list.every((kernel) => kernel.resume === kernel.manifest.session.resume));
 const unknown = manifestFor('made-up-kernel');
 check('unknown kernels receive a safe unsupported manifest',
   unknown.known === false && unknown.driver === 'none' && unknown.session.resume === false,

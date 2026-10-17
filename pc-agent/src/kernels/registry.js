@@ -55,7 +55,7 @@ function firstFile(candidates) {
  * everything worth running is on PATH, and hard-coding a /data/data/... path
  * there would be a Windows habit leaking into a Linux userland.
  */
-function firstOnPath(names) {
+function firstOnPath(names, rejections = []) {
   const dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
   for (const name of names) {
     const candidates = process.platform === 'win32' && !path.extname(name)
@@ -63,7 +63,7 @@ function firstOnPath(names) {
       : [name];
     for (const dir of dirs) {
       for (const candidate of candidates) {
-        const found = executableOrNull(path.join(dir, candidate));
+        const found = executableOrNull(path.join(dir, candidate), rejections);
         if (found) return found;
       }
     }
@@ -72,11 +72,13 @@ function firstOnPath(names) {
 }
 
 /** A command must exist and be executable on this host, not just have a name. */
-function executableOrNull(candidate) {
+function executableOrNull(candidate, rejections = []) {
   const found = fileOrNull(candidate);
   if (!found) return null;
+  const reject = (reason) => { rejections.push({ path: found, reason }); return null; };
+  if (/\.(cmd|bat)$/i.test(found)) return reject('脚本类型不支持（.cmd/.bat）；请登记原生可执行文件或 Node 脚本入口');
   if (process.platform !== 'win32') {
-    try { fs.accessSync(found, fs.constants.X_OK); } catch { return null; }
+    try { fs.accessSync(found, fs.constants.X_OK); } catch { return reject('文件没有执行权限'); }
     // An executable bit on a copied Windows binary does not make it runnable
     // inside the Android/Linux sandbox.
     let fd;
@@ -84,16 +86,16 @@ function executableOrNull(candidate) {
       fd = fs.openSync(found, 'r');
       const header = Buffer.alloc(2);
       fs.readSync(fd, header, 0, 2, 0);
-      if (header.toString('ascii') === 'MZ') return null;
+      if (header.toString('ascii') === 'MZ') return reject('Windows 可执行文件无法在当前系统运行');
     } catch { return null; } finally { if (fd !== undefined) fs.closeSync(fd); }
   }
   return found;
 }
 
-function resolveExecutable(candidate) {
+function resolveExecutable(candidate, rejections = []) {
   if (!candidate || typeof candidate !== 'string') return null;
-  if (path.isAbsolute(candidate) || candidate.includes('/') || candidate.includes('\\')) return executableOrNull(candidate);
-  return firstOnPath([candidate]);
+  if (path.isAbsolute(candidate) || candidate.includes('/') || candidate.includes('\\')) return executableOrNull(candidate, rejections);
+  return firstOnPath([candidate], rejections);
 }
 
 /**
@@ -126,9 +128,9 @@ function table() {
       // The only kernel that can narrate a session in flight (see the descriptor).
       liveTerminals: true,
       detail: '官方 app-server：列表 / 读取 / 恢复 / fork / 打断都由内核提供',
-      resolve: () => {
+      resolve: (rejections) => {
         if (process.env.TERMDESK_CODEX) return fileOrNull(process.env.TERMDESK_CODEX) ?? process.env.TERMDESK_CODEX;
-        if (process.platform !== "win32") return firstOnPath(["codex"]);
+        if (process.platform !== "win32") return firstOnPath(["codex"], rejections);
         const base = path.join(os.homedir(), 'AppData', 'Local', 'OpenAI', 'Codex', 'bin');
         try {
           for (const entry of fs.readdirSync(base)) {
@@ -150,11 +152,11 @@ function table() {
       // fails. The sentence below says the same thing a second time on purpose.
       resume: false,
       detail: 'SDK 运行时：可连续对话；历史恢复尚未开放',
-      resolve: () => {
+      resolve: (rejections) => {
         if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
         // In a sandbox, "dsh" is whatever is on PATH; the Windows path below
         // only exists inside the desktop app install.
-        if (process.platform !== "win32") return firstOnPath(["dsh"]);
+        if (process.platform !== "win32") return firstOnPath(["dsh"], rejections);
         // Must be the JS entry: the chat pipeline launches it as
         // `node <entry> --profile sdk`, and `bin/dsh.ps1` is only a launcher shim.
         return firstFile([
@@ -172,9 +174,9 @@ function table() {
       acpArgs: ['acp'],
       resume: true,
       detail: 'ACP：会话列表 / 恢复 / fork / 图片与内嵌上下文',
-      resolve: () => {
+      resolve: (rejections) => {
         if (process.env.TERMDESK_OPENCODE) return fileOrNull(process.env.TERMDESK_OPENCODE) ?? process.env.TERMDESK_OPENCODE;
-        if (process.platform !== "win32") return firstOnPath(["opencode"]);
+        if (process.platform !== "win32") return firstOnPath(["opencode"], rejections);
         return firstFile([
           path.join('D:', path.sep, 'OpenCode', 'opencode-cli.exe'),
           path.join(LOCAL_PROGRAMS, '@opencode-aidesktop', 'resources', 'bin', 'opencode-cli.exe'),
@@ -191,9 +193,9 @@ function table() {
       acpArgs: ['acp'],
       resume: true,
       detail: 'ACP（OpenCode 内核）：会话列表 / 恢复 / fork',
-      resolve: () => {
+      resolve: (rejections) => {
         if (process.env.TERMDESK_MIMO) return fileOrNull(process.env.TERMDESK_MIMO) ?? process.env.TERMDESK_MIMO;
-        if (process.platform !== "win32") return firstOnPath(["mimo"]);
+        if (process.platform !== "win32") return firstOnPath(["mimo"], rejections);
         return nodeEntry([
           path.join(NPM_ROOT, 'node_modules', '@mimo-ai', 'cli', 'bin', 'mimo'),
         ]);
@@ -234,9 +236,9 @@ function table() {
         replay: false,
         verified: false,
       },
-      resolve: () => fileOrNull(process.env.TERMDESK_QODER)
+      resolve: (rejections) => fileOrNull(process.env.TERMDESK_QODER)
         ?? (process.platform !== "win32"
-          ? firstOnPath(["qoderclicn", "qoder"])
+          ? firstOnPath(["qoderclicn", "qoder"], rejections)
           : firstFile([path.join(LOCAL_PROGRAMS, "QoderWork CN", "resources", "bin", "qoderclicn.exe")])),
     },
     {
@@ -259,9 +261,9 @@ function table() {
       acpArgs: ['acp', '--no-auto-update'],
       resume: true,
       detail: 'ACP（1.74.1 原生）：会话列表 / 读取回放 / 恢复 / 图片与内嵌上下文',
-      resolve: () => {
+      resolve: (rejections) => {
         if (process.env.TERMDESK_COMMAND_CODE) return fileOrNull(process.env.TERMDESK_COMMAND_CODE) ?? process.env.TERMDESK_COMMAND_CODE;
-        if (process.platform !== "win32") return firstOnPath(["cmdc", "commandcode", "command-code"]);
+        if (process.platform !== "win32") return firstOnPath(["cmdc", "commandcode", "command-code"], rejections);
         return nodeEntry([
           path.join(NPM_ROOT, 'node_modules', 'command-code', 'dist', 'index.mjs'),
         ]);
@@ -273,7 +275,7 @@ function table() {
       tier: 'unsupported',
       transport: null,
       detail: '只有图形界面与语言服务进程，没有可编程的会话接口',
-      resolve: () => fileOrNull(path.join(LOCAL_PROGRAMS, 'antigravity', 'Antigravity.exe')),
+      resolve: (rejections) => fileOrNull(path.join(LOCAL_PROGRAMS, 'antigravity', 'Antigravity.exe')),
     },
     {
       id: 'doubao',
@@ -281,7 +283,7 @@ function table() {
       tier: 'unsupported',
       transport: null,
       detail: '桌面聊天应用，未提供命令行或协议接口',
-      resolve: () => fileOrNull(path.join(os.homedir(), 'AppData', 'Local', 'Doubao', 'Application', 'Doubao.exe')),
+      resolve: (rejections) => fileOrNull(path.join(os.homedir(), 'AppData', 'Local', 'Doubao', 'Application', 'Doubao.exe')),
     },
   ];
 }
@@ -309,7 +311,7 @@ function envKernels(raw = process.env.TERMDESK_ACP_KERNELS) {
       detail: '来自 TERMDESK_ACP_KERNELS 的 ACP 内核',
       // `preArgs` is the prelude a node-hosted CLI needs (node + script);
       // without it the flags would go to the runtime instead of the CLI.
-      resolve: () => (Array.isArray(k.preArgs) && k.preArgs.length
+      resolve: (rejections) => (Array.isArray(k.preArgs) && k.preArgs.length
         ? { bin: fileOrNull(k.bin) ?? k.bin, args: k.preArgs }
         : (fileOrNull(k.bin) ?? k.bin)),
     }));
@@ -347,7 +349,7 @@ function envCliKernels(raw = process.env.TERMDESK_CLI_KERNELS) {
       },
       // `preArgs` is the prelude a node-hosted CLI needs (node + script);
       // without it the flags would go to the runtime instead of the CLI.
-      resolve: () => (Array.isArray(k.preArgs) && k.preArgs.length
+      resolve: (rejections) => (Array.isArray(k.preArgs) && k.preArgs.length
         ? { bin: fileOrNull(k.bin) ?? k.bin, args: k.preArgs }
         : (fileOrNull(k.bin) ?? k.bin)),
     }));
@@ -358,12 +360,20 @@ function fileKernels() {
   const directory = process.env.TERMDESK_KERNEL_MANIFEST_DIR || path.join(os.homedir(), '.termdesk', 'kernels');
   let files;
   try { files = fs.readdirSync(directory).filter((name) => name.endsWith('.json')).sort(); } catch { return []; }
-  const items = files.flatMap((name) => {
+  const items = [];
+  for (const name of files) {
+    const location = path.join(directory, name);
     try {
-      const value = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'));
-      return Array.isArray(value) ? value : [value];
-    } catch { return []; }
-  }).filter((item) => item && typeof item.id === 'string' && typeof item.bin === 'string');
+      const value = JSON.parse(fs.readFileSync(location, 'utf8'));
+      for (const item of Array.isArray(value) ? value : [value]) {
+        if (!item || typeof item.id !== 'string' || !item.id.trim() || typeof item.bin !== 'string' || !item.bin.trim()) {
+          console.warn('[kernels] ' + location + ': 配置缺少有效的 id / bin，已跳过');
+        } else if (item.transport && !['acp', 'cli'].includes(item.transport)) {
+          console.warn('[kernels] ' + location + ': 不支持的 transport，已跳过');
+        } else items.push(item);
+      }
+    } catch (error) { console.warn('[kernels] ' + location + ': 无法读取助手配置（' + error.message + '）'); }
+  }
   return [
     ...envKernels(JSON.stringify(items.filter((item) => !item.transport || item.transport === 'acp'))),
     ...envCliKernels(JSON.stringify(items.filter((item) => item.transport === 'cli'))),
@@ -381,17 +391,17 @@ function allEntries() {
  * only a runtime host (node + an npm entry), so the picker shows the kernel
  * rather than "node.exe".
  */
-export function kernelCommand(entry) {
-  const resolved = entry.resolve();
+export function kernelCommand(entry, rejections = []) {
+  const resolved = entry.resolve(rejections);
   if (!resolved) return null;
   if (typeof resolved === 'string' && entry.transport === 'sdk' && /\.[cm]?js$/i.test(resolved)) {
     // DSH's JS entry is launched through Node; the script needs to be readable,
     // not executable. Check the runtime and script independently.
     const script = fileOrNull(resolved);
-    const runtime = executableOrNull(process.execPath);
+    const runtime = executableOrNull(process.execPath, rejections);
     return script && runtime ? { bin: runtime, args: [script], script } : null;
   }
-  const bin = resolveExecutable(typeof resolved === 'string' ? resolved : resolved.bin);
+  const bin = resolveExecutable(typeof resolved === 'string' ? resolved : resolved.bin, rejections);
   if (!bin) return null;
   if (typeof resolved === 'string') return { bin, args: [], script: null };
   const args = [...(resolved.args ?? [])];
@@ -417,7 +427,9 @@ function shimVerified(entry) {
 
 export function listKernels({ installedOnly = false } = {}) {
   const descriptors = allEntries().map((entry) => {
-    const command = kernelCommand(entry);
+    const rejections = [];
+    const command = kernelCommand(entry, rejections);
+    const manifest = manifestFor(entry);
     const available = Boolean(command);
     return {
       id: entry.id,
@@ -434,7 +446,7 @@ export function listKernels({ installedOnly = false } = {}) {
       ),
       path: command ? (command.script ?? command.bin) : null,
       args: command?.args ?? null,
-      detail: available ? entry.detail : (entry.tier === 'unsupported' ? '未安装' : '未在本机找到'),
+      detail: available ? entry.detail : (rejections[0] ? rejections[0].reason + '：' + rejections[0].path : (entry.tier === 'unsupported' ? '未安装' : '未在本机找到')),
       shim: entry.shim ?? null,
       multiTurn: entry.tier === 'native' || entry.tier === 'acp' || (entry.tier === 'shim' && shimVerified(entry)),
       progress: entry.tier === 'native' || entry.tier === 'acp' || entry.tier === 'shim',
@@ -442,7 +454,7 @@ export function listKernels({ installedOnly = false } = {}) {
       // whether it can reopen a past conversation. DSH is native and still has
       // no verified resume, and saying otherwise is what makes a phone offer a
       // button that cannot work.
-      resume: Boolean(entry.resume),
+      resume: manifest.session.resume,
       // Whether a LIVE session can report work it is doing right now. Asked by
       // "进行中", whose promise is "what is still running on the PC": only the
       // app-server kernel exposes that, and asking the others buys a round trip
@@ -451,7 +463,7 @@ export function listKernels({ installedOnly = false } = {}) {
       // Where a new conversation's default model comes from. Declared per kernel
       // because the three answers are genuinely different - see kernels/contract.js.
       modelRoute: entry.modelRoute ?? 'default',
-      manifest: manifestFor(entry),
+      manifest,
     };
   });
   return installedOnly ? descriptors.filter((kernel) => kernel.available) : descriptors;
