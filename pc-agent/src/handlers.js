@@ -34,7 +34,6 @@ import {
 } from './codexconfig.js';
 import { listSessions, readSession, deleteSession, sessionRoots } from './sessions.js';
 import {
-  chatEngineIds,
   clearKernelPath,
   getKernel,
   isAdapterKernel,
@@ -137,8 +136,7 @@ async function listCodexSessions(chats) {
  * and keeping it in the list arm made every "open this session" fail with
  * "resumeVerdict is not defined".
  */
-function resumeVerdict(engineId) {
-  const kernel = getKernel(engineId);
+function resumeVerdict(engineId, kernel = getKernel(engineId)) {
   if (!kernel) return { canResume: false, resumeNote: `未知内核 "${engineId}"，无法判断能否继续` };
   if (!kernel.available) return { canResume: false, resumeNote: `${kernel.label} 当前不可用` };
   if (kernel.resume) return { canResume: true, resumeNote: null };
@@ -688,6 +686,10 @@ export function createFrameHandler(ctx) {
 
       case C2S.SESSIONS_LIST: {
         try {
+          // Discover once per request, rather than once per history row. A large
+          // history must not block the socket heartbeat with filesystem scans.
+          const kernels = listKernels();
+          const kernelsById = new Map(kernels.map((kernel) => [kernel.id, kernel]));
           // The kernel is the authority for its own sessions; TermDesk only asks.
           // The on-disk scan survives as a fallback so history stays visible when
           // Codex itself is unreachable.
@@ -702,7 +704,7 @@ export function createFrameHandler(ctx) {
           // sessions that can be opened again.
           const kernelWanted = frame.engine
             ? (isAdapterKernel(frame.engine) ? [frame.engine] : [])
-            : chatEngineIds().filter((id) => isAdapterKernel(id));
+            : kernels.filter((kernel) => kernel.selectable && ['acp', 'shim'].includes(kernel.tier)).map((kernel) => kernel.id);
           const acpSources = {};
           for (const engineId of kernelWanted) {
             try {
@@ -715,7 +717,7 @@ export function createFrameHandler(ctx) {
           if (wantDsh) all.push(...(await listSessions({ engine: 'dsh' })));
           if (wantCodex) {
             try {
-              if (!getKernel('codex')?.available) throw new Error('当前设备未检测到可运行的 Codex');
+              if (!kernelsById.get('codex')?.available) throw new Error('当前设备未检测到可运行的 Codex');
               const codexList = await listCodexSessions(chats);
               all.push(...codexList.sessions);
               codexSource = codexList.source;
@@ -748,7 +750,7 @@ export function createFrameHandler(ctx) {
             roots: sessionRoots(),
             total: all.length,
             workspaces,
-            sessions: all.slice(0, 600).map((s) => ({ ...s, ...resumeVerdict(s.engine) })),
+            sessions: all.slice(0, 600).map((s) => ({ ...s, ...resumeVerdict(s.engine, kernelsById.get(s.engine) ?? null) })),
             // Tells the client where the Codex index came from: the kernel's own
             // session API, or the on-disk fallback when Codex is unreachable.
             codexSource,

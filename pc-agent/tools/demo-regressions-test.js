@@ -121,3 +121,37 @@ test('session listing never launches an unavailable Codex executable', async () 
     if (prior === undefined) delete process.env.TERMDESK_CODEX; else process.env.TERMDESK_CODEX = prior;
   }
 });
+
+test('600 history rows share one discovery snapshot and the next request refreshes it', async () => {
+  const prior = process.env.TERMDESK_ACP_KERNELS;
+  const priorState = process.env.TERMDESK_KERNEL_STATE;
+  const stateFile = path.join(os.tmpdir(), `termdesk-history-state-${process.pid}.json`);
+  process.env.TERMDESK_KERNEL_STATE = stateFile;
+  const originalRead = fs.readFileSync;
+  let discoveries = 0;
+  fs.readFileSync = function (file, ...args) {
+    if (file === stateFile) discoveries += 1;
+    return originalRead.call(this, file, ...args);
+  };
+  try {
+    const register = (resume) => {
+      process.env.TERMDESK_ACP_KERNELS = JSON.stringify([{ id: 'bulk-history', bin: process.execPath, resume }]);
+    };
+    register(true);
+    const sessions = Array.from({ length: 600 }, (_, index) => ({ engine: 'bulk-history', id: `s${index}`, cwd: process.cwd() }));
+    const { handle, frames } = fixture({ listAcpSessions: async () => sessions });
+    await handle({ type: 'sessions.list', engine: 'bulk-history' });
+    assert.equal(discoveries, 1, 'discovery must not repeat for every session');
+    const first = frames.find((frame) => frame.type === 'sessions');
+    assert.equal(first.sessions.length, 600);
+    assert.ok(first.sessions.every((session) => session.canResume === true));
+    register(false);
+    await handle({ type: 'sessions.list', engine: 'bulk-history' });
+    assert.equal(discoveries, 2, 'the snapshot must not outlive this request');
+    assert.ok(frames.filter((frame) => frame.type === 'sessions').at(-1).sessions.every((session) => session.canResume === false));
+  } finally {
+    fs.readFileSync = originalRead;
+    if (prior === undefined) delete process.env.TERMDESK_ACP_KERNELS; else process.env.TERMDESK_ACP_KERNELS = prior;
+    if (priorState === undefined) delete process.env.TERMDESK_KERNEL_STATE; else process.env.TERMDESK_KERNEL_STATE = priorState;
+  }
+});
