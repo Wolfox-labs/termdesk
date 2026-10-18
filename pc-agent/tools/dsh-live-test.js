@@ -162,6 +162,50 @@ if (host) {
   }
 }
 
+// --- queue state must reach the phone ---------------------------------------
+{
+  const { ChatManager } = await import('../src/chat.js');
+  process.env.TERMDESK_CHAT_PROVIDER = process.env.TERMDESK_CHAT_PROVIDER || 'deepseek-official';
+  process.env.TERMDESK_CHAT_MODEL = process.env.TERMDESK_CHAT_MODEL || 'deepseek-flash';
+  const manager = new ChatManager();
+  try {
+    const created = manager.create({ engine: 'dsh', cwd: tmp });
+    const chat = manager.get(created.chat.id);
+    // A live-attached chat that cannot find a journal must not add a SECOND copy
+    // of the user's line: send() already put it on screen.
+    chat.liveHost = { pid: 0, port: 1, authority: '127.0.0.1:1' };
+    await manager.send(chat.id, 'one line only');
+    const copies = chat.events.filter((e) => e.kind === 'message' && e.role === 'user'
+      && e.text === 'one line only').length;
+    check('a live send does not duplicate the user line send() already showed',
+      copies === 1, copies + ' copies');
+
+    // Now the queue events the desktop records.
+    chat.status = 'running';
+    chat.livePendingText = 'waiting there';
+    chat.livePendingLine = chat.events[chat.events.length - 1];
+    chat.liveQueued = false;
+    chat.liveEchoSeen = false;
+    manager.handleLiveInbox(chat, {
+      type: 'agent/inbox/spliced',
+      data: { target: 'next-turn', inserted: [{ content: [{ type: 'text', text: 'waiting there' }] }] },
+    });
+    check('an insertion is reported as waiting on the desktop', chat.liveQueued === true);
+    check('and the chat says so in words',
+      chat.events.some((e) => e.role === 'engine' && /排在电脑端当前回合之后/.test(e.text ?? '')));
+
+    manager.handleLiveInbox(chat, {
+      type: 'agent/inbox/spliced',
+      data: { target: 'next-turn', removedCount: 1, inserted: [], outcome: 'canceled' },
+    });
+    check('deleting it on the desktop returns the chat to idle', chat.status === 'idle', chat.status);
+    check('and says the message will not be sent',
+      chat.events.some((e) => e.role === 'engine' && /不会再发出去/.test(e.text ?? '')));
+    check('the pending state is cleared', chat.livePendingText === null && chat.liveQueued === false);
+  } finally {
+    manager.disposeAll();
+  }
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 const failed = results.filter((r) => !r.passed).length;
 console.log(`\nDSH live attach: ${results.length - failed}/${results.length} passed`);

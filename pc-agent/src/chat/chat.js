@@ -83,6 +83,20 @@ export class Chat {
     this.liveHost = null;
     /** The journal follower for a live-attached turn (see ChatManager.sendDshLive). */
     this.liveTail = null;
+    /**
+     * The live message this side submitted and has not seen echoed yet.
+     *
+     * Kept so the desktop's queue events can be interpreted: an insertion means
+     * "waiting there", and a cancellation means "deleted there" -- which the phone
+     * must hear about instead of showing a cancelled message as still queued.
+     */
+    this.livePendingText = null;
+    this.livePendingLine = null;
+    this.liveQueued = false;
+    this.liveQueuedNoted = false;
+    this.liveEchoSeen = false;
+    this.liveTurnStarted = false;
+    this.liveDeadline = null;
     this.runtimeStarted = false;
     /** Codex thread id (engine=codex only), kept separately for resume. */
     this.threadId = threadId;

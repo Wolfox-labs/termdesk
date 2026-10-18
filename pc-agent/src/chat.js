@@ -797,18 +797,21 @@ export class ChatManager {
       this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
       return { ok: false, code: 'no_journal', message: messageText, userSeq };
     }
-    let fromOffset = 0;
-    try { fromOffset = fs.statSync(file).size; } catch { fromOffset = 0; }
+
+    // The journal is watched for the whole attachment, not just this turn: the
+    // desktop user may type there too, and both ends must show one conversation.
+    this.startLiveWatch(chat, file);
 
     chat.status = 'running';
     chat.ready = true;
+    chat.livePendingText = message;
+    chat.livePendingLine = userSeq ?? chat.pendingUserEcho ?? null;
+    chat.liveQueued = false;
+    chat.liveQueuedNoted = false;
     chat.liveEchoSeen = false;
     chat.liveTurnStarted = false;
     this.emit({ event: 'chat.status', chatId: chat.id, status: 'running' });
-    const line = chat.push({ kind: 'message', role: 'user', text: message });
-    chat.pendingUserEcho = line;
-    this.emitEvent(chat, line);
-    void userSeq;
+    if (chat.livePendingLine) this.emitEvent(chat, chat.livePendingLine);
 
     const result = await livePrompt(chat.liveHost, {
       sessionId: chat.sessionId,
@@ -817,7 +820,7 @@ export class ChatManager {
     });
 
     if (!result.ok) {
-      chat.pendingUserEcho = null;
+      this.clearLivePending(chat);
       chat.status = 'failed';
       chat.lastError = result.message;
       this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
@@ -828,33 +831,25 @@ export class ChatManager {
       chat.push({ kind: 'error', role: 'engine', text: `桌面端没有接受这条消息：${result.message}${hint}` });
       return { ok: false, code: 'live_prompt_failed', message: result.message, userSeq };
     }
-
-    this.startLiveTail(chat, file, fromOffset);
+    this.armLiveDeadline(chat);
     return { ok: true, userSeq, messageId: null, sessionId: chat.sessionId };
   }
 
-  /** Follow the events the desktop app appends to this conversation's journal. */
-  startLiveTail(chat, file, fromOffset) {
-    this.stopLiveTail(chat);
+  /**
+   * Follow the desktop app's journal for as long as this chat is attached.
+   *
+   * One watcher for the whole conversation (not one per turn): the desktop user can
+   * type there at any time, and the phone is meant to show the same conversation.
+   * It starts at the current end so history is not replayed twice.
+   */
+  startLiveWatch(chat, file) {
+    if (chat.liveTail) return;
     chat.liveTail = tailJournal(file, {
-      fromOffset,
       pollMs: 500,
       onEvent: (event) => this.handleLiveJournalEvent(chat, event),
       onError: () => {},
-      shouldStop: () => chat.status !== 'running',
+      shouldStop: () => false,
     });
-    // A turn that never ends must not leave the chat "running" for ever: the
-    // desktop side may have been closed mid-answer.
-    chat.liveDeadline = setTimeout(() => {
-      if (chat.status !== 'running') return;
-      chat.status = 'failed';
-      chat.lastError = '等待桌面端回复超时';
-      chat.push({ kind: 'error', role: 'engine', text: '等待桌面端回复超时（45 分钟）：可以重新发送，或到电脑上继续' });
-      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
-      this.emit({ event: 'chat.status', chatId: chat.id, status: 'failed' });
-      this.stopLiveTail(chat);
-    }, 45 * 60 * 1000);
-    chat.liveDeadline.unref?.();
   }
 
   stopLiveTail(chat) {
@@ -867,29 +862,130 @@ export class ChatManager {
     chat.liveTail = null;
   }
 
-  handleLiveJournalEvent(chat, event) {
-    const type = event?.type;
-    if (type === 'user/message') chat.liveEchoSeen = true;
-    // A turn that starts only after the echoed message is the turn this side
-    // queued. Until then, `turn/end` belongs to a turn that was already running
-    // (the desktop user's own), and finishing here would cut the answer short.
-    if (type === 'turn/start' && chat.liveEchoSeen) chat.liveTurnStarted = true;
-    if (type === 'turn/end') {
-      if (chat.liveEchoSeen && chat.liveTurnStarted) this.finishLiveTurn(chat);
-      return;
+  /** The state a pending live message owns; cleared on every exit path. */
+  clearLivePending(chat) {
+    chat.livePendingText = null;
+    chat.livePendingLine = null;
+    chat.liveQueued = false;
+    chat.liveQueuedNoted = false;
+    chat.liveEchoSeen = false;
+    chat.liveTurnStarted = false;
+    chat.pendingUserEcho = null;
+    if (chat.liveDeadline) {
+      clearTimeout(chat.liveDeadline);
+      chat.liveDeadline = null;
     }
-    // Everything else is the same vocabulary as the resident runtime, so the
-    // normaliser and the streaming previews are reused rather than duplicated.
-    this.handleSessionEvent(chat, { event });
   }
 
+  armLiveDeadline(chat) {
+    if (chat.liveDeadline) clearTimeout(chat.liveDeadline);
+    chat.liveDeadline = setTimeout(() => {
+      if (chat.status !== 'running') return;
+      chat.status = 'failed';
+      chat.lastError = '等待桌面端回复超时';
+      this.clearLivePending(chat);
+      chat.push({ kind: 'error', role: 'engine', text: '等待桌面端回复超时（45 分钟）：可以重新发送，或到电脑上继续' });
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'failed' });
+    }, 45 * 60 * 1000);
+    chat.liveDeadline.unref?.();
+  }
+
+  /** The text of one inbox item the runtime recorded. */
+  handleLiveJournalEvent(chat, event) {
+    const type = event?.type;
+
+    // Queue bookkeeping: this is how the desktop says "your message is waiting"
+    // and later "it was deleted", and without it the phone kept showing a
+    // cancelled message as still queued (and stayed "running" for ever).
+    if (type === 'agent/inbox/spliced') {
+      this.handleLiveInbox(chat, event);
+      return;
+    }
+
+    if (type === 'user/message') {
+      const normalized = dshEventToChatEvent(event);
+      if (normalized?.role === 'user' && this.isLiveEcho(chat, normalized.text)) {
+        chat.liveEchoSeen = true;
+        if (chat.liveQueued) {
+          chat.liveQueued = false;
+          chat.liveQueuedNoted = false;
+          this.pushAndEmit(chat, { kind: 'local', role: 'engine', text: '桌面端开始处理这条消息' });
+        }
+      }
+    }
+    // A turn that starts only after OUR echoed message is the turn we queued.
+    // Until then, `turn/end` belongs to a turn that was already running there.
+    if (type === 'turn/start' && chat.liveEchoSeen) chat.liveTurnStarted = true;
+
+    this.handleSessionEvent(chat, { event });
+
+    if (type === 'turn/end' && chat.liveEchoSeen && chat.liveTurnStarted) {
+      this.finishLiveTurn(chat);
+    }
+  }
+
+  isLiveEcho(chat, text) {
+    const pending = (chat.livePendingText ?? '').trim();
+    return pending.length > 0 && String(text ?? '').trim() === pending;
+  }
+
+  /**
+   * Reconcile TermDesk's view with the desktop's inbox.
+   *
+   * The desktop records `agent/inbox/spliced`: an insertion when the message waits
+   * behind a running turn, and a removal with `outcome: "canceled"` when the
+   * person deletes it from the queue there. Both must reach the phone, otherwise a
+   * deleted message still looks queued and the chat never leaves "running".
+   */
+  handleLiveInbox(chat, event) {
+    const data = event?.data ?? {};
+    if (data.target !== 'next-turn') return;
+    const textOf = (item) => (Array.isArray(item?.content) ? item.content : [])
+      .map((block) => (typeof block?.text === 'string' ? block.text : ''))
+      .join('')
+      .trim();
+    const pending = (chat.livePendingText ?? '').trim();
+    const inserted = Array.isArray(data.inserted) ? data.inserted : [];
+    const ours = pending.length > 0 && inserted.some((item) => textOf(item) === pending);
+
+    if (ours && !chat.liveEchoSeen) {
+      chat.liveQueued = true;
+      if (!chat.liveQueuedNoted) {
+        chat.liveQueuedNoted = true;
+        this.pushAndEmit(chat, {
+          kind: 'local',
+          role: 'engine',
+          text: '已交给桌面端：这条消息排在电脑端当前回合之后，还没开始处理',
+        });
+      }
+      return;
+    }
+
+    if (data.outcome === 'canceled' && chat.liveQueued && !chat.liveEchoSeen) {
+      const line = chat.livePendingLine;
+      this.clearLivePending(chat);
+      chat.status = 'idle';
+      if (line) {
+        line.canceled = true;
+        this.emitEvent(chat, line);
+      }
+      this.pushAndEmit(chat, {
+        kind: 'error',
+        role: 'engine',
+        text: '这条消息没有执行：电脑端把排队中的它删除了。手机端现在和电脑一致——它不会再发出去',
+      });
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'cancelled' });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
+      this.drainQueue(chat).catch(() => {});
+    }
+  }
+
+  /** The live turn is over: only the status changes, the watcher keeps mirroring. */
   finishLiveTurn(chat) {
     if (chat.status !== 'running') return;
+    this.clearLivePending(chat);
     chat.status = 'idle';
-    chat.pendingUserEcho = null;
-    this.stopLiveTail(chat);
-    chat.push({ kind: 'turn', role: 'engine', text: '', meta: { state: 'ended' } });
-    this.emit({ event: 'chat.turn', chatId: chat.id, state: 'ended' });
     this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
     this.notify(this.turnNotification(chat, 'ended'));
     this.drainQueue(chat).catch(() => {});
@@ -1737,7 +1833,10 @@ export class ChatManager {
       chat.liveHost = liveHost;
       chat.kernelLive = true;
       chat.ready = true;
-      chat.push({
+      // Mirror the conversation from the moment of attaching: messages typed on
+      // the desktop must arrive here too, and the phone must never be the reason a
+      // second writer exists.
+      if (detail?.meta?.filePath) this.startLiveWatch(chat, detail.meta.filePath);      chat.push({
         kind: 'local',
         role: 'engine',
         text: '已接入桌面版 DeepSeek Harness 的实时会话：消息直接进入桌面端的对话，回复也从那里读回',
