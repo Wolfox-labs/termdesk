@@ -18,6 +18,15 @@ export function createRelay({ config, configFile = null }) {
   const nodes = new Map(), clients = new Map(), tickets = new Map(), transfers = new Set();
   const attempts = new Map();
   const nodeInfo = id => config.nodes.find(n => n.id === id);
+  /**
+   * How many phones one computer may have connected at the same time.
+   *
+   * One is the default on purpose: every connected phone is another reader of the
+   * same event stream, and a phone that is asleep at the wrong moment used to make
+   * the other one look broken. Deployments that know what they are doing — a two
+   * phone owner, a test bench — opt in to more.
+   */
+  const maxClientsPerNode = Math.max(1, Number.parseInt(config.maxClientsPerNode ?? 1, 10) || 1);
   function nodeStatus(client, online) {
     send(client.ws, { type: 'node.status', online, nodeId: client.nodeId, hostname: nodeInfo(client.nodeId)?.label || client.nodeId });
   }
@@ -87,6 +96,7 @@ export function createRelay({ config, configFile = null }) {
           if (nodes.has(node.id)) { ws.close(4409, 'node already connected'); return; }
           identity = { role: 'node', id: node.id }; nodes.set(node.id, ws);
           clearTimeout(timeout); attempts.delete(peer);
+          console.log(`[relay] computer ${node.id} connected`);
           send(ws, { type: 'relay.ready', nodeId: node.id });
           for (const c of clients.values()) if (c.nodeId === node.id) { nodeStatus(c, true); openClient(c, ws); }
         } else {
@@ -98,10 +108,19 @@ export function createRelay({ config, configFile = null }) {
             catch { ws.close(1011, 'credential storage unavailable'); return; }
           }
           if (!device || !nodeInfo(device.nodeId)) { reject(); return; }
-          // The execution agent has one event route. Be explicit instead of letting clients steal it silently.
-          if ([...clients.values()].some(c => c.nodeId === device.nodeId)) { ws.close(4409, 'another client is active'); return; }
+          // The execution agent has one event route. Be explicit instead of letting
+          // clients steal it silently, and say how many are allowed rather than
+          // leaving the limit implicit in the code.
+          const connected = [...clients.values()].filter(c => c.nodeId === device.nodeId).length;
+          if (connected >= maxClientsPerNode) {
+            console.log(`[relay] phone ${device.id} refused: ${connected}/${maxClientsPerNode} already connected`);
+            ws.close(4409, 'another client is active'); return;
+          }
           const c = { id: crypto.randomUUID(), ws, nodeId: device.nodeId, deviceId: device.id, attached: false };
           identity = { role: 'client', id: c.id }; clients.set(c.id, c);
+          // Which phone, how many are online: the two facts worth having in the log
+          // when a phone says it cannot connect and nothing else does.
+          console.log(`[relay] phone ${device.id} online (${connected + 1}/${maxClientsPerNode}, node ${device.nodeId})`);
           clearTimeout(timeout); attempts.delete(peer);
           if (paired) send(ws, { type: 'device.paired', token: paired.token, deviceId: device.id });
           // The computer's list of phones is now stale; tell it, so it can refresh.
@@ -169,6 +188,7 @@ export function createRelay({ config, configFile = null }) {
         for (const transfer of transfers) if (transfer.nodeId === identity.id) transfer.ws.terminate();
       } else if (identity.role === 'client') {
         const c = clients.get(identity.id); clients.delete(identity.id);
+        if (c) console.log(`[relay] phone ${c.deviceId} offline`);
         if (c) send(nodes.get(c.nodeId), { type: 'relay.close', connectionId: c.id });
       }
     });

@@ -290,3 +290,59 @@ test('the agent-side connector mints, lists and revokes over its own channel', a
   assert.equal((await rejected.read('auth.fail')).reason, 'invalid credentials');
   assert.deepEqual(await connector.devices().then(d => d.filter(x => !x.revoked)), []);
 });
+
+/** A relay with a given `maxClientsPerNode`, paired phones and a node online. */
+async function seated(t, extra = {}) {
+  const relay = createRelay({ config: { version: 1, nodes: [{ id: 'pc', label: 'Test PC', keyHash: digest('node-key') }], devices: [], pairings: [], ...extra } });
+  const port = await listen(relay.server);
+  t.after(() => relay.close());
+  const url = `ws://127.0.0.1:${port}`, node = await asNode(url);
+  // The node answers a phone's ping the way an agent does, so "still connected"
+  // can be stated as a round trip instead of a socket state.
+  node.ws.on('message', raw => {
+    let f; try { f = JSON.parse(raw.toString()); } catch { return; }
+    if (f.type === 'relay.frame' && f.frame?.type === 'ping') {
+      send(node.ws, { type: 'relay.frame', connectionId: f.connectionId, frame: { type: 'pong', t: f.frame.t } });
+    }
+  });
+  return { url, node, relay };
+}
+async function signIn(url, token) {
+  const phone = await connect(url + '/client');
+  send(phone.ws, { type: 'auth', token });
+  return phone;
+}
+
+test('by default a computer keeps exactly one phone connected', async t => {
+  const { url, node } = await seated(t);
+  const first = await pairPhone(url, node, 'A'), second = await pairPhone(url, node, 'B');
+
+  const a = await signIn(url, first.token);
+  assert.equal((await a.read('node.status')).online, true);
+
+  const b = await signIn(url, second.token);
+  const [code, reason] = await once(b.ws, 'close');
+  assert.equal(code, 4409);
+  assert.equal(reason.toString(), 'another client is active');
+  // The phone already connected is not pushed out by the newcomer.
+  send(a.ws, { type: 'ping', t: 1 });
+  assert.equal((await a.read('pong')).t, 1);
+  a.ws.close(); node.ws.close();
+});
+
+test('a deployment that allows two phones keeps both connected and refuses a third', async t => {
+  const { url, node } = await seated(t, { maxClientsPerNode: 2 });
+  const phones = [];
+  for (const name of ['A', 'B', 'C']) phones.push(await pairPhone(url, node, name));
+
+  const a = await signIn(url, phones[0].token);
+  const b = await signIn(url, phones[1].token);
+  assert.equal((await a.read('node.status')).online, true);
+  assert.equal((await b.read('node.status')).online, true);
+
+  const c = await signIn(url, phones[2].token);
+  const [code] = await once(c.ws, 'close');
+  assert.equal(code, 4409);
+  a.ws.close(); b.ws.close(); node.ws.close();
+});
+

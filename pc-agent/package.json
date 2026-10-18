@@ -1,6 +1,6 @@
 {
   "name": "termdesk-pc-agent",
-  "version": "1.0.1-dev.3",
+  "version": "1.0.1-dev.4",
   "private": true,
   "type": "module",
   "description": "TermDesk PC agent — WebSocket bridge between the Android client and this Windows machine",
