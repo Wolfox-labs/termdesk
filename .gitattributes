@@ -15,3 +15,8 @@
 /REQUIREMENTS.md -text whitespace=cr-at-eol
 /android/app/src/main/java/dev/termdesk/app/ui/AppRoot.kt -text whitespace=cr-at-eol
 /android/app/src/main/java/dev/termdesk/app/ui/AppViewModel.kt -text whitespace=cr-at-eol
+
+# Keep retained historical probe blobs intact during repository cleanup.
+/pc-agent/tools/probes/sessions-live.js -text whitespace=cr-at-eol
+/pc-agent/tools/probes/tunnel-diag.js -text whitespace=cr-at-eol
+/pc-agent/tools/probes/tunnel-e2e.js -text whitespace=cr-at-eol

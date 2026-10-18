@@ -54,8 +54,6 @@ Windows 电脑办公。要求不是"远程桌面"（手机屏幕小、流量贵�
 | `engines-test.js` | **31/31** | Codex / DSH 一次性任务（`ai.*`，deprecated 兼容面） |
 | `chat-e2e.js` | **38/38** | 原生对话：流式、去重、会话延续（dsh 内核；含 engine=codex 建会话） |
 | `tunnel-e2e.js` | **10/10** | 公网隧道全链路 |
-| `dsh-web-check.js` | **4/4** | DSH Web 过隧道可用性 |
-| `mux-probe.js` | **3/3** | DSH Remote mux 协议 |
 
 ### 2.3 已跑通的公网通道
 
@@ -204,15 +202,12 @@ button[aria-label="收起侧边栏"], button[aria-label="Collapse sidebar"]   [r
     display: none !important; display: none !important
 ```
 
-配套诊断脚本（都在 `tools/`，均为只读）：
+保留的侧栏复验脚本（位于 `pc-agent/tools/`，其余历史探针已清理；旧结果见 v1.0.0）：
 
 | 脚本 | 作用 |
 |---|---|
-| `sidebar-inspect.js` | 手机宽度下测量侧栏与按钮的真实 DOM 布局 |
 | `sidebar-open-check.js` | 先展开侧栏，再检查有无可点的收起入口 |
-| `sidebar-why.js` | 打印按钮及其祖先链的 computed style |
 | `sidebar-find-rule.js` | 用 CDP 的 CSS 域解析级联，找出隐藏它的确切规则 |
-| `sidebar-css.js` | 导出所有样式表原文 |
 
 ### 两个关键澄清
 
@@ -240,7 +235,7 @@ button[aria-label="Collapse sidebar"] {
 Tauri 检测：`window.__TAURI__` / `__TAURI_INTERNALS__` / `__TAURI_IPC__` 任一存在，
 或 `window.parent !== window`（被外壳 iframe 包着）时**不注入**，避免和桌面壳抢按钮。
 
-**插件源码在本仓库 [`plugins/sidebar-unhide/`](plugins/sidebar-unhide/)**，含
+**插件源码在本仓库 [`plugins/sidebar-unhide/`](plugins/sidebar-unhide)**，含
 `package.json` / `cordis.patch.yml` / `lib/client.js` / 静态自检 `test-unhide.mjs`
 （26 项，已通过）。安装步骤见该目录 README；装到 `~/.dsh/local-plugins` 并重启
 DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
