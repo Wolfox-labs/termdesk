@@ -1,5 +1,17 @@
-# Standalone TLS ingress. Review hostname, certificate and port before enabling.
-# This is a template, not a change to an existing nginx/xray/443 deployment.
+# Standalone TLS ingress for a relay reached directly (no CDN in front).
+# Review hostname, certificate and port before enabling. This is a template, not
+# a change to an existing nginx/xray/443 deployment.
+#
+# Why direct: measured from the phones and from a PC in the same network, the
+# TLS handshake to the CDN edge for this hostname stalled for 1-11 s and timed
+# out about one time in three, while the origin answered in 0.4 s and the CDN's
+# own hostname was fine. A WebSocket on that path dies within a minute, which
+# looks exactly like "the phone keeps disconnecting".
+#
+# What replaces the CDN as the boundary: the relay's own node/device credentials,
+# the per-IP request limit below, and the fact that only the relay paths exist.
+limit_req_zone $binary_remote_addr zone=termdesk_relay:10m rate=20r/s;
+
 server {
     listen 8443 ssl;
     server_name relay.example.invalid;
@@ -7,8 +19,14 @@ server {
     ssl_certificate /etc/termdesk/tls/fullchain.pem;
     ssl_certificate_key /etc/termdesk/tls/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:termdesk_tls:10m;
+    ssl_session_timeout 1h;
+    add_header Strict-Transport-Security "max-age=31536000" always;
 
     client_max_body_size 40m;
+    limit_req zone=termdesk_relay burst=40 nodelay;
+    limit_req_status 429;
+
     location / {
         proxy_pass http://127.0.0.1:7421;
         proxy_http_version 1.1;
@@ -16,11 +34,14 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         # Overwrite rather than append an internet caller's untrusted header.
+        # The relay only trusts this when the peer is the local nginx.
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
         proxy_buffering off;
         proxy_request_buffering off;
+        add_header Cache-Control "no-store" always;
     }
 }
