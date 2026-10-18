@@ -176,6 +176,40 @@ import org.json.JSONObject
      * An entry without a path is dropped rather than shown: the point of the row is that a
      * tap opens the file, and there is nothing to open.
      */
+    /**
+     * `chat.commands`: the slash commands this conversation can run.
+     *
+     * The list is the kernel's own declaration (the PC asks its host), so only the
+     * field names are pinned here: a renamed field must show as an absent command,
+     * not as a row labelled "null".
+     */
+    internal fun parseChatCommands(frame: JSONObject): ChatCommands? {
+        val chatId = frame.optString("chatId")
+        if (chatId.isBlank()) return null
+        val commands = frame.optJSONArray("commands")?.let { arr ->
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val name = o.optString("name")
+                    if (name.isBlank()) continue
+                    add(
+                        ChatCommand(
+                            name = name,
+                            description = o.optString("description"),
+                            hint = if (o.isNull("hint")) null else o.optString("hint").ifBlank { null },
+                        ),
+                    )
+                }
+            }
+        }.orEmpty()
+        val note = if (frame.isNull("note")) null else frame.optString("note").ifBlank { null }
+        return ChatCommands(
+            chatId = chatId,
+            supported = frame.optBoolean("supported", false),
+            commands = commands,
+            note = note,
+        )
+    }
     internal fun parseChatFiles(arr: JSONArray?): List<ChatFile> {
         if (arr == null) return emptyList()
         val out = ArrayList<ChatFile>(arr.length())

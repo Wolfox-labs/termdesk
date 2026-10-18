@@ -10,6 +10,7 @@ import dev.termdesk.app.data.ActionResult
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatInfo
+import dev.termdesk.app.data.ChatCommands
 import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.ChatTerminal
 import dev.termdesk.app.data.TerminalInfo
@@ -294,10 +295,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun claimChat(chatId: String, force: Boolean) = client.claimChat(chatId, force)
     fun syncChat(chatId: String) = client.syncChat(chatId)
 
-    val chatModels: StateFlow<Map<String, ChatModels>> = client.chatModels
+    val chatModels: StateFlow<Map<String, ChatModels>> = client.chatModels    /** Slash commands each conversation offers, as the PC declared them. */
+    val chatCommands: StateFlow<Map<String, ChatCommands>> = client.chatCommands
 
     /** Ask what the open conversation can switch to (no model runs for this). */
     fun requestChatModels(chatId: String) = client.requestChatModels(chatId)
+
+    fun requestChatCommands(chatId: String) = client.requestChatCommands(chatId)
 
     // ---- the open conversation's command lines ----
 

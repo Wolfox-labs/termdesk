@@ -1690,6 +1690,34 @@ export class ChatManager {
    * A kernel with no model list (a CLI shim, DSH) says so instead of answering
    * with an empty list that would look like "no models available".
    */
+  /**
+   * The slash commands this conversation can run.
+   *
+   * Only a live-attached DSH conversation has a real registry: the commands belong
+   * to the desktop host that owns the session. Everything else says so instead of
+   * returning an empty list that looks like "no commands exist".
+   */
+  async commandsFor(id) {
+    const chat = this.chats.get(id);
+    if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
+    if (chat.engine === 'dsh' && chat.liveHost) {
+      const listed = await liveListCommands(chat.liveHost, chat.sessionId);
+      if (!listed.ok) {
+        return { ok: true, chatId: id, supported: false, commands: [], note: listed.message ?? '桌面端没有返回命令目录' };
+      }
+      return { ok: true, chatId: id, supported: true, commands: listed.commands, note: null };
+    }
+    return {
+      ok: true,
+      chatId: id,
+      supported: false,
+      commands: [],
+      note: chat.engine === 'dsh'
+        ? '桌面版 DeepSeek Harness 没有在运行：/compact 等命令由它执行'
+        : '这个助手没有提供斜杠命令',
+    };
+  }
+
   async modelsFor(id) {
     const chat = this.chats.get(id);
     if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };

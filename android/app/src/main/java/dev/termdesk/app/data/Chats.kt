@@ -213,3 +213,27 @@ data class ChatModels(
  * to the next message without asking them to type a path.
  */
 data class UploadedFile(val name: String, val path: String, val at: Long)
+
+/**
+ * One slash command the PC says this conversation can run.
+ *
+ * The desktop app registers commands like `/compact` and `/export` on the host;
+ * the phone's own `/` panel used to be a fixed four-row list, so these existed
+ * everywhere except here. The list arrives on demand ([AgentClient.requestChatCommands])
+ * and tapping a row inserts the command into the draft - the user still presses
+ * send, because executing a command is not something a stray tap should do.
+ */
+data class ChatCommand(
+    val name: String,
+    val description: String = "",
+    /** Argument shape the host declared, e.g. "<preset>" or null for no arguments. */
+    val hint: String? = null,
+)
+
+/** The slash commands one conversation offers, or the reason it offers none. */
+data class ChatCommands(
+    val chatId: String,
+    val supported: Boolean,
+    val commands: List<ChatCommand> = emptyList(),
+    val note: String? = null,
+)

@@ -443,4 +443,57 @@ class AgentFramesTest {
         assertTrue("a newer agent still works", newerAgent.ok)
         assertEquals("but this app is the one to update", ProtocolVersion.Upgrade.APP, newerAgent.upgrade)
     }
-}
+
+    @Test
+    fun `chat commands carry the kernels own names and hints`() {
+        val frame = JSONObject()
+            .put("chatId", "c-1")
+            .put("supported", true)
+            .put(
+                "commands",
+                JSONArray()
+                    .put(JSONObject().put("name", "compact").put("description", "Compact older conversation history"))
+                    .put(
+                        JSONObject()
+                            .put("name", "permission")
+                            .put("description", "Switch the permission preset")
+                            .put("hint", "<preset>"),
+                    ),
+            )
+        val parsed = parseChatCommands(frame)
+        assertNotNull(parsed)
+        assertTrue(parsed!!.supported)
+        assertEquals(2, parsed.commands.size)
+        assertEquals("compact", parsed.commands[0].name)
+        assertNull(parsed.commands[0].hint)
+        assertEquals("<preset>", parsed.commands[1].hint)
+        assertNull(parsed.note)
+    }
+
+    @Test
+    fun `a frame without a chat id is not a command list`() {
+        assertNull(parseChatCommands(JSONObject().put("supported", true)))
+    }
+
+    @Test
+    fun `nameless commands are dropped rather than drawn as null`() {
+        val frame = JSONObject()
+            .put("chatId", "c-2")
+            .put("commands", JSONArray().put(JSONObject().put("description", "no name")))
+        val parsed = parseChatCommands(frame)
+        assertNotNull(parsed)
+        assertTrue(parsed!!.commands.isEmpty())
+    }
+
+    @Test
+    fun `an unsupported list keeps the pcs reason`() {
+        val frame = JSONObject()
+            .put("chatId", "c-3")
+            .put("supported", false)
+            .put("commands", JSONArray())
+            .put("note", "桌面版 DeepSeek Harness 没有在运行")
+        val parsed = parseChatCommands(frame)
+        assertNotNull(parsed)
+        assertFalse(parsed!!.supported)
+        assertEquals("桌面版 DeepSeek Harness 没有在运行", parsed.note)
+    }}

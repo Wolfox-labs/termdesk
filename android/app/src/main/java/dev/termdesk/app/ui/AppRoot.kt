@@ -86,6 +86,7 @@ fun AppRoot(
     val activeComputerId by vm.activeComputerId.collectAsState()
     val chats by vm.chats.collectAsState()
     val chatModels by vm.chatModels.collectAsState()
+    val chatCommands by vm.chatCommands.collectAsState()
     val lastUpload by vm.lastUpload.collectAsState()
     val activeChat by vm.activeChat.collectAsState()
     val chatEvents by vm.chatEvents.collectAsState()
@@ -451,12 +452,14 @@ fun AppRoot(
                 onTermClose = vm::closeTerminal,
                 codexConfig = codexConfig,
                 chatModels = chatModels,
+                chatCommands = chatCommands,
                 lastUpload = lastUpload,
                 draftScope = vm.draftScope,
                 onClaimChat = vm::claimChat,
                 onUploadFile = vm::uploadFile,
                 onClearUpload = vm::clearLastUpload,
                 onRequestChatModels = vm::requestChatModels,
+                onRequestChatCommands = vm::requestChatCommands,
                 codexTemplates = codexTemplates,
                 codexTarget = codexTarget,
                 codexTargets = computers.sortedBy { if (it.id == activeComputerId) 0 else 1 },

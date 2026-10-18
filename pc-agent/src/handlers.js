@@ -1100,6 +1100,30 @@ export function createFrameHandler(ctx) {
         break;
       }
 
+      case C2S.CHAT_COMMANDS: {
+        try {
+          const result = await chats.commandsFor(frame.chatId);
+          if (result.ok) send(S2C.CHAT_COMMANDS, result);
+          else {
+            send(S2C.ACTION_RESULT, {
+              action: 'chat.commands',
+              target: frame.chatId ?? '',
+              ok: false,
+              code: result.code,
+              message: result.message,
+            });
+          }
+        } catch (err) {
+          send(S2C.ACTION_RESULT, {
+            action: 'chat.commands',
+            target: frame.chatId ?? '',
+            ok: false,
+            code: 'commands_failed',
+            message: String(err?.message ?? err),
+          });
+        }
+        break;
+      }
       case C2S.CHAT_SEND: {
         if (!guardWrite(frame.chatId, 'chat.send')) break;
         const result = await chats.send(frame.chatId, frame.text, {

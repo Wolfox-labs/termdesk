@@ -345,6 +345,10 @@ class AgentClient(
     private val _chatModels = MutableStateFlow<Map<String, ChatModels>>(emptyMap())
     val chatModels: StateFlow<Map<String, ChatModels>> = _chatModels.asStateFlow()
 
+    /** Slash commands per conversation, as the PC's kernel declared them. */
+    private val _chatCommands = MutableStateFlow<Map<String, ChatCommands>>(emptyMap())
+    val chatCommands: StateFlow<Map<String, ChatCommands>> = _chatCommands.asStateFlow()
+
     /**
      * The command lines each conversation ran, keyed by chat id.
      *
@@ -1034,6 +1038,14 @@ class AgentClient(
      */
     fun requestChatModels(chatId: String) {
         sendFrame(JSONObject().put("type", "chat.models").put("chatId", chatId))
+    }    /**
+     * Ask which slash commands this conversation can run.
+     *
+     * Asked when the chat is opened, not carried in every summary: the list
+     * belongs to the kernel that owns the session and changes with it.
+     */
+    fun requestChatCommands(chatId: String) {
+        sendFrame(JSONObject().put("type", "chat.commands").put("chatId", chatId))
     }
 
     /**
@@ -2038,6 +2050,7 @@ class AgentClient(
                 }
                 "chat.approval" -> applyApproval(frame)
                 "chat.models" -> applyChatModels(frame)
+                "chat.commands" -> applyChatCommands(frame)
                 // ---- a conversation's command lines ----
                 "chat.terminals" -> {
                     val chatId = frame.optString("chatId")
@@ -2227,6 +2240,11 @@ class AgentClient(
     }
 
     /** Keep the kernel's answer for this chat; the picker reads it from here. */
+    /** The slash commands one conversation offers, or the PC's reason for none. */
+    private fun applyChatCommands(frame: JSONObject) {
+        val parsed = parseChatCommands(frame) ?: return
+        _chatCommands.value = _chatCommands.value + (parsed.chatId to parsed)
+    }
     private fun applyChatModels(frame: JSONObject) {
         val chatId = frame.optString("chatId")
         if (chatId.isBlank()) return

@@ -92,6 +92,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.findViewTreeLifecycleOwner
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
+import dev.termdesk.app.data.ChatCommands
 import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.SessionGroups
 import dev.termdesk.app.data.UploadedFile
@@ -140,12 +141,14 @@ fun ChatSection(
     engines: List<KernelInfo>,
     codexConfig: CodexConfig?,
     chatModels: Map<String, ChatModels>,
+    chatCommands: Map<String, ChatCommands>,
     lastUpload: UploadedFile?,
     draftScope: String,
     onClaimChat: (String, Boolean) -> Unit,
     onUploadFile: (android.net.Uri, String) -> Unit,
     onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
+    onRequestChatCommands: (String) -> Unit,
     onOpenSections: () -> Unit,
     onLoadChats: () -> Unit,
     onCreateChat: (String?) -> Unit,
@@ -282,6 +285,13 @@ fun ChatSection(
         }
     }
 
+    // Slash commands are declared by the kernel that owns the session (the desktop
+    // app's host), so they are asked for when a conversation opens. Without this
+    // the `/` panel could only show the four rows compiled into the app.
+    LaunchedEffect(activeChat?.id, connected) {
+        val chat = activeChat ?: return@LaunchedEffect
+        if (connected && chatCommands[chat.id] == null) onRequestChatCommands(chat.id)
+    }
     val open = activeChat != null || recordedSession != null
 
     // Back walks out of the conversation, not out of the app: the command lines
@@ -388,6 +398,7 @@ fun ChatSection(
                     events = events,
                     sending = sending,
                     models = chatModels[activeChat.id],
+                    commands = chatCommands[activeChat.id],
                     lastUpload = lastUpload,
                     draftScope = draftScope,
                     onClaimChat = onClaimChat,
@@ -1354,6 +1365,7 @@ private fun Conversation(
     events: List<ChatEvent>,
     sending: Boolean,
     models: ChatModels?,
+    commands: ChatCommands?,
     lastUpload: UploadedFile?,
     draftScope: String,
     onClaimChat: (String, Boolean) -> Unit,
@@ -1561,6 +1573,25 @@ private fun Conversation(
                 SlashRow("关闭会话", "结束这个对话", true) {
                     updateDraft("")
                     onClose(chat.id)
+                }
+                // Commands the PC's kernel actually declares (DSH: /compact,
+                // /export, /goal, /permission, ...). Tapping one puts the line in
+                // the box instead of running it: compacting a conversation by
+                // accident is not undoable, so the last step stays the user's.
+                val declared = commands
+                if (declared != null && declared.commands.isNotEmpty()) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                    for (command in declared.commands) {
+                        val hint = command.hint?.takeIf { it.isNotBlank() }
+                            ?: command.description.takeIf { it.isNotBlank() }
+                            ?: "由 " + chat.engine + " 执行"
+                        SlashRow(command.name, hint, true) {
+                            updateDraft("/" + command.name + " ")
+                        }
+                    }
+                } else if (!declared?.note.isNullOrBlank()) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                    SlashRow("命令", declared?.note ?: "", false) {}
                 }
             }
         }

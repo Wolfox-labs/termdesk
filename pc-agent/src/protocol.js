@@ -73,6 +73,8 @@ export const C2S = {
   // The command lines a conversation is running. Listing is also what starts
   // live output flowing, so a phone that is not looking is not flooded.
   CHAT_TERMINALS: 'chat.terminals',
+  // The desktop host's slash commands, reachable from this conversation.
+  CHAT_COMMANDS: 'chat.commands',
   CHAT_TERMINAL_READ: 'chat.terminal.read',
   CHAT_TERMINAL_INPUT: 'chat.terminal.input',
   CHAT_TERMINAL_STOP: 'chat.terminal.stop',
@@ -124,6 +126,8 @@ export const S2C = {
   CHAT_CLOSED: 'chat.closed',
   CHAT_APPROVAL: 'chat.approval',
   CHAT_TERMINALS: 'chat.terminals',
+  // The desktop host's slash commands, reachable from this conversation.
+  CHAT_COMMANDS: 'chat.commands',
   CHAT_TERMINAL: 'chat.terminal',
   CHAT_TERMINAL_OUTPUT: 'chat.terminal.output',
   CHAT_TERMINAL_INPUT: 'chat.terminal.input',
