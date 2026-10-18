@@ -14,7 +14,8 @@
  * The manifest is what the phone verifies against: size and sha256, so a partial
  * download or a corrupted transfer cannot be installed as a working sandbox.
  *
- *   node tools/build-local-kernel.mjs [input.tar] [--version v1]
+ *   node tools/build-local-kernel.mjs [input.tar] [--input input.tar] [--version v1]
+ *   TERMDESK_LOCAL_KERNEL_INPUT may supply the input when no argument is given.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,25 +24,28 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
 
-// Where the rebuilt Termux bootstrap actually lives on this machine. The first
-// guess (.tmp/termux-build/stage) no longer exists: the payload was moved to
-// the ignored scratch dir `$d/`, which is where the agent serves it from.
-const DEFAULT_INPUT = 'E:/aiPic/termdesk/$d/dev.termdesk.app-f-droid-bootstrap-aarch64.tar';
 const OUT_DIR = process.env.TERMDESK_LOCAL_KERNEL_DIR ?? path.join(os.homedir(), '.termdesk', 'local-kernel');
 
 const args = process.argv.slice(2);
-// `--version v1` used to be picked up as the input path, because the VALUE of a
-// flag also does not start with "--". Skip a flag's value explicitly.
+// Flag values must not be mistaken for a positional input path.
 const flagValues = new Set();
 for (let i = 0; i < args.length; i += 1) {
-  if (args[i] === '--version' || args[i] === '--out') flagValues.add(args[i + 1]);
+  if (['--version', '--out', '--input'].includes(args[i])) flagValues.add(args[i + 1]);
 }
-const input = args.find((a) => !a.startsWith('--') && !flagValues.has(a)) ?? DEFAULT_INPUT;
+const inputFlag = args.indexOf('--input');
+const flagInputValue = inputFlag >= 0 ? args[inputFlag + 1] : null;
+const flagInput = flagInputValue && !flagInputValue.startsWith('--') ? flagInputValue : null;
+const positionalInput = args.find((a) => !a.startsWith('--') && !flagValues.has(a));
+const input = flagInput || positionalInput || process.env.TERMDESK_LOCAL_KERNEL_INPUT || null;
 const versionArg = args.indexOf('--version');
 const version = versionArg >= 0 ? args[versionArg + 1] : 'v1';
 
+if (!input) {
+  console.error('请指定 Termux bootstrap tar：node tools/build-local-kernel.mjs <input.tar>（或 --input <input.tar> / TERMDESK_LOCAL_KERNEL_INPUT）');
+  process.exit(1);
+}
 if (!fs.existsSync(input)) {
-  console.error(`找不到输入 tar：${input}`);
+  console.error(`找不到输入 tar：${input}\n请检查文件路径，或用 --input <input.tar> 指定已有的 bootstrap tar。`);
   process.exit(1);
 }
 fs.mkdirSync(OUT_DIR, { recursive: true });

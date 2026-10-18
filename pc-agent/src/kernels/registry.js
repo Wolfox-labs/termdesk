@@ -47,19 +47,12 @@ function firstFile(candidates) {
   return null;
 }
 
-/**
- * First executable of that name on PATH.
- *
- * The Windows entries below name exact install locations, because a Windows
- * installer never lands where one would expect. A POSIX host is the opposite:
- * everything worth running is on PATH, and hard-coding a /data/data/... path
- * there would be a Windows habit leaking into a Linux userland.
- */
-function firstOnPath(names, rejections = []) {
-  const dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+/** First executable of that name on PATH. */
+function firstOnPath(names, rejections = [], { env = process.env, platform = process.platform } = {}) {
+  const dirs = (env.PATH || "").split(path.delimiter).filter(Boolean);
   for (const name of names) {
-    const candidates = process.platform === 'win32' && !path.extname(name)
-      ? [name, ...(process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';').filter(Boolean).map((ext) => name + ext.toLowerCase())]
+    const candidates = platform === 'win32' && !path.extname(name)
+      ? [name, ...(env.PATHEXT || '.EXE;.CMD;.BAT').split(';').filter(Boolean).map((ext) => name + ext.toLowerCase())]
       : [name];
     for (const dir of dirs) {
       for (const candidate of candidates) {
@@ -106,6 +99,48 @@ function resolveExecutable(candidate, rejections = []) {
 function nodeEntry(candidates) {
   const entry = firstFile(candidates);
   return entry ? { bin: process.execPath, args: [entry] } : null;
+}
+
+/** Resolve only the npm executable declared by the installed package itself. */
+function npmPackageEntry(packageDir, command, rejections = []) {
+  let metadata;
+  try { metadata = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8')); } catch { return null; }
+  const declared = typeof metadata.bin === 'string' ? metadata.bin : metadata.bin?.[command];
+  if (typeof declared !== 'string' || !declared.trim()) return null;
+  const candidate = path.resolve(packageDir, declared);
+  const relative = path.relative(packageDir, candidate);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  if (/\.[cm]?js$/i.test(candidate)) return nodeEntry([candidate]);
+  return executableOrNull(candidate, rejections);
+}
+
+/** Resolve OpenCode without assuming a particular drive or vendor folder. */
+export function resolveOpenCode(rejections = [], {
+  env = process.env,
+  platform = process.platform,
+  npmRoot = NPM_ROOT,
+  localPrograms = LOCAL_PROGRAMS,
+} = {}) {
+  if (env.TERMDESK_OPENCODE) {
+    return fileOrNull(env.TERMDESK_OPENCODE) ?? env.TERMDESK_OPENCODE;
+  }
+  if (platform !== 'win32') return firstOnPath(['opencode'], rejections, { env, platform });
+
+  // Prefer an executable from PATH. npm's Windows .cmd shim is deliberately
+  // rejected; an installed package's own bin declaration is checked below.
+  const onPath = firstOnPath(['opencode'], rejections, { env, platform });
+  if (onPath) return onPath;
+
+  const packageEntry = npmPackageEntry(
+    path.join(npmRoot, 'node_modules', 'opencode-ai'),
+    'opencode',
+    rejections,
+  );
+  if (packageEntry) return packageEntry;
+
+  return firstFile([
+    path.join(localPrograms, '@opencode-aidesktop', 'resources', 'bin', 'opencode-cli.exe'),
+  ]);
 }
 
 /**
@@ -174,15 +209,7 @@ function table() {
       acpArgs: ['acp'],
       resume: true,
       detail: 'ACP：会话列表 / 恢复 / fork / 图片与内嵌上下文',
-      resolve: (rejections) => {
-        if (process.env.TERMDESK_OPENCODE) return fileOrNull(process.env.TERMDESK_OPENCODE) ?? process.env.TERMDESK_OPENCODE;
-        if (process.platform !== "win32") return firstOnPath(["opencode"], rejections);
-        return firstFile([
-          path.join('D:', path.sep, 'OpenCode', 'opencode-cli.exe'),
-          path.join(LOCAL_PROGRAMS, '@opencode-aidesktop', 'resources', 'bin', 'opencode-cli.exe'),
-          path.join(NPM_ROOT, 'opencode.cmd'),
-        ]);
-      },
+      resolve: resolveOpenCode,
     },
     {
       id: 'mimo',

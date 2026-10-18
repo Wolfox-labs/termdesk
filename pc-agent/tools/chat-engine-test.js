@@ -164,7 +164,21 @@ function assertSafeRecord(name, record) {
 {
   const mgr = new ChatManager();
   const hasDsh = chatEngineIds().includes('dsh');
+  const previousProvider = process.env.TERMDESK_CHAT_PROVIDER;
+  const previousModel = process.env.TERMDESK_CHAT_MODEL;
   try {
+    delete process.env.TERMDESK_CHAT_PROVIDER;
+    delete process.env.TERMDESK_CHAT_MODEL;
+    const unconfiguredDsh = mgr.create({ title: 'unconfigured', engine: 'dsh' });
+    if (hasDsh) {
+      check('DSH without an explicit provider and model fails clearly',
+        unconfiguredDsh.ok === false && unconfiguredDsh.code === 'unconfigured'
+          && /TERMDESK_CHAT_PROVIDER/.test(unconfiguredDsh.message), unconfiguredDsh.message);
+    }
+
+    // Fixture for creation only: no runtime is started and no model is called.
+    process.env.TERMDESK_CHAT_PROVIDER = 'deepseek-official';
+    process.env.TERMDESK_CHAT_MODEL = 'fixture-model';
     const dsh = mgr.create({ title: 'default' });
     if (hasDsh) {
       check('create defaults to engine=dsh (compat)', dsh.ok === true && dsh.chat?.engine === 'dsh',
@@ -180,6 +194,12 @@ function assertSafeRecord(name, record) {
       check('without an engine, a machine without dsh refuses instead of guessing',
         dsh.ok === false && dsh.code === 'bad_engine', dsh.message);
     }
+
+    const perChat = mgr.create({ title: 'explicit route', engine: 'dsh',
+      provider: 'deepseek-official', model: 'per-chat-fixture' });
+    if (hasDsh) check('an explicit per-chat DSH route is accepted',
+      perChat.ok === true && perChat.chat?.provider === 'deepseek-official'
+        && perChat.chat?.model === 'per-chat-fixture');
 
     const codex = mgr.create({ title: 'cx', engine: 'codex', provider: 'deepseek', model: 'deepseek-flash' });
     check('create accepts engine=codex', codex.ok === true && codex.chat?.engine === 'codex');
@@ -208,6 +228,10 @@ function assertSafeRecord(name, record) {
       detail.events.every((e) => e.type === undefined),
       detail.events.map((e) => e.kind).join(','));
   } finally {
+    if (previousProvider === undefined) delete process.env.TERMDESK_CHAT_PROVIDER;
+    else process.env.TERMDESK_CHAT_PROVIDER = previousProvider;
+    if (previousModel === undefined) delete process.env.TERMDESK_CHAT_MODEL;
+    else process.env.TERMDESK_CHAT_MODEL = previousModel;
     mgr.disposeAll();
   }
 }

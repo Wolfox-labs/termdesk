@@ -10,6 +10,7 @@
  *   node tools/chat-approval-test.js
  */
 import { ChatManager } from '../src/chat.js';
+import { Chat } from '../src/chat/chat.js';
 
 const results = [];
 const check = (name, passed, detail = '') => {
@@ -24,10 +25,13 @@ manager.attach((payload) => frames.push(payload));
 const approvalsFor = (chatId) => frames.filter((f) => f.event === 'chat.approval' && !f.state && f.chatId === chatId);
 
 // ---- ACP: the kernel's own option vocabulary is what the phone answers in ----
-const acpChat = manager.create({ engine: 'opencode', cwd: process.cwd() });
-check('an ACP chat can be created', acpChat.ok === true, acpChat.message ?? '');
-const chatId = acpChat.chat.id;
-manager.acpSessions.set('ses_test', manager.get(chatId));
+// This is an approval-routing test with a stub permission request. Register the
+// chat fixture directly so the test does not require an OpenCode installation.
+const acpChat = new Chat({ id: 'c-approval-acp', title: 'ACP approval', engine: 'opencode', cwd: process.cwd() });
+const chatId = acpChat.id;
+manager.chats.set(chatId, acpChat);
+manager.acpSessions.set('ses_test', acpChat);
+check('an ACP chat fixture is registered', manager.get(chatId) === acpChat);
 
 const acpOptions = [
   { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },

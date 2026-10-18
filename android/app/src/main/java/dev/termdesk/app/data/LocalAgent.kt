@@ -278,17 +278,6 @@ class LocalAgent(private val context: Context) {
             "TERMDESK_ROOTS" to "$home;$usr",
             "TERMDESK_SHELL" to bashBin().absolutePath,
             "TERMDESK_SHELL_CWD" to home,
-            // The sandbox routes to the free model by default. A desktop default of a
-            // paid model is a cost decision that should not be inherited by a phone
-            // someone taps at; the model can still be named per turn through the agent.
-            // The sandbox needs a model that actually answers. `mimo-v2.6-flash` is
-            // in the provider's catalogue but never returns - measured from this
-            // machine: 45 s timeout against /v1/chat/completions, HTTP 000 - and a
-            // turn that ends with no content is exactly the failure this default
-            // exists to avoid. `spe/deepseek-v4.1-flash` answers (HTTP 200) and is
-            // the same model the desktop profile defaults to.
-            "TERMDESK_CHAT_PROVIDER" to "wolfox",
-            "TERMDESK_CHAT_MODEL" to "spe/deepseek-v4.1-flash",
         )
         // DSH, when it has been installed into the sandbox. The kernel table asks
         // TERMDESK_DSH first, and DSH_HOME keeps its profiles, credentials and

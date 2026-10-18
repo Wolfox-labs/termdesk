@@ -71,30 +71,23 @@ fun main(args: Array<String>) = application {
     val availableWidth = screen?.first?.width?.toFloat() ?: 1600f
     val availableHeight = screen?.first?.height?.toFloat() ?: 1000f
 
-    val desired = listOf(2560f to 1440f, 1920f to 1080f)
-        .firstOrNull { (w, h) -> w / scale <= availableWidth * 0.96f && h / scale <= availableHeight * 0.92f }
     // A requested size is read in PHYSICAL pixels too: TERMDESK_WINDOW=2560x1440
     // is the window a person would pick in a screen-resolution list.
-    val requested = System.getenv("TERMDESK_WINDOW")
-        ?.split("x")
-        ?.mapNotNull { it.trim().toFloatOrNull() }
-        ?.takeIf { it.size == 2 }
-        ?.let { it[0] / scale to it[1] / scale }
-    val widthDp = requested?.first
-        ?: desired?.let { it.first / scale }
-        ?: (availableWidth * 0.94f)
-    val heightDp = requested?.second
-        ?: desired?.let { it.second / scale }
-        ?: (availableHeight * 0.90f)
+    val windowSize = calculateWindowSize(
+        availableWidthDp = availableWidth,
+        availableHeightDp = availableHeight,
+        scale = scale,
+        requestedPhysical = System.getenv("TERMDESK_WINDOW"),
+    )
 
     val state = rememberWindowState(
         size = DpSize(
-            width = widthDp.coerceAtMost(availableWidth).coerceAtLeast(900f).dp,
-            height = heightDp.coerceAtMost(availableHeight).coerceAtLeast(620f).dp,
+            width = windowSize.width.dp,
+            height = windowSize.height.dp,
         ),
     )
     if (System.getenv("TERMDESK_DEBUG_WINDOW") == "1") {
-        println("[termdesk] scale=$scale available=${availableWidth}x$availableHeight window=${widthDp}x${heightDp}")
+        println("[termdesk] scale=$scale available=${availableWidth}x$availableHeight window=${windowSize.width}x${windowSize.height}")
     }
 
     Window(
@@ -107,7 +100,10 @@ fun main(args: Array<String>) = application {
     ) {
         LaunchedEffect(Unit) {
             // User-space units, the same ones maximumWindowBounds uses.
-            window.minimumSize = java.awt.Dimension(900, 620)
+            window.minimumSize = java.awt.Dimension(
+                windowSize.minimumWidth.toInt(),
+                windowSize.minimumHeight.toInt(),
+            )
         }
         TermDeskTheme(mode = ThemeMode.System) {
             ConsoleTheme {

@@ -42,6 +42,9 @@ pc-agent/tools/*-out.txt
 DEPLOYMENT.local.md
 *.local.md
 .local-notes/
+/output/
+# PowerShell may create this cache when tests isolate HOME.
+**/Microsoft/Windows/PowerShell/ModuleAnalysisCache
 
 # Local scratch artifacts (Termux bootstrap tarball, etc.)
 $d/

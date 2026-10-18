@@ -92,8 +92,8 @@ android {
         // knowingly. Set TERMDESK_MODERN_TARGET_SDK=1 to build at 35 instead,
         // which gives up the local kernel and keeps everything else.
         targetSdk = if (System.getenv("TERMDESK_MODERN_TARGET_SDK") == "1") 35 else 28
-        versionCode = 10
-        versionName = "1.0.0"
+        versionCode = 11
+        versionName = "1.0.1-dev.1"
     }
 
     /**

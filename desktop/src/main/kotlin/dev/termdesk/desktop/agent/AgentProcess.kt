@@ -3,6 +3,12 @@ package dev.termdesk.desktop.agent
 import java.io.File
 import java.util.concurrent.TimeUnit
 
+internal fun packagedAgentRoot(codeLocation: File): File? {
+    if (!codeLocation.isFile) return null
+    return File(codeLocation.parentFile, "resources")
+        .takeIf { File(it, "pc-agent/src/server.js").isFile }
+}
+
 /**
  * The TermDesk PC agent, owned by this window.
  *
@@ -73,18 +79,25 @@ class AgentProcess(
     fun stop() {
         val current = process ?: return
         process = null
-        val pid = runCatching { current.pid() }.getOrNull()
-        val taskkill = File("C:/Windows/System32/taskkill.exe")
-        if (pid != null && taskkill.isFile) {
+        val taskkill = if (isWindowsHost()) findWindowsTaskkill() else null
+        if (taskkill != null) {
             runCatching {
-                ProcessBuilder(taskkill.path, "/PID", pid.toString(), "/T", "/F")
+                ProcessBuilder(taskkill.path, "/PID", current.pid().toString(), "/T", "/F")
                     .redirectErrorStream(true)
                     .start()
                     .waitFor(6, TimeUnit.SECONDS)
             }
         }
+        // On hosts without taskkill (and when it fails), stop this owned process
+        // tree through the JDK. This is intentionally limited to `process`, the
+        // child this window started; an independently started agent is untouched.
+        runCatching {
+            current.toHandle().descendants().toList().asReversed().forEach { it.destroyForcibly() }
+        }
         runCatching { current.destroy() }
-        runCatching { current.waitFor(3, TimeUnit.SECONDS) }
+        runCatching {
+            if (!current.waitFor(3, TimeUnit.SECONDS)) current.destroyForcibly()
+        }
     }
 
     companion object {
@@ -110,25 +123,8 @@ class AgentProcess(
             return clean
         }
 
-        /** Node, by explicit override, by known install location, then by PATH. */
-        fun findNode(): File? {
-            System.getenv("TERMDESK_NODE")?.let { if (File(it).isFile) return File(it) }
-            val candidates = listOfNotNull(
-                "C:/Program Files/nodejs/node.exe",
-                System.getenv("ProgramFiles")?.let { "$it/nodejs/node.exe" },
-                System.getenv("LOCALAPPDATA")?.let { "$it/Programs/nodejs/node.exe" },
-            )
-            candidates.forEach { if (File(it).isFile) return File(it) }
-            return runCatching {
-                val where = ProcessBuilder("where", "node").redirectErrorStream(true).start()
-                where.waitFor(5, TimeUnit.SECONDS)
-                where.inputStream.bufferedReader().readText()
-                    .lineSequence()
-                    .map(String::trim)
-                    .firstOrNull { it.isNotEmpty() && File(it).isFile }
-                    ?.let(::File)
-            }.getOrNull()
-        }
+        /** Node, by explicit override, platform install locations, then PATH. */
+        fun findNode(): File? = findNodeExecutable()
 
         /**
          * Locate the repository.
@@ -143,7 +139,13 @@ class AgentProcess(
             val starts = mutableListOf(File(System.getProperty("user.dir")))
             runCatching {
                 val location = AgentProcess::class.java.protectionDomain?.codeSource?.location
-                if (location != null) starts += File(location.toURI())
+                if (location != null) {
+                    val code = File(location.toURI())
+                    starts += code
+                    // jpackage places app resources next to the application JAR.
+                    // The installed image stages the agent at app/resources/pc-agent.
+                    packagedAgentRoot(code)?.let { return it }
+                }
             }
             for (start in starts) {
                 var dir: File? = start.absoluteFile

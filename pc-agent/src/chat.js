@@ -74,7 +74,7 @@ import { discardPreviews as discardStreamedPreviews, handleAssistantChunk as han
 import { Chat } from './chat/chat.js';
 import { decisionFor } from './kernels/codex.js';
 import { CliKernel } from './kernels/cli.js';
-import { ensureOverlay, routeConfig, runtimeArgs } from './kernels/dsh.js';
+import { ensureOverlay, routeConfig, routeConfigError, runtimeArgs } from './kernels/dsh.js';
 import { chatEngineIds, getKernel, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
 import {
   canResume,
@@ -406,14 +406,23 @@ export class ChatManager {
     // Where the default model comes from is a property of the KERNEL, declared in
     // the table, not something the manager infers from its name.
     const route = routeForChain(modelRoute(eng, lookupKernel));
+    let dshRoute = null;
+    if (eng === 'dsh') {
+      dshRoute = routeConfig(process.env, {
+        provider: provider || route.provider,
+        model: model || route.model,
+      });
+      const routeError = routeConfigError(dshRoute);
+      if (routeError) return { ok: false, code: 'unconfigured', message: routeError };
+    }
     const workdir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
     const chat = new Chat({
       id,
       title: (title && String(title).trim()) || '新对话',
       cwd: workdir,
       engine: eng,
-      provider: provider || route.provider,
-      model: model || route.model,
+      provider: provider || dshRoute?.provider || route.provider,
+      model: model || dshRoute?.model || route.model,
       effort: effort || null,
     });
     this.chats.set(id, chat);
@@ -1765,16 +1774,16 @@ export class ChatManager {
       throw new Error(`找不到 DSH 入口：${bin}`);
     }
 
-    // The sdk profile knows no providers by itself: the shared settings file
-    // that used to supply them is absent, and the desktop profile's patch is not
-    // read here. Without this overlay the handshake is refused outright
-    // ("no adapter registered for provider") and the turn never even starts.
+    // The sdk profile's inherited provider configuration is not known to this
+    // runtime, so require the DSH route to be explicit before writing an overlay.
     let patch = null;
     try {
-      const route = routeConfig();
-      patch = ensureOverlay({ ...route, model: chat.model || route.model });
+      const route = routeConfig(process.env, { provider: chat.provider, model: chat.model });
+      const routeError = routeConfigError(route);
+      if (routeError) throw new Error(routeError);
+      patch = ensureOverlay(route);
     } catch (err) {
-      chat.push({ kind: 'local', role: 'engine', text: `DSH 覆盖配置没写成：${err.message}` });
+      throw new Error(`DSH 配置无效：${err.message}`);
     }
     const child = spawn(process.execPath, runtimeArgs(bin, { patch }), {
       cwd: chat.cwd,
@@ -1822,7 +1831,8 @@ export class ChatManager {
       if (!patch && /no adapter registered for provider/.test(message)) {
         throw new Error(
           `${message}｜这个 provider 不在 TermDesk 写的覆盖配置里；` +
-          'TERMDESK_CHAT_PROVIDER / TERMDESK_DSH_BASE_URL / TERMDESK_DSH_API_KEY_ENV 可以指定它',
+          'TERMDESK_CHAT_PROVIDER / TERMDESK_CHAT_MODEL / TERMDESK_DSH_BASE_URL / ' +
+          'TERMDESK_DSH_API / TERMDESK_DSH_API_KEY_ENV 可以指定它',
         );
       }
       throw err;
