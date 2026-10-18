@@ -76,6 +76,7 @@ import { decisionFor } from './kernels/codex.js';
 import { CliKernel } from './kernels/cli.js';
 import { ensureOverlay, routeConfig, routeConfigError } from './kernels/dsh.js';
 import { launchArgs, launchEnv, resolveDshRuntime } from './kernels/dsh-runtime.js';
+import { discoverLiveHost, liveCall, livePrompt, tailJournal } from './kernels/dsh-live.js';
 import { chatEngineIds, getKernel, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
 import {
   canResume,
@@ -496,7 +497,13 @@ export class ChatManager {
           ? await this.resumeDsh(engine, id)
           : { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
     if (result?.ok) {
-      const note = this.takeoverNote({ joined: false, write: writeBefore });
+      // A live-attached chat writes nothing here: the desktop app owns the journal,
+      // so the "two writers" warning would be false and is not repeated.
+      const note = this.takeoverNote({
+        joined: false,
+        write: writeBefore,
+        live: Boolean(result.chat?.liveAttached),
+      });
       if (note) result.note = note;
     }
     return result;
@@ -521,14 +528,16 @@ export class ChatManager {
    * something reassuring. The sentence itself says what was measured — a file changed —
    * and not who changed it, because a write time cannot tell us that.
    */
-  takeoverNote({ joined, write = undefined, engine, id, sessionPath }) {
+  takeoverNote({ joined, write = undefined, engine, id, sessionPath, live = false }) {
     const parts = [];
     if (joined) {
       parts.push('这条会话已经在另一台设备上打开：双方看到的是同一个运行进程，发消息会进同一段对话');
     }
-    const evidence = write === undefined ? lastWriteOf({ engine, id, sessionPath }) : write;
-    if (evidence && evidence.agoSeconds <= RECENT_WRITE_SECONDS) {
-      parts.push(`这台电脑上这条会话的文件 ${evidence.agoSeconds} 秒前被写过（可能是桌面端应用）：两边同时写会让内容分叉`);
+    if (!live) {
+      const evidence = write === undefined ? lastWriteOf({ engine, id, sessionPath }) : write;
+      if (evidence && evidence.agoSeconds <= RECENT_WRITE_SECONDS) {
+        parts.push(`这台电脑上这条会话的文件 ${evidence.agoSeconds} 秒前被写过（可能是桌面端应用）：两边同时写会让内容分叉`);
+      }
     }
     return parts.length > 0 ? parts.join('；') : null;
   }
@@ -731,6 +740,11 @@ export class ChatManager {
 
   /** One turn on the resident DSH SDK runtime. */
   async sendDsh(chat, message, userSeq) {
+    // A conversation opened from history while the desktop app is running belongs
+    // to that app's live agent. Sending here (a second runtime) would be refused
+    // by the single-writer rule, so the message goes through the app's own API
+    // instead and the answer is read back from the journal it appends to.
+    if (chat.liveHost) return this.sendDshLive(chat, message, userSeq);
     try {
       await this.ensureRuntime(chat);
     } catch (err) {
@@ -762,6 +776,123 @@ export class ChatManager {
 
     chat.runtimeStarted = true;
     return { ok: true, userSeq, messageId: receipt?.messageId ?? null, sessionId: chat.sessionId };
+  }
+
+  /**
+   * One turn through the desktop app's live agent.
+   *
+   * TermDesk does not own the runtime here and must not touch the journal: it
+   * queues the message over the app's own `/api/session/prompt`, then follows the
+   * events the app appends. The user's line is shown immediately and reconciled
+   * with the runtime's echo, exactly like the resident-runtime path.
+   */
+  async sendDshLive(chat, message, userSeq) {
+    const write = lastWriteOf({ engine: 'dsh', id: chat.sessionId });
+    const file = write?.path ?? null;
+    if (!file) {
+      const messageText = '找不到这条会话的日志，无法跟随桌面端的回复';
+      chat.status = 'failed';
+      chat.lastError = messageText;
+      chat.push({ kind: 'error', role: 'engine', text: messageText });
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+      return { ok: false, code: 'no_journal', message: messageText, userSeq };
+    }
+    let fromOffset = 0;
+    try { fromOffset = fs.statSync(file).size; } catch { fromOffset = 0; }
+
+    chat.status = 'running';
+    chat.ready = true;
+    chat.liveEchoSeen = false;
+    chat.liveTurnStarted = false;
+    this.emit({ event: 'chat.status', chatId: chat.id, status: 'running' });
+    const line = chat.push({ kind: 'message', role: 'user', text: message });
+    chat.pendingUserEcho = line;
+    this.emitEvent(chat, line);
+    void userSeq;
+
+    const result = await livePrompt(chat.liveHost, {
+      sessionId: chat.sessionId,
+      text: message,
+      clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
+
+    if (!result.ok) {
+      chat.pendingUserEcho = null;
+      chat.status = 'failed';
+      chat.lastError = result.message;
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'failed' });
+      const hint = result.code === 'transport'
+        ? '（桌面端的窗口可能已关闭：重新打开后再发，或改用本机运行时）'
+        : '';
+      chat.push({ kind: 'error', role: 'engine', text: `桌面端没有接受这条消息：${result.message}${hint}` });
+      return { ok: false, code: 'live_prompt_failed', message: result.message, userSeq };
+    }
+
+    this.startLiveTail(chat, file, fromOffset);
+    return { ok: true, userSeq, messageId: null, sessionId: chat.sessionId };
+  }
+
+  /** Follow the events the desktop app appends to this conversation's journal. */
+  startLiveTail(chat, file, fromOffset) {
+    this.stopLiveTail(chat);
+    chat.liveTail = tailJournal(file, {
+      fromOffset,
+      pollMs: 500,
+      onEvent: (event) => this.handleLiveJournalEvent(chat, event),
+      onError: () => {},
+      shouldStop: () => chat.status !== 'running',
+    });
+    // A turn that never ends must not leave the chat "running" for ever: the
+    // desktop side may have been closed mid-answer.
+    chat.liveDeadline = setTimeout(() => {
+      if (chat.status !== 'running') return;
+      chat.status = 'failed';
+      chat.lastError = '等待桌面端回复超时';
+      chat.push({ kind: 'error', role: 'engine', text: '等待桌面端回复超时（45 分钟）：可以重新发送，或到电脑上继续' });
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'failed' });
+      this.stopLiveTail(chat);
+    }, 45 * 60 * 1000);
+    chat.liveDeadline.unref?.();
+  }
+
+  stopLiveTail(chat) {
+    if (chat.liveDeadline) {
+      clearTimeout(chat.liveDeadline);
+      chat.liveDeadline = null;
+    }
+    if (!chat.liveTail) return;
+    try { chat.liveTail.stop(); } catch { /* already stopped */ }
+    chat.liveTail = null;
+  }
+
+  handleLiveJournalEvent(chat, event) {
+    const type = event?.type;
+    if (type === 'user/message') chat.liveEchoSeen = true;
+    // A turn that starts only after the echoed message is the turn this side
+    // queued. Until then, `turn/end` belongs to a turn that was already running
+    // (the desktop user's own), and finishing here would cut the answer short.
+    if (type === 'turn/start' && chat.liveEchoSeen) chat.liveTurnStarted = true;
+    if (type === 'turn/end') {
+      if (chat.liveEchoSeen && chat.liveTurnStarted) this.finishLiveTurn(chat);
+      return;
+    }
+    // Everything else is the same vocabulary as the resident runtime, so the
+    // normaliser and the streaming previews are reused rather than duplicated.
+    this.handleSessionEvent(chat, { event });
+  }
+
+  finishLiveTurn(chat) {
+    if (chat.status !== 'running') return;
+    chat.status = 'idle';
+    chat.pendingUserEcho = null;
+    this.stopLiveTail(chat);
+    chat.push({ kind: 'turn', role: 'engine', text: '', meta: { state: 'ended' } });
+    this.emit({ event: 'chat.turn', chatId: chat.id, state: 'ended' });
+    this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
+    this.notify(this.turnNotification(chat, 'ended'));
+    this.drainQueue(chat).catch(() => {});
   }
 
   /**
@@ -1597,11 +1728,27 @@ export class ChatManager {
       });
     }
 
-    chat.push({
-      kind: 'local',
-      role: 'engine',
-      text: '已打开本机保存的 DSH 会话记录 · 发送下一条消息时接管这次会话（桌面端正在使用时会拒绝）',
-    });
+    // If the desktop app is running, this conversation is ITS to continue: it
+    // already holds the write handle, and a second runtime would fork the journal.
+    // Messages then go to the live agent through its own API (see sendDshLive),
+    // which is the only way to continue the conversation without stealing it.
+    const liveHost = discoverLiveHost({ fresh: true });
+    if (liveHost) {
+      chat.liveHost = liveHost;
+      chat.kernelLive = true;
+      chat.ready = true;
+      chat.push({
+        kind: 'local',
+        role: 'engine',
+        text: '已接入桌面版 DeepSeek Harness 的实时会话：消息直接进入桌面端的对话，回复也从那里读回',
+      });
+    } else {
+      chat.push({
+        kind: 'local',
+        role: 'engine',
+        text: '已打开本机保存的 DSH 会话记录 · 发送下一条消息时接管这次会话',
+      });
+    }
     return { ok: true, chat: chat.detail() };
   }
 
@@ -1775,6 +1922,14 @@ export class ChatManager {
     const chat = this.chats.get(id);
     if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
     if (chat.status !== 'running') return { ok: false, code: 'not_running', message: '当前没有进行中的回复' };
+
+    // A conversation that belongs to the desktop app is cancelled THERE: this side
+    // has no runtime to kill, and killing nothing would leave the app answering.
+    if (chat.liveHost) {
+      this.stopLiveTail(chat);
+      liveCall(chat.liveHost, 'session/cancel', { request: { sessionId: chat.sessionId } }).catch(() => {});
+      return this.stopTurn(chat, '已请求桌面端取消本轮回复');
+    }
 
     // Anything the conversation was still asking for is settled as denied, for every
     // driver: the kernel is waiting on those answers, and a turn that is over must not
@@ -2177,6 +2332,7 @@ export class ChatManager {
 
   /** Terminate a chat's runtime/turn and cancel its in-flight request. */
   dispose(chat, _reason) {
+    this.stopLiveTail(chat);
     this.failPending(chat, new Error('会话已结束'));
     // A kernel that owns its session store is stopped by asking it to stop, and the
     // conversation stays resumable: nothing of ours is running to kill.

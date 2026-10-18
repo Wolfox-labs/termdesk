@@ -73,6 +73,16 @@ export class Chat {
      * `ChatManager.ensureRuntime`.
      */
     this.pendingResume = false;
+    /**
+     * The desktop app's live host this chat is attached to, or null.
+     *
+     * Set when the session is opened while DeepSeek Harness Desktop is running:
+     * that process owns the session's write handle, so this chat sends over its
+     * API and follows its journal instead of starting a second runtime.
+     */
+    this.liveHost = null;
+    /** The journal follower for a live-attached turn (see ChatManager.sendDshLive). */
+    this.liveTail = null;
     this.runtimeStarted = false;
     /** Codex thread id (engine=codex only), kept separately for resume. */
     this.threadId = threadId;
@@ -255,6 +265,8 @@ export class Chat {
       lastError: this.lastError,
       usage: this.usage,
       live: Boolean((this.child && this.child.exitCode === null) || this.kernelLive),
+      /** True when the answer comes from the desktop app's own agent. */
+      liveAttached: Boolean(this.liveHost),
     };
   }
 
