@@ -9,8 +9,10 @@
  *   node tools/chat-engine-test.js
  */
 import { encodeFrame } from '../src/protocol.js';
+import { EventEmitter } from 'node:events';
+import { PassThrough, Writable } from 'node:stream';
 import { buildCodexExecArgs, killProcessTree, findCodex } from '../src/engines.js';
-import { notificationToChatEvents, turnToChatEvents } from '../src/kernels/codex.js';
+import { CodexAppServer, notificationToChatEvents, turnToChatEvents } from '../src/kernels/codex.js';
 import { ChatManager, CHAT_ENGINES } from '../src/chat.js';
 import { chatEngineIds } from '../src/kernels/registry.js';
 
@@ -249,6 +251,58 @@ function assertSafeRecord(name, record) {
     // path is covered by tools/chat-codex-appserver-test.js and codex-ws-e2e.js.
   } finally {
     mgr.disposeAll();
+  }
+}
+
+// The production chat path must start the exact registry command, preserving
+// any runtime/script pre-arguments before app-server's protocol arguments.
+// The fake child only answers initialize; no Codex binary or model is started.
+{
+  const cases = [
+    { name: 'PATH command', spec: { bin: 'codex', args: [] }, want: ['app-server', '--listen', 'stdio://'] },
+    { name: 'custom native override', spec: { bin: 'C:\\custom\\codex.exe', args: [] }, want: ['app-server', '--listen', 'stdio://'] },
+    {
+      name: 'Node script entry',
+      spec: { bin: process.execPath, args: ['C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js'] },
+      want: ['C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js', 'app-server', '--listen', 'stdio://'],
+    },
+  ];
+
+  for (const { name, spec, want } of cases) {
+    let spawned = null;
+    const fakeSpawn = (bin, args, options) => {
+      spawned = { bin, args: [...args], options };
+      const child = new EventEmitter();
+      child.pid = 0;
+      child.exitCode = null;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.stdin = new Writable({
+        write(chunk, _encoding, callback) {
+          const request = JSON.parse(chunk.toString());
+          if (request.method === 'initialize') {
+            process.nextTick(() => child.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`));
+          }
+          callback();
+        },
+      });
+      child.kill = () => { child.exitCode = 0; child.emit('exit', 0); return true; };
+      return child;
+    };
+    const manager = new ChatManager({
+      codexSpawnSpec: () => spec,
+      codexServerFactory: (options) => new CodexAppServer({ ...options, spawnProcess: fakeSpawn, log: () => {} }),
+    });
+    try {
+      const server = manager.codexServer();
+      await server.ensureStarted();
+      check(`${name}: chat startup invokes the registry binary and complete argv`,
+        spawned?.bin === spec.bin && JSON.stringify(spawned?.args) === JSON.stringify(want),
+        `${spawned?.bin} ${spawned?.args?.join(' ')}`);
+      check(`${name}: the fake app-server completed initialize`, server.child !== null && server.pending.size === 0);
+    } finally {
+      manager.disposeAll();
+    }
   }
 }
 console.log('');

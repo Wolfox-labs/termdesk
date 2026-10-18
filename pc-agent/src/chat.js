@@ -224,10 +224,16 @@ export class ChatManager {
    *   about this" goes. Optional, because tests and probes run without one — and a
    *   notification must never be the reason a turn fails.
    */
-  constructor({ notifier = null } = {}) {
+  constructor({
+    notifier = null,
+    codexSpawnSpec = spawnSpec,
+    codexServerFactory = (options) => new CodexAppServer(options),
+  } = {}) {
     this.chats = new Map();
     this.onEvent = null;
     this.notifier = notifier;
+    this.codexSpawnSpec = codexSpawnSpec;
+    this.codexServerFactory = codexServerFactory;
     // The reaper belongs to the manager, not to a socket: a chat runtime must
     // keep its idle clock running while the phone is disconnected, exactly as a
     // terminal session keeps its scrollback.
@@ -811,7 +817,13 @@ export class ChatManager {
   /** Lazily start the shared app-server and wire notification routing. */
   codexServer() {
     if (!this.codex) {
-      const server = new CodexAppServer({ log: (line) => console.log(line) });
+      const resolved = this.codexSpawnSpec('codex');
+      if (!resolved?.bin) throw new Error('Codex app-server 启动入口不可用');
+      const server = this.codexServerFactory({
+        bin: resolved.bin,
+        args: [...(resolved.args ?? []), 'app-server', '--listen', 'stdio://'],
+        log: (line) => console.log(line),
+      });
       server.on('notification', (method, params) => this.handleCodexNotification(method, params));
       // Codex's own approval requests become questions on the phone.
       server.approvalHandler = (method, params) => this.answerCodexApproval(method, params);

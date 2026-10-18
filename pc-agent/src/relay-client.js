@@ -41,6 +41,15 @@ function send(ws, value) {
   if (ws.bufferedAmount > MAX_QUEUE) { ws.terminate(); return false; }
   ws.send(JSON.stringify(value)); return true;
 }
+
+/** A relay may share an existing HTTPS origin under its own path prefix. */
+export function relayEndpoint(base, route) {
+  const url = new URL(base);
+  url.pathname = url.pathname.replace(/\/+$/, '') + '/' + route.replace(/^\/+/, '');
+  url.search = '';
+  url.hash = '';
+  return url;
+}
 export function startRelayConnector({ config, port, token, accessKey = '', log = console.log, onReady = null, onDevicesChanged = null }) {
   let control = null, retry = null, heartbeat = null, stopped = false, failures = 0;
   const localSockets = new Map(), transfers = new Set(), pending = new Map();
@@ -48,7 +57,7 @@ export function startRelayConnector({ config, port, token, accessKey = '', log =
   const proxy = config.proxy
     ? new (require('socks-proxy-agent').SocksProxyAgent)(config.proxy)
     : undefined;
-  const endpoint = route => { const url = new URL(config.url); url.pathname = route; url.search = ''; return url; };
+  const endpoint = route => relayEndpoint(config.url, route);
   const localBase = `http://127.0.0.1:${port}`;
   /**
    * Ask the relay something and wait for its answer.

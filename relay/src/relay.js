@@ -2,6 +2,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { CredentialStore, secret } from './credentials.js';
+import { peerAddress } from './peer-address.js';
 
 const MAX_FRAME = 8 * 1024 * 1024;
 const TRANSFERS = new Set(['/download', '/upload', '/upload/session', '/upload/session/commit']);
@@ -58,8 +59,9 @@ export function createRelay({ config, configFile = null }) {
       wss.handleUpgrade(req, socket, head, ws => bridgeHttp(ws, t)); return;
     }
     if (!['/agent', '/client', '/'].includes(url.pathname)) { socket.end('HTTP/1.1 404 Not Found\r\n\r\n'); return; }
-    // cloudflared is the only inbound proxy; use its authenticated edge IP header for throttling.
-    const peer = String(req.headers['cf-connecting-ip'] || req.socket.remoteAddress);
+    // Throttle the actual peer. Untrusted proxy headers can be forged and must
+    // never let a caller choose a different rate-limit bucket.
+    const peer = peerAddress(req, config.trustedProxies);
     const rec = attempts.get(peer);
     if (rec?.until > Date.now() && rec.count >= 8) { socket.end('HTTP/1.1 429 Too Many Requests\r\n\r\n'); return; }
     wss.handleUpgrade(req, socket, head, ws => accept(ws, url.pathname, peer));

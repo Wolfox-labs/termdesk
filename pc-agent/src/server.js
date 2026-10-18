@@ -33,7 +33,6 @@ import { ChatManager } from './chat.js';
 import { ChatContinuity, ownerForResponse } from './chat/continuity.js';
 import { Notifier } from './notify.js';
 import { loadRelayConfig, startRelayConnector } from './relay-client.js';
-import { Tunnel, findCloudflared, findTunnelConfig, verifyOwnAgent } from './tunnel.js';
 import { choosePairingUrl, devicesPage, pairPage, pairPayload, pairingUrlReason, qrMatrix, qrTerminal } from './pair.js';
 import { createFrameHandler, pushStatusFrame } from './handlers.js';
 import { reapOrphans, describeReap } from './spawnledger.js';
@@ -181,11 +180,11 @@ function disconnectCredential(credentialId) {
 }
 
 function parseArgs(argv) {
-  const args = { port: DEFAULT_PORT, host: '0.0.0.0', showToken: false, tunnel: false, local: false };
+  const args = { port: DEFAULT_PORT, host: '0.0.0.0', showToken: false, local: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--show-token') args.showToken = true;
-    else if (a === '--tunnel') args.tunnel = true;
+    else if (a === '--tunnel') throw new Error('Cloudflare 隧道已移除；请使用服务器中转或局域网连接。');
     else if (a === '--local') args.local = true;
     else if (a === '--port') args.port = Number(argv[++i]);
     else if (a === '--host') args.host = argv[++i];
@@ -195,7 +194,6 @@ function parseArgs(argv) {
   // a relay and a pairing page are not "disabled" - they are meaningless there.
   if (args.local) {
     args.host = '127.0.0.1';
-    args.tunnel = false;
   }
   return args;
 }
@@ -209,22 +207,6 @@ function parseArgs(argv) {
 function isLoopback(req) {
   const peer = req.socket?.remoteAddress ?? '';
   return peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
-}
-
-const tunnel = new Tunnel();
-/** In-flight tunnel start, so repeated /pair hits do not spawn several. */
-let tunnelStart = null;
-
-function ensureTunnel() {
-  // Local mode is loopback-only by construction: there is no public address to
-  // hand out, and cloudflared started inside a phone sandbox would be useless and
-  // invisible. Refusing here means no future route can reintroduce it.
-  if (args.local) return Promise.resolve(tunnel.status());
-  if (tunnel.status().running) return Promise.resolve(tunnel.status());
-  if (tunnelStart === null) {
-    tunnelStart = tunnel.start({ port: args.port }).finally(() => { tunnelStart = null; });
-  }
-  return tunnelStart;
 }
 
 /**
@@ -256,48 +238,9 @@ async function relayPairing({ ttlMs } = {}) {
 /** Why the last relay pairing attempt failed, so the page can say it. */
 let relayPairError = null;
 
-/** The address the phone should use: the tunnel when up, else loopback. */
-/**
- * The last verdict on the public address, and when it was taken.
- *
- * The check costs a round trip through Cloudflare, so it is cached: the pairing
- * page can be reloaded freely without paying for one each time, and the entry
- * expires quickly enough that a repaired DNS record is noticed.
- */
-const PUBLIC_VERDICT_TTL_MS = 2 * 60 * 1000;
-let publicVerdict = { at: 0, url: null, ours: false, detail: '' };
-
-function rememberPublicVerdict(url, verdict) {
-  publicVerdict = {
-    at: Date.now(),
-    url: url ?? null,
-    ours: Boolean(verdict?.ours),
-    detail: verdict?.oursDetail ?? '',
-  };
-}
-
-/** Is the agent answering at this public address us? Cached for a short while. */
-async function publicAddressIsOurs(url) {
-  if (!url) return false;
-  if (publicVerdict.url === url && Date.now() - publicVerdict.at < PUBLIC_VERDICT_TTL_MS) {
-    return publicVerdict.ours;
-  }
-  const verdict = await verifyOwnAgent({ url }).catch((err) => ({ ours: false, oursDetail: String(err?.message ?? err) }));
-  rememberPublicVerdict(url, verdict);
-  return publicVerdict.ours;
-}
-
-/**
- * The address the QR code should carry: one that reaches THIS agent.
- *
- * See `choosePairingUrl` for why a configured tunnel hostname is not enough.
- */
-async function pairingUrl() {
-  const tunnelUrl = tunnel.url ?? null;
-  const ours = await publicAddressIsOurs(tunnelUrl);
+/** Direct pairing advertises a reachable LAN address only. */
+function pairingUrl() {
   return choosePairingUrl({
-    tunnelUrl,
-    tunnelIsOurs: ours,
     lanUrls: lanAddresses().map((addr) => `ws://${addr}:${args.port}`),
     port: args.port,
   });
@@ -402,7 +345,7 @@ function printHeader({ args, token, apk, relay, reap = null }) {
   line('令牌', token.slice(0, 6) + '…   完整内容在 ' + tokenPath() + '（等于这台电脑的钥匙，不要外发）');
   line('中转', relay
     ? '已启用：' + relay.url + '（这台电脑主动拨出去，不需要域名和隧道）'
-    : '未启用（内网或 Cloudflare 隧道即可；需要时设 TERMDESK_RELAY=1）');
+    : '未启用（局域网可直连；公网请配置 Relay 并设 TERMDESK_RELAY=1）');
   if (relay) {
     line('配对', 'http://127.0.0.1:' + args.port + '/pair   每次打开都会生成一个一次性的配对码');
     line('名单', 'http://127.0.0.1:' + args.port + '/devices   已配对的手机，可单独吊销');
@@ -496,7 +439,7 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/app' && !/apk|android/i.test(req.headers.accept ?? '')) {
       // A browser gets told what this is; a downloader gets the file.
       const host = req.headers.host ?? `127.0.0.1:${args.port}`;
-      const scheme = tunnel.url ? 'https' : 'http';
+      const scheme = 'http';
       const page = `<!doctype html><meta charset="utf-8"><title>TermDesk App</title>
 <body style="font-family:system-ui;background:#272822;color:#f8f8f2;padding:28px;max-width:560px">
 <h1 style="font-size:19px">安装 TermDesk 手机端</h1>
@@ -605,7 +548,11 @@ const server = http.createServer((req, res) => {
       lanUrls: lanAddresses().map((a) => `ws://${a}:${args.port}`),
       startedAt: startedAt,
       uptimeMs: Date.now() - startedAt,
-      tunnel: tunnel.status(),
+      connections: {
+        lan: { supported: true, encrypted: false },
+        relay: { configured: Boolean(relayConnector), connected: relayConnector?.connected ?? false, url: relayConnector?.url ?? null },
+        p2p: { supported: false, reason: '尚未接入 ICE / DataChannel' },
+      },
       apk: Boolean(findClientApk()),
       relay: Boolean(relayConnector),
     }));
@@ -729,14 +676,10 @@ const server = http.createServer((req, res) => {
           relayPairError = String(err?.message ?? err);
         }
       }
-      let status = tunnel.status();
-      if (!status.running) status = await ensureTunnel().catch(() => tunnel.status());
       const wsUrl = await pairingUrl();
       // Why this address: the page and the JSON both say it, so "the scan went to
       // the wrong machine" is visible instead of mysterious.
       const urlReason = pairingUrlReason({
-        tunnelUrl: tunnel.url ?? null,
-        tunnelIsOurs: publicVerdict.url === tunnel.url && publicVerdict.ours,
         lanUrls: localAddresses().map((a) => `ws://${a}:${args.port}`),
       });
       // Each scan mints one phone, not a copy of the machine key. The registry
@@ -750,12 +693,9 @@ const server = http.createServer((req, res) => {
           url: wsUrl,
           urlReason,
           relayError: relayPairError,
-          publicDetail: publicVerdict.detail,
           token: phone.secret,
           deviceId: phone.id,
           payload,
-          tunnel: status,
-          cloudflared: findCloudflared(),
           hostname: os.hostname(),
           port: args.port,
           // The desktop window draws this instead of an SVG.
@@ -765,14 +705,11 @@ const server = http.createServer((req, res) => {
       }
       // The phone must reach the install URL from its own network, so prefer the
       // public one; loopback would only work on the machine itself.
-      const appUrl = status.url
-        ? `${status.url}/app.apk`
-        : `http://${localAddresses()[0] ?? '127.0.0.1'}:${args.port}/app.apk`;
+      const appUrl = `http://${localAddresses()[0] ?? '127.0.0.1'}:${args.port}/app.apk`;
       const html = await pairPage({
         payload,
         wsUrl,
         token: phone.secret,
-        tunnel: status,
         urlReason,
         relayError: relayPairError,
         lanUrls: localAddresses().map((a) => `ws://${a}:${args.port}`),
@@ -1128,10 +1065,8 @@ function pushChats() {
 
 let relayConnector = null;
 server.listen(args.port, args.host, async () => {
-  // Opt-in on purpose. The relay is a second, older path to the same agent and
-  // it depends on a local proxy being up; with a working Cloudflare tunnel it
-  // only added a reconnect loop nobody could explain. TERMDESK_RELAY=1 turns it
-  // back on.
+  // The launcher and management console enable the configured VPS relay.
+  // CLI callers opt in explicitly; isolated tests can disable it with 0.
   const relayConfig = !args.local && process.env.TERMDESK_RELAY === '1' ? loadRelayConfig() : null;
   if (relayConfig) {
     relayConnector = startRelayConnector({
@@ -1156,56 +1091,11 @@ server.listen(args.port, args.host, async () => {
     });
   }
   printHeader({ args, token, apk: findClientApk(), relay: relayConfig, reap: await reapOrphans().catch(() => null) });
-  // Printed before the tunnel on purpose: the kernel list is useful immediately,
-  // while cloudflared may still be negotiating its connections.
+  // Discovery never starts a model turn.
   await printKernels().catch(() => {});
 
-  // A public address is the point of the tunnel: with it the phone works on
-  // mobile data, on a friend's Wi-Fi, anywhere — no Tailscale and no port
-  // forwarding. Starting it is explicit (--tunnel) so the machine is not put on
-  // the internet merely by running the agent.
-  if (args.tunnel) {
-    const configFile = findTunnelConfig();
-    console.log('  公网   正在启动 cloudflared…' + (configFile ? '（使用已有配置 ' + configFile + '）' : '（临时地址模式）'));
-    try {
-      const status = await tunnel.start({ port: args.port });
-      console.log('  公网   ' + status.url + '   ' + (status.stable ? '固定域名' : '临时地址（重启会变）'));
-      // Registration is not proof, and a 200 is not proof either: DNS route,
-      // ingress rule, proxy AND identity all have to be right. The hostname in
-      // the config can be served by a different machine - measured here, it was
-      // answered by the VPS relay, so a phone that scanned our code sent its
-      // token to a stranger. One request, asking "is that you?", settles it.
-      const verdict = await verifyOwnAgent({ url: status.url });
-      rememberPublicVerdict(status.url, verdict);
-      console.log(verdict.ours
-        ? '  自检   公网地址确认是本机代理'
-        : '  自检   这个地址现在不是本机（回的是：' + (verdict.oursDetail ?? '未知') + '）');
-      const lanUrls = lanAddresses().map((a) => `ws://${a}:${args.port}`);
-      const wsUrl = choosePairingUrl({
-        tunnelUrl: status.url,
-        tunnelIsOurs: verdict.ours,
-        lanUrls,
-        port: args.port,
-      });
-      if (!verdict.ours) {
-        console.log('  配对   二维码改用局域网地址；出门要用请先把这个域名指回本机隧道');
-      }
-      console.log('');
-      console.log('  手机扫码配对（也可在 App 里手动填上面的地址 + 令牌）');
-      console.log(await qrTerminal(pairPayload({ wsUrl, token, name: os.hostname() })));
-    } catch (err) {
-      console.error('  公网   启动失败：' + (err?.message ?? err));
-      console.error('  公网   ' + (findCloudflared() ? '检查网络后重试' : '把 cloudflared 放进 tools/ 或设置 TERMDESK_CLOUDFLARED'));
-      // A tunnel that will not start must not leave the user without a QR: the
-      // LAN address works for the phone in the same network.
-      const lanUrls = lanAddresses().map((a) => `ws://${a}:${args.port}`);
-      const wsUrl = choosePairingUrl({ tunnelUrl: null, tunnelIsOurs: false, lanUrls, port: args.port });
-      console.log('  配对   ' + wsUrl + '（局域网）');
-      console.log(await qrTerminal(pairPayload({ wsUrl, token, name: os.hostname() })).catch(() => ''));
-    }
-  } else if (!args.local) {
-    // No tunnel line in local mode: the banner there already said 不适用.
-    console.log('  公网   未启动（加 --tunnel，或直接双击 TermDesk.bat）');
+  if (!args.local && !relayConfig) {
+    console.log('  连接   局域网直连；公网中转未配置，P2P 尚未接入');
     console.log('');
   }
 });
@@ -1213,7 +1103,6 @@ server.listen(args.port, args.host, async () => {
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
     relayConnector?.stop();
-    tunnel.stop();
     terminals.disposeAll();
     chats.disposeAll();
     server.close(() => process.exit(0));

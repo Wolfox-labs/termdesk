@@ -20,7 +20,7 @@ pc-agent/tools/agent-err.log
 pc-agent/tools/sdk-dump-out.txt
 
 # Large third-party binaries are downloaded, not committed.
-# cloudflared is fetched per machine; see README for the download step.
+# Keep any legacy, locally downloaded tunnel binary out of source control.
 tools/cloudflared-windows-amd64.exe
 
 # Scratch / local-only

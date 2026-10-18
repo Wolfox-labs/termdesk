@@ -33,7 +33,7 @@ import dev.termdesk.desktop.workbench.WorkbenchStore
  * "Is this machine doing anything, and what does it need from me?"
  *
  * The summary answers that in one screen: what is live, what was recorded
- * recently, whether the agent and its tunnel are healthy, and which kernels are
+ * recently, whether the agent and its connection are healthy, and which kernels are
  * usable. Everything here is a shortcut into a page that owns the detail.
  */
 @Composable
@@ -119,11 +119,12 @@ private fun MachinePanel(
             )
             KeyValueRow("版本", status?.version?.let { "v$it" } ?: "—")
             KeyValueRow(
-                "隧道",
+                "服务器中转",
                 when {
                     status == null -> "—"
-                    status.tunnel.running -> "${status.tunnel.label} ${status.tunnel.url.orEmpty()}"
-                    else -> "未启动（局域网直连可用）"
+                    status.connections.relay.connected -> "已连接 ${status.connections.relay.url.orEmpty()}"
+                    status.connections.relay.configured -> "连接中或暂不可达（局域网可用）"
+                    else -> "未配置（局域网可用）"
                 },
             )
             KeyValueRow(

@@ -14,7 +14,7 @@ internal fun packagedAgentRoot(codeLocation: File): File? {
  *
  * The shell does not reimplement the agent: it starts the same
  * `pc-agent/src/server.js` the phone talks to, shows its output, and stops it.
- * That is what keeps one implementation of kernels, sessions and the tunnel for
+ * That is what keeps one implementation of kernels, sessions and connections for
  * both clients.
  */
 class AgentProcess(
@@ -36,10 +36,9 @@ class AgentProcess(
     val isOwner: Boolean get() = isRunning
 
     /**
-     * Start the agent. `--enable-shell` and `--tunnel` mirror what the one-click
-     * launcher passes, so the window and the script produce the same agent.
+     * Start the same Agent as the launcher, using a configured VPS relay and LAN.
      */
-    fun start(port: Int, shell: Boolean = true, tunnel: Boolean = true): Result<Unit> {
+    fun start(port: Int, shell: Boolean = true): Result<Unit> {
         if (isRunning) return Result.success(Unit)
         val node = findNode()
             ?: return Result.failure(IllegalStateException("找不到 Node.js —— 装一个 Node 20+，或用 TERMDESK_NODE 指定路径"))
@@ -48,7 +47,6 @@ class AgentProcess(
 
         val command = mutableListOf(node.path, entry.path, "--host", "0.0.0.0", "--port", port.toString())
         if (shell) command += "--enable-shell"
-        if (tunnel) command += "--tunnel"
 
         return runCatching {
             val builder = ProcessBuilder(command)
@@ -56,6 +54,7 @@ class AgentProcess(
                 .redirectErrorStream(true)
             // Lets the kernel list state what each kernel really declares.
             builder.environment()["TERMDESK_KERNELS_PROBE"] = "1"
+            builder.environment().putIfAbsent("TERMDESK_RELAY", "1")
             val started = builder.start()
             process = started
 
@@ -75,7 +74,7 @@ class AgentProcess(
         }
     }
 
-    /** Stop the agent AND its children — cloudflared is a child and must go too. */
+    /** Stop this window's Agent and its owned child processes. */
     fun stop() {
         val current = process ?: return
         process = null

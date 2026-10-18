@@ -3,7 +3,9 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { listKernels, spawnSpec, kernelCommand, resolveOpenCode } from '../src/kernels/registry.js';
+import { fileURLToPath } from 'node:url';
+import { listKernels, spawnSpec, kernelCommand, resolveOpenCode, chatEngineIds, probeKernel } from '../src/kernels/registry.js';
+import { dshScriptFromShim, findNpmCommand } from '../src/kernels/discovery.js';
 
 test('local discovery includes only executables found on this host', () => {
   const found = listKernels({ installedOnly: true });
@@ -40,6 +42,47 @@ test('an unknown registered kernel appears and disappears without changing brand
     assert.equal(listKernels({ installedOnly: true }).some((kernel) => kernel.id === discovered.id), false);
   } finally {
     if (old === undefined) delete process.env.TERMDESK_KERNEL_MANIFEST_DIR; else process.env.TERMDESK_KERNEL_MANIFEST_DIR = old;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('an ACP handshake failure blocks new chats until a changed entry passes', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'termdesk-probe-cache-'));
+  const failScript = path.join(directory, 'fail-acp.mjs');
+  fs.writeFileSync(failScript, [
+    "process.stdin.setEncoding('utf8');",
+    "process.stdin.on('data', (chunk) => { for (const line of chunk.split('\\n')) { if (!line.trim()) continue; const req = JSON.parse(line); if (req.method === 'initialize') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, error: { code: -32000, message: 'fixture handshake failure' } }) + '\\n'); } });",
+  ].join('\n'));
+  const keys = ['TERMDESK_ACP_KERNELS', 'TERMDESK_KERNEL_PATHS', 'TERMDESK_KERNEL_MANIFEST_DIR', 'TERMDESK_KERNEL_STATE'];
+  const prior = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  process.env.TERMDESK_KERNEL_PATHS = path.join(directory, 'paths.json');
+  process.env.TERMDESK_KERNEL_MANIFEST_DIR = path.join(directory, 'kernels');
+  process.env.TERMDESK_KERNEL_STATE = path.join(directory, 'state.json');
+  const id = 'probe-cache-fixture';
+  const configure = (script) => {
+    process.env.TERMDESK_ACP_KERNELS = JSON.stringify([{ id, label: 'Probe fixture', bin: process.execPath, preArgs: [script], args: ['acp'] }]);
+  };
+  try {
+    configure(failScript);
+    const failed = await probeKernel(id);
+    assert.equal(failed.ok, false);
+    const afterFailure = listKernels().find((kernel) => kernel.id === id);
+    assert.equal(afterFailure.available, true);
+    assert.match(afterFailure.detail, /^ACP 握手失败/);
+    assert.equal(afterFailure.selectable, false);
+    assert.equal(chatEngineIds().includes(id), false);
+
+    configure(fileURLToPath(new URL('./fake-acp-agent.mjs', import.meta.url)));
+    const recovered = await probeKernel(id);
+    assert.equal(recovered.ok, true);
+    const afterRecovery = listKernels().find((kernel) => kernel.id === id);
+    assert.match(afterRecovery.detail, /^ACP · TermDesk Stub Kernel/);
+    assert.equal(afterRecovery.selectable, true);
+    assert.equal(chatEngineIds().includes(id), true);
+  } finally {
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
@@ -112,7 +155,7 @@ test('Windows OpenCode discovery follows a declared npm native executable entry'
       npmRoot: path.join(directory, 'npm'),
       localPrograms: path.join(directory, 'missing-programs'),
     });
-    assert.equal(resolved, executable);
+    assert.deepEqual(resolved, { bin: executable, args: [] });
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
@@ -130,8 +173,157 @@ test('Windows OpenCode discovery preserves the explicit unsupported reason for n
     });
     assert.equal(resolved, null);
     assert.equal(rejections[0]?.path, shim);
-    assert.match(rejections[0]?.reason ?? '', /脚本类型不支持.*\.cmd\/.bat/);
+    assert.match(rejections[0]?.reason ?? '', /启动器.*npm bin 元数据/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('npm commands resolve from whichever PATH prefix supplies the package metadata', { skip: process.platform !== 'win32' }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'termdesk-npm-prefix-'));
+  const prefixes = ['install-a', 'install-b'].map((name) => path.join(directory, name));
+  const targets = [];
+  for (const prefix of prefixes) {
+    const packageDir = path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code');
+    const target = path.join(packageDir, 'bin', 'claude.exe');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(process.execPath, target);
+    fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({
+      name: '@anthropic-ai/claude-code', version: 'fixture', bin: { claude: 'bin/claude.exe' },
+    }));
+    fs.writeFileSync(path.join(prefix, 'claude.cmd'),
+      `@"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" %*\r\n`);
+    targets.push(target);
+  }
+
+  try {
+    for (let index = 0; index < prefixes.length; index += 1) {
+      const result = findNpmCommand('claude', {
+        env: { PATH: prefixes[index], PATHEXT: '.EXE;.CMD;.BAT' },
+        platform: 'win32',
+      });
+      assert.equal(result?.bin, targets[index]);
+      assert.deepEqual(result?.args, []);
+      assert.equal(result?.source, 'npm-native');
+    }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('npm metadata recognizes extensionless Node shebangs and DSH only accepts a Node script', { skip: process.platform !== 'win32' }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'termdesk-dsh-npm-'));
+  const packageDir = path.join(directory, 'node_modules', '@deepseek-ai', 'dsh');
+  const script = path.join(packageDir, 'bin', 'dsh');
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.writeFileSync(script, '#!/usr/bin/env node\n// inert package fixture\n');
+  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', bin: { dsh: 'bin/dsh' } }));
+  fs.writeFileSync(path.join(directory, 'dsh.cmd'), `@"%dp0%\\node_modules\\@deepseek-ai\\dsh\\bin\\dsh" %*\r\n`);
+  const prior = {
+    path: process.env.PATH,
+    dsh: process.env.TERMDESK_DSH,
+    kernelPaths: process.env.TERMDESK_KERNEL_PATHS,
+    manifests: process.env.TERMDESK_KERNEL_MANIFEST_DIR,
+    state: process.env.TERMDESK_KERNEL_STATE,
+  };
+  process.env.PATH = directory;
+  delete process.env.TERMDESK_DSH;
+  process.env.TERMDESK_KERNEL_PATHS = path.join(directory, 'paths.json');
+  process.env.TERMDESK_KERNEL_MANIFEST_DIR = path.join(directory, 'kernels');
+  process.env.TERMDESK_KERNEL_STATE = path.join(directory, 'state.json');
+  try {
+    const found = findNpmCommand('dsh', { env: { PATH: directory, PATHEXT: '.EXE;.CMD;.BAT' }, platform: 'win32', packages: ['@deepseek-ai/dsh'], nodeOnly: true });
+    assert.equal(found?.bin, process.execPath);
+    assert.equal(found?.script, script);
+    assert.deepEqual(found?.args, [script]);
+    const dsh = listKernels().find((kernel) => kernel.id === 'dsh');
+    assert.equal(dsh?.available, true);
+    assert.equal(dsh?.path, script);
+    assert.deepEqual(spawnSpec('dsh')?.args, [script]);
+  } finally {
+    if (prior.path === undefined) delete process.env.PATH; else process.env.PATH = prior.path;
+    for (const [key, value] of [['TERMDESK_DSH', prior.dsh], ['TERMDESK_KERNEL_PATHS', prior.kernelPaths], ['TERMDESK_KERNEL_MANIFEST_DIR', prior.manifests], ['TERMDESK_KERNEL_STATE', prior.state]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Claude Code is visible as installed while its unimplemented transport stays unselectable', { skip: process.platform !== 'win32' }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'termdesk-claude-detect-'));
+  const packageDir = path.join(directory, 'node_modules', '@anthropic-ai', 'claude-code');
+  const target = path.join(packageDir, 'bin', 'claude.exe');
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(process.execPath, target);
+  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({ bin: { claude: 'bin/claude.exe' } }));
+  fs.writeFileSync(path.join(directory, 'claude.cmd'),
+    `@"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" %*\r\n`);
+  const prior = {
+    path: process.env.PATH,
+    kernelPaths: process.env.TERMDESK_KERNEL_PATHS,
+    manifests: process.env.TERMDESK_KERNEL_MANIFEST_DIR,
+    state: process.env.TERMDESK_KERNEL_STATE,
+    claude: process.env.TERMDESK_CLAUDE,
+  };
+  process.env.PATH = directory;
+  process.env.TERMDESK_KERNEL_PATHS = path.join(directory, 'paths.json');
+  process.env.TERMDESK_KERNEL_MANIFEST_DIR = path.join(directory, 'kernels');
+  process.env.TERMDESK_KERNEL_STATE = path.join(directory, 'state.json');
+  delete process.env.TERMDESK_CLAUDE;
+  try {
+    const claude = listKernels().find((kernel) => kernel.id === 'claude-code');
+    assert.equal(claude?.available, true);
+    assert.equal(claude?.tier, 'unsupported');
+    assert.equal(claude?.selectable, false);
+    assert.equal(claude?.manifest.transport, null);
+    assert.equal(chatEngineIds().includes('claude-code'), false);
+  } finally {
+    if (prior.path === undefined) delete process.env.PATH; else process.env.PATH = prior.path;
+    for (const [key, value] of [['TERMDESK_KERNEL_PATHS', prior.kernelPaths], ['TERMDESK_KERNEL_MANIFEST_DIR', prior.manifests], ['TERMDESK_KERNEL_STATE', prior.state], ['TERMDESK_CLAUDE', prior.claude]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('DSH shim discovery requires an existing declared Node entry and never launches the wrapper', { skip: process.platform !== 'win32' }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'termdesk-dsh-shim-'));
+  const staleTarget = path.join(directory, 'missing', 'bin.js');
+  const shim = path.join(directory, 'dsh.ps1');
+  fs.writeFileSync(shim, `$dshBin = '${staleTarget}'\n`);
+  const rejected = [];
+  try {
+    assert.equal(dshScriptFromShim({ env: { PATH: directory }, rejected }), null);
+    assert.match(rejected[0]?.reason ?? '', /目标运行时缺失/);
+
+    const entry = path.join(directory, 'runtime', 'bin.js');
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(entry, '// inert discovery fixture\n');
+    fs.writeFileSync(shim, `$dshBin = '${entry}'\n`);
+    assert.equal(dshScriptFromShim({ env: { PATH: directory }, rejected: [] }), entry);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('Codex npm discovery preserves its Node prelude and an explicit stale override stays unavailable', { skip: process.platform !== 'win32' }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'termdesk-codex-npm-'));
+  const packageDir = path.join(directory, 'node_modules', '@openai', 'codex');
+  const script = path.join(packageDir, 'bin', 'codex.js');
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.writeFileSync(script, '// inert npm fixture\n');
+  fs.writeFileSync(path.join(packageDir, 'package.json'), JSON.stringify({ name: '@openai/codex', bin: { codex: 'bin/codex.js' } }));
+  fs.writeFileSync(path.join(directory, 'codex.cmd'), `@"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n`);
+  const prior = { path: process.env.PATH, codex: process.env.TERMDESK_CODEX };
+  process.env.PATH = directory;
+  delete process.env.TERMDESK_CODEX;
+  try {
+    assert.deepEqual(spawnSpec('codex'), { bin: process.execPath, args: [script] });
+    assert.equal(listKernels().find((kernel) => kernel.id === 'codex').path, script);
+    process.env.TERMDESK_CODEX = path.join(directory, 'not-installed.exe');
+    const codex = listKernels().find((kernel) => kernel.id === 'codex');
+    assert.equal(codex.available, false);
+    assert.equal(codex.path, null);
+    assert.equal(spawnSpec('codex'), null);
+  } finally {
+    if (prior.path === undefined) delete process.env.PATH; else process.env.PATH = prior.path;
+    if (prior.codex === undefined) delete process.env.TERMDESK_CODEX; else process.env.TERMDESK_CODEX = prior.codex;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('Node-hosted SDK scripts do not need an executable bit', () => {

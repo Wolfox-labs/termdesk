@@ -41,37 +41,14 @@ export function pairPayload({ wsUrl, token, name, relay = false, more = [] }) {
   return `termdesk://pair?${params.toString()}`;
 }
 
-/**
- * Which address the QR code (and the pairing page) should carry.
- *
- * The rule is "an address that reaches THIS agent", not "the nicest address we
- * know about". A named tunnel's hostname is a claim, not a fact: DNS can point
- * it at a different machine entirely. Measured on this deployment — the hostname
- * in the tunnel config answers as the VPS relay — so a phone that scanned the
- * printed code sent our pairing token to somebody else and was told "invalid
- * credentials", with nothing on screen to explain what had gone wrong.
- *
- * So the public address is advertised only when a self-check confirmed the agent
- * answering there is us (`verifyOwnAgent`), and a LAN address is the fallback:
- * it is the one address we cannot be wrong about, because we are listening on
- * it. Loopback is the last resort, for a same-machine test.
- */
-export function choosePairingUrl({ tunnelUrl = null, tunnelIsOurs = false, lanUrls = [], port = 7420 } = {}) {
-  if (tunnelUrl && tunnelIsOurs) return tunnelUrl.replace(/^https:\/\//, 'wss://');
-  const lan = (lanUrls ?? []).find((url) => typeof url === 'string' && /^wss?:\/\//.test(url));
-  if (lan) return lan;
-  return `ws://127.0.0.1:${port}`;
+/** Direct pairing chooses a LAN endpoint; Relay pairing supplies its own URL. */
+export function choosePairingUrl({ lanUrls = [], port = 7420 } = {}) {
+  return (lanUrls ?? []).find((url) => typeof url === 'string' && /^wss?:\/\//.test(url))
+    ?? `ws://127.0.0.1:${port}`;
 }
 
-/**
- * Why that address was chosen, so the page and the banner can say it out loud
- * instead of leaving the user to guess why a scan did not work.
- */
-export function pairingUrlReason({ tunnelUrl = null, tunnelIsOurs = false, lanUrls = [] } = {}) {
-  if (tunnelUrl && tunnelIsOurs) return 'public';
-  if (tunnelUrl && !tunnelIsOurs) return 'public_not_ours';
-  if ((lanUrls ?? []).length > 0) return 'lan';
-  return 'loopback';
+export function pairingUrlReason({ lanUrls = [] } = {}) {
+  return lanUrls.length > 0 ? 'lan' : 'loopback';
 }
 
 /** SVG string, so the page needs no image encoding and scales on any screen. */
@@ -194,7 +171,7 @@ export function devicesPage({ devices = [], hostname, relayUrl = null, status = 
  * Loopback only (the caller enforces it): it contains the token, so it must
  * never be reachable through the tunnel it is describing.
  */
-export async function pairPage({ payload, wsUrl, token, tunnel, relay = null, urlReason = null, relayError = null, lanUrls, appUrl, expiresAt }) {
+export async function pairPage({ payload, wsUrl, token, relay = null, urlReason = null, relayError = null, lanUrls, appUrl, expiresAt }) {
   const qr = await qrSvg(payload);
   const rows = [
     ['连接地址', wsUrl],
@@ -221,18 +198,13 @@ export async function pairPage({ payload, wsUrl, token, tunnel, relay = null, ur
        中转恢复后重新打开本页，就会换成一次性的配对码。</p>`
     : '') + (urlReason === 'relay'
     ? '<p class="sub">走 VPS 中转：手机用流量或在别的网络下也能连上这台电脑，配对码只能用一次。</p>'
-    : urlReason === 'public_not_ours'
-      ? `<p class="warn">这个域名现在指向的不是本机代理，所以二维码用的是下面的局域网地址。
-       出门要用（手机流量 / 别的 Wi-Fi）之前，请先把 ${escapeHtml(tunnel?.url ?? '')} 指回这台电脑的隧道。</p>`
-      : urlReason === 'lan'
+    : urlReason === 'lan'
         ? '<p class="sub">二维码用的是局域网地址：手机与这台电脑在同一个网络时可用。</p>'
         : '');
 
-  const tunnelLine = relay
-    ? `中转地址：${escapeHtml(relay.url)}（手机在任何网络下都连它，由它转给这台电脑）`
-    : tunnel?.url
-      ? `公网地址：${escapeHtml(tunnel.url)}（${tunnel.mode === 'named' ? '固定域名' : '临时地址，重启会变'}）`
-      : `未启动公网隧道。本机地址：${escapeHtml((lanUrls ?? []).join('  ·  ') || '—')}`;
+  const connectionLine = relay
+    ? `服务器中转：${escapeHtml(relay.url)}`
+    : `局域网直连：${escapeHtml((lanUrls ?? []).join('  ·  ') || '—')}`;
 
   return `<!doctype html>
 <html lang="zh-CN">
@@ -275,8 +247,8 @@ export async function pairPage({ payload, wsUrl, token, tunnel, relay = null, ur
   ${rows}
   ${reasonLine}
   <div class="note">
-    ${tunnelLine}<br>
-    这个页面只在本机可访问（127.0.0.1），不会通过隧道暴露；离开本机请勿分享上面的令牌。
+    ${connectionLine}<br>
+    这个页面只在本机可访问（127.0.0.1），不向网络开放；离开本机请勿分享上面的令牌。
     ${relay ? '<br>再加一台手机：重新打开本页即可，每次都是一个新的一次性码。<br>已配对的手机在 <b>/devices</b> 页可以看到，并能单独吊销。<br>App 安装包只能在同一局域网内下载：中转只转发已配对手机的文件请求。' : ''}
     ${expiresAt ? `<br>页面生成于 ${escapeHtml(new Date(expiresAt).toLocaleString())}` : ''}
   </div>

@@ -28,8 +28,9 @@ import path from 'node:path';
 
 import { AcpKernel } from './acp.js';
 import { manifestFor } from './manifest.js';
+import { dshScriptFromShim, findNpmCommand, findPathExecutable } from './discovery.js';
 
-const NPM_ROOT = path.join(os.homedir(), 'AppData', 'Roaming', 'npm');
+const NPM_ROOT = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm');
 const LOCAL_PROGRAMS = path.join(os.homedir(), 'AppData', 'Local', 'Programs');
 
 /** Absolute path if it exists and is a file, else null. */
@@ -96,24 +97,6 @@ function resolveExecutable(candidate, rejections = []) {
  * `node <entry> <args…>`. `process.execPath` is used rather than a bare `node`
  * so a stripped PATH (scheduled task, service) cannot break the launch.
  */
-function nodeEntry(candidates) {
-  const entry = firstFile(candidates);
-  return entry ? { bin: process.execPath, args: [entry] } : null;
-}
-
-/** Resolve only the npm executable declared by the installed package itself. */
-function npmPackageEntry(packageDir, command, rejections = []) {
-  let metadata;
-  try { metadata = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8')); } catch { return null; }
-  const declared = typeof metadata.bin === 'string' ? metadata.bin : metadata.bin?.[command];
-  if (typeof declared !== 'string' || !declared.trim()) return null;
-  const candidate = path.resolve(packageDir, declared);
-  const relative = path.relative(packageDir, candidate);
-  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
-  if (/\.[cm]?js$/i.test(candidate)) return nodeEntry([candidate]);
-  return executableOrNull(candidate, rejections);
-}
-
 /** Resolve OpenCode without assuming a particular drive or vendor folder. */
 export function resolveOpenCode(rejections = [], {
   env = process.env,
@@ -126,21 +109,33 @@ export function resolveOpenCode(rejections = [], {
   }
   if (platform !== 'win32') return firstOnPath(['opencode'], rejections, { env, platform });
 
-  // Prefer an executable from PATH. npm's Windows .cmd shim is deliberately
-  // rejected; an installed package's own bin declaration is checked below.
-  const onPath = firstOnPath(['opencode'], rejections, { env, platform });
-  if (onPath) return onPath;
-
-  const packageEntry = npmPackageEntry(
-    path.join(npmRoot, 'node_modules', 'opencode-ai'),
-    'opencode',
-    rejections,
-  );
-  if (packageEntry) return packageEntry;
+  const native = findPathExecutable('opencode', { env, platform, rejected: rejections });
+  if (native) return native;
+  const npm = findNpmCommand('opencode', { env, platform, packages: ['opencode-ai'], prefixes: [npmRoot], rejected: rejections });
+  if (npm) return { bin: npm.bin, args: npm.args };
 
   return firstFile([
     path.join(localPrograms, '@opencode-aidesktop', 'resources', 'bin', 'opencode-cli.exe'),
   ]);
+}
+
+function resolvePathOrNpm(command, rejections, packages = []) {
+  if (process.platform !== 'win32') return firstOnPath([command], rejections);
+  const native = findPathExecutable(command, { rejected: rejections });
+  if (native) return native;
+  const npm = findNpmCommand(command, { packages, rejected: rejections });
+  return npm ? { bin: npm.bin, args: npm.args } : null;
+}
+
+function resolveDsh(rejections = []) {
+  if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
+  if (process.platform !== 'win32') return firstOnPath(['dsh'], rejections);
+  const entry = dshScriptFromShim({ rejected: rejections });
+  if (entry) return { bin: process.execPath, args: [entry] };
+  const npm = findNpmCommand('dsh', { packages: ['@deepseek-ai/dsh'], rejected: rejections, nodeOnly: true });
+  if (npm?.script) return { bin: process.execPath, args: [npm.script] };
+  // A launcher without its declared SDK entry is not a runnable SDK kernel.
+  return null;
 }
 
 /**
@@ -166,6 +161,10 @@ function table() {
       resolve: (rejections) => {
         if (process.env.TERMDESK_CODEX) return fileOrNull(process.env.TERMDESK_CODEX) ?? process.env.TERMDESK_CODEX;
         if (process.platform !== "win32") return firstOnPath(["codex"], rejections);
+        // ChatManager passes this exact command (including Node prelude) to
+        // CodexAppServer, so discovery and actual startup use one contract.
+        const discovered = resolvePathOrNpm('codex', rejections, ['@openai/codex']);
+        if (discovered) return discovered;
         const base = path.join(os.homedir(), 'AppData', 'Local', 'OpenAI', 'Codex', 'bin');
         try {
           for (const entry of fs.readdirSync(base)) {
@@ -174,6 +173,19 @@ function table() {
           }
         } catch { /* fall through */ }
         return 'codex';
+      },
+    },
+    {
+      id: 'claude-code',
+      label: 'Claude Code',
+      tier: 'unsupported',
+      transport: null,
+      detectOnly: true,
+      resume: false,
+      detail: '已检测到 Claude Code 安装；TermDesk 尚未接入其 CLI 协议，暂不可选择',
+      resolve: (rejections) => {
+        if (process.env.TERMDESK_CLAUDE) return resolveExecutable(process.env.TERMDESK_CLAUDE, rejections);
+        return resolvePathOrNpm('claude', rejections, ['@anthropic-ai/claude-code']);
       },
     },
     {
@@ -187,18 +199,7 @@ function table() {
       // fails. The sentence below says the same thing a second time on purpose.
       resume: false,
       detail: 'SDK 运行时：可连续对话；历史恢复尚未开放',
-      resolve: (rejections) => {
-        if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
-        // In a sandbox, "dsh" is whatever is on PATH; the Windows path below
-        // only exists inside the desktop app install.
-        if (process.platform !== "win32") return firstOnPath(["dsh"], rejections);
-        // Must be the JS entry: the chat pipeline launches it as
-        // `node <entry> --profile sdk`, and `bin/dsh.ps1` is only a launcher shim.
-        return firstFile([
-          path.join(os.homedir(), 'AppData', 'Roaming', 'io.github.hairyf.deepseek-harness-desktop',
-            'dependencies', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
-        ]);
-      },
+      resolve: resolveDsh,
     },
     {
       id: 'opencode',
@@ -222,10 +223,7 @@ function table() {
       detail: 'ACP（OpenCode 内核）：会话列表 / 恢复 / fork',
       resolve: (rejections) => {
         if (process.env.TERMDESK_MIMO) return fileOrNull(process.env.TERMDESK_MIMO) ?? process.env.TERMDESK_MIMO;
-        if (process.platform !== "win32") return firstOnPath(["mimo"], rejections);
-        return nodeEntry([
-          path.join(NPM_ROOT, 'node_modules', '@mimo-ai', 'cli', 'bin', 'mimo'),
-        ]);
+        return resolvePathOrNpm('mimo', rejections, ['@mimo-ai/cli']);
       },
     },
     {
@@ -264,8 +262,8 @@ function table() {
         verified: false,
       },
       resolve: (rejections) => fileOrNull(process.env.TERMDESK_QODER)
-        ?? (process.platform !== "win32"
-          ? firstOnPath(["qoderclicn", "qoder"], rejections)
+        ?? resolvePathOrNpm('qoderclicn', rejections, ['qoder'])
+        ?? (process.platform !== "win32" ? firstOnPath(["qoder"], rejections)
           : firstFile([path.join(LOCAL_PROGRAMS, "QoderWork CN", "resources", "bin", "qoderclicn.exe")])),
     },
     {
@@ -290,10 +288,8 @@ function table() {
       detail: 'ACP（1.74.1 原生）：会话列表 / 读取回放 / 恢复 / 图片与内嵌上下文',
       resolve: (rejections) => {
         if (process.env.TERMDESK_COMMAND_CODE) return fileOrNull(process.env.TERMDESK_COMMAND_CODE) ?? process.env.TERMDESK_COMMAND_CODE;
-        if (process.platform !== "win32") return firstOnPath(["cmdc", "commandcode", "command-code"], rejections);
-        return nodeEntry([
-          path.join(NPM_ROOT, 'node_modules', 'command-code', 'dist', 'index.mjs'),
-        ]);
+        if (process.platform !== 'win32') return firstOnPath(['cmdc', 'commandcode', 'command-code'], rejections);
+        return resolvePathOrNpm('command-code', rejections, ['command-code']);
       },
     },
   ];
@@ -547,6 +543,7 @@ export function setKernelPath(id, value) {
     try {
       const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8'));
       fs.writeFileSync(manifest, JSON.stringify({ ...parsed, bin: resolved }, null, 2) + '\n', { mode: 0o600 });
+      ACP_PROBE_CACHE.delete(id);
       return { ok: true, code: 'saved', message: `${entry.label ?? id} 改用 ${resolved}` };
     } catch (error) {
       return { ok: false, code: 'write_failed', message: `写不了清单：${error.message}` };
@@ -559,6 +556,7 @@ export function setKernelPath(id, value) {
   } catch (error) {
     return { ok: false, code: 'write_failed', message: `写不了路径表：${error.message}` };
   }
+  ACP_PROBE_CACHE.delete(id);
   return { ok: true, code: 'saved', message: `${entry.label ?? id} 改用 ${resolved}（没有复制或安装任何文件）` };
 }
 
@@ -570,6 +568,7 @@ export function clearKernelPath(id) {
   }
   delete paths[id];
   writeKernelPaths(paths);
+  ACP_PROBE_CACHE.delete(id);
   return { ok: true, code: 'cleared', message: '已恢复自动检测路径' };
 }
 
@@ -627,13 +626,15 @@ export function listKernels({ installedOnly = false, includeUnsupported = false 
     // listing it in a console is how a list of "what can run here" stops being
     // true. Nothing in the table is unsupported now; the filter stays for a
     // manifest that declares it, so such an entry is never offered as a kernel.
-    .filter((entry) => includeUnsupported || entry.tier !== 'unsupported')
+    .filter((entry) => includeUnsupported || entry.tier !== 'unsupported' || entry.detectOnly === true)
     .map((entry) => {
     const rejections = [];
     const command = kernelCommand(entry, rejections);
     const manifest = manifestFor(entry);
     const available = Boolean(command);
     const enabled = !disabled.has(entry.id);
+    const probe = entry.tier === 'acp' && available ? validProbeCache(entry.id, entry) : null;
+    const probeFailed = probe?.ok === false;
     // What discovery would have found, even when an override won: the console
     // shows it beside the override so "恢复自动检测" is not a blind action.
     const autoCommand = entry.pathOverride
@@ -658,7 +659,7 @@ export function listKernels({ installedOnly = false, includeUnsupported = false 
       // real run: an unverified manifest is a guess about argv and about which
       // JSON key carries the answer, and offering it would be offering a kernel
       // that may well answer nothing.
-      selectable: available && enabled && (
+      selectable: available && enabled && !probeFailed && (
         entry.tier === 'native' || entry.tier === 'acp' || (entry.tier === 'shim' && shimVerified(entry))
       ),
       path: command ? (command.script ?? command.bin) : null,
@@ -670,7 +671,8 @@ export function listKernels({ installedOnly = false, includeUnsupported = false 
         const quote = (part) => (/\s/.test(part) ? `"${part}"` : part);
         return [quote(spec.bin), ...spec.args.map(quote)].join(' ');
       })(),
-      detail: !enabled ? '已在这台电脑禁用（可随时重新启用）' : (available ? entry.detail : (rejections[0] ? rejections[0].reason + '：' + rejections[0].path : (entry.tier === 'unsupported' ? '未安装' : '未在本机找到'))),
+      detail: !enabled ? '已在这台电脑禁用（可随时重新启用）' : (probe ? probe.detail : (available ? (entry.tier === 'acp' ? '已找到 ACP 启动入口；协议能力尚未握手验证' : entry.detail) : (rejections[0] ? rejections[0].reason + '：' + rejections[0].path : (entry.tier === 'unsupported' ? '未安装' : '未在本机找到')))),
+      ...(probe?.acp ? { acp: probe.acp } : {}),
       shim: entry.shim ?? null,
       multiTurn: entry.tier === 'native' || entry.tier === 'acp' || (entry.tier === 'shim' && shimVerified(entry)),
       progress: entry.tier === 'native' || entry.tier === 'acp' || entry.tier === 'shim',
@@ -760,6 +762,19 @@ export function isAcpKernel(id) {
 const ACP_PROBE_TTL_MS = 10 * 60_000;
 const ACP_PROBE_CACHE = new Map();
 
+function probeSignature(entry) {
+  return JSON.stringify({ spec: spawnSpec(entry.id), acpArgs: entry.acpArgs ?? ['acp'] });
+}
+
+function validProbeCache(id, entry, now = Date.now()) {
+  const cached = ACP_PROBE_CACHE.get(id);
+  if (!cached || now - cached.at >= ACP_PROBE_TTL_MS || cached.signature !== probeSignature(entry)) {
+    if (cached) ACP_PROBE_CACHE.delete(id);
+    return null;
+  }
+  return cached;
+}
+
 export async function probeKernels() {
   const list = listKernels();
   if (process.env.TERMDESK_KERNELS_PROBE !== '1') return list;
@@ -771,17 +786,22 @@ export async function probeKernels() {
       out.push(entry);
       continue;
     }
-    const cached = ACP_PROBE_CACHE.get(entry.id);
-    if (cached && now - cached.at < ACP_PROBE_TTL_MS) {
-      out.push({ ...entry, detail: cached.detail, acp: cached.acp });
+    const cached = validProbeCache(entry.id, allEntries().find((item) => item.id === entry.id), now);
+    if (cached) {
+      out.push({ ...entry, detail: cached.detail, selectable: entry.selectable && cached.ok, ...(cached.acp ? { acp: cached.acp } : {}) });
       continue;
     }
     try {
-      const probe = await probeAcpKernel(entry);
-      ACP_PROBE_CACHE.set(entry.id, { at: now, detail: probe.detail, acp: probe.caps });
+      const source = allEntries().find((item) => item.id === entry.id);
+      const probe = await probeAcpKernel(source);
+      const result = { at: Date.now(), signature: probeSignature(source), ok: true, detail: probe.detail, acp: probe.caps };
+      ACP_PROBE_CACHE.set(entry.id, result);
       out.push({ ...entry, detail: probe.detail, acp: probe.caps });
     } catch (err) {
-      out.push({ ...entry, detail: `ACP 握手失败：${String(err?.message ?? err).slice(0, 80)}` });
+      const source = allEntries().find((item) => item.id === entry.id);
+      const detail = `ACP 握手失败：${String(err?.message ?? err).slice(0, 80)}`;
+      ACP_PROBE_CACHE.set(entry.id, { at: Date.now(), signature: probeSignature(source), ok: false, detail, acp: null });
+      out.push({ ...entry, detail, selectable: false });
     }
   }
   return out;
@@ -811,7 +831,7 @@ export async function probeKernel(id) {
   }
   try {
     const probe = await probeAcpKernel(entry);
-    ACP_PROBE_CACHE.set(id, { at: Date.now(), detail: probe.detail, acp: probe.caps });
+    ACP_PROBE_CACHE.set(id, { at: Date.now(), signature: probeSignature(entry), ok: true, detail: probe.detail, acp: probe.caps });
     return {
       ok: true,
       code: 'handshake',
@@ -820,10 +840,12 @@ export async function probeKernel(id) {
       acp: probe.caps,
     };
   } catch (error) {
+    const detail = `ACP 握手失败：${String(error?.message ?? error).slice(0, 160)}`;
+    ACP_PROBE_CACHE.set(id, { at: Date.now(), signature: probeSignature(entry), ok: false, detail, acp: null });
     return {
       ok: false,
       code: 'probe_failed',
-      message: `${descriptor.label} 握手失败：${String(error?.message ?? error).slice(0, 160)}`,
+      message: `${descriptor.label} ${detail}`,
     };
   }
 }

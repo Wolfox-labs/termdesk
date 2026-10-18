@@ -9,7 +9,5 @@
 | `session-handover-probe.mjs` | 对现有 Agent 读取历史会话、核对接管信息 |
 | `session-share-probe.js` | DSH 会话共享实验，执行前核查真实助手路径 |
 | `sessions-live.js` | 现有 Agent 历史会话协议读取 |
-| `tunnel-diag.js` | 公网 WebSocket 时序与断线诊断 |
-| `tunnel-e2e.js` | 公网隧道真实回合验证，需环境和模型许可 |
 
 早期五个 PTY 方案、一次性系统字段和旧 DSH Web/mux 探针已移除，结论可查 v1.0.0 Git 历史。保留探针仍有平台/环境假设，不代表已完成跨平台整理。
