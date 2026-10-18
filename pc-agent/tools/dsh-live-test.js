@@ -261,6 +261,42 @@ if (host) {
       snapshot ? 'cursor ' + snapshot.cursor + ' rev ' + snapshot.assistantStream?.revision : 'no snapshot');
   }
 }
+// --- the desktop's own slash commands, reachable from the phone ---------------
+if (host) {
+  const { liveExecuteCommand, liveListCommands } = await import('../src/kernels/dsh-live.js');
+  const listed2 = await liveCall(host, 'session/list', { _request: {} });
+  const live = listed2.ok ? listed2.value.items.find((s) => s.agentAvailable) : null;
+  if (live) {
+    const catalog = await liveListCommands(host, live.sessionId);
+    check('the host command catalog is readable', catalog.ok && catalog.commands.length > 0,
+      catalog.ok ? catalog.commands.map((c) => c.name).join(',') : catalog.message);
+    check('it contains the commands the phone was missing',
+      catalog.commands.some((c) => c.name === 'compact') && catalog.commands.some((c) => c.name === 'export'));
+
+    // /compact with-args is the documented usage error: it proves the command ran
+    // in the host without touching history and without a model request.
+    const usage = await liveExecuteCommand(host, live.sessionId, '/compact with-args');
+    check('a command executes in the host without a model turn',
+      usage.ok === true && /Usage: \/compact/.test(usage.text ?? ''), usage.kind + ': ' + (usage.text ?? usage.message));
+
+    const { ChatManager } = await import('../src/chat.js');
+    process.env.TERMDESK_CHAT_PROVIDER = process.env.TERMDESK_CHAT_PROVIDER || 'deepseek-account';
+    process.env.TERMDESK_CHAT_MODEL = process.env.TERMDESK_CHAT_MODEL || 'deepseek-flash';
+    const manager = new ChatManager();
+    try {
+      const resumed = await manager.resume({ engine: 'dsh', id: live.sessionId });
+      const chat = resumed.ok ? manager.get(resumed.chat.id) : null;
+      const sent = chat ? await manager.send(chat.id, '/compact with-args') : { ok: false };
+      check('a slash command from the phone runs in the live session, not as a prompt',
+        sent.ok === true && sent.queued !== true
+          && chat.status === 'idle'
+          && chat.events.some((e) => /Usage: \/compact/.test(e.text ?? '')),
+        sent.ok ? 'status ' + chat.status : sent.message);
+    } finally {
+      manager.disposeAll();
+    }
+  }
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 const failed = results.filter((r) => !r.passed).length;
 console.log(`\nDSH live attach: ${results.length - failed}/${results.length} passed`);

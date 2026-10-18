@@ -76,7 +76,7 @@ import { decisionFor } from './kernels/codex.js';
 import { CliKernel } from './kernels/cli.js';
 import { ensureOverlay, routeConfig, routeConfigError } from './kernels/dsh.js';
 import { launchArgs, launchEnv, resolveDshRuntime } from './kernels/dsh-runtime.js';
-import { discoverLiveHost, followSession, liveCall, livePrompt } from './kernels/dsh-live.js';
+import { discoverLiveHost, followSession, liveCall, liveExecuteCommand, liveListCommands, livePrompt } from './kernels/dsh-live.js';
 import { chatEngineIds, getKernel, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
 import {
   canResume,
@@ -605,6 +605,14 @@ export class ChatManager {
     if (message.length > MAX_PROMPT_CHARS) {
       return { ok: false, code: 'prompt_too_long', message: `消息过长（上限 ${MAX_PROMPT_CHARS} 字符）` };
     }
+    // A slash line the desktop app would execute itself (/compact, /export, /goal,
+    // /permission, ...) must not be sent to the model as text. The commands belong
+    // to the host that owns the session, so only a live-attached DSH conversation
+    // can run them - and they run WITHOUT a model turn.
+    if (message.startsWith('/')) {
+      const handled = await this.runLiveCommand(chat, message);
+      if (handled) return handled;
+    }
     // Waiting is the PC's job, not the person's. A kernel takes one prompt at a time, so a
     // message typed while the answer is still coming waits here and starts when the turn
     // ends. It is shown immediately, because a message that disappears until later reads
@@ -777,6 +785,80 @@ export class ChatManager {
     chat.runtimeStarted = true;
     return { ok: true, userSeq, messageId: receipt?.messageId ?? null, sessionId: chat.sessionId };
   }
+
+  /**
+   * Run one slash command in the live session, or return null when the line is
+   * ordinary text that merely starts with `/`.
+   *
+   * The phone's own `/` panel is a fixed short list, so the commands the desktop
+   * app exposes (compact, export, goal, permission, feedback) were unreachable
+   * there. They are executed by the host and do not consume a model turn, so this
+   * is the same operation the desktop composer performs - not a fabricated one.
+   */
+  async runLiveCommand(chat, line) {
+    if (chat.engine !== 'dsh') return null;
+    const match = /^\/([^\s]+)\s*([\s\S]*)$/.exec(line);
+    if (!match) return null;
+    const name = match[1];
+    const rest = match[2] ?? '';
+
+    if (name === '命令' || name === 'help' || name === 'commands') {
+      const catalog = chat.liveHost
+        ? await liveListCommands(chat.liveHost, chat.sessionId)
+        : { ok: false, commands: [], message: '桌面版 DeepSeek Harness 没有在运行，命令列表不可用' };
+      const body = catalog.ok && catalog.commands.length > 0
+        ? catalog.commands.map((c) => `/${c.name}${c.hint ? ' ' + c.hint : ''} — ${c.description}`).join('\n')
+        : catalog.message ?? '没有可用命令';
+      const userLine = chat.push({ kind: 'message', role: 'user', text: line, command: true });
+      this.emitEvent(chat, userLine);
+      this.pushAndEmit(chat, { kind: 'local', role: 'engine', text: body });
+      return { ok: true, userSeq: userLine, messageId: null, sessionId: chat.sessionId };
+    }
+
+    // Without the live host there is no command registry to ask, so the honest
+    // move is to say which commands need it rather than to guess at a catalog.
+    if (!chat.liveHost) {
+      if (['compact', 'export', 'goal', 'permission', 'feedback', 'plan'].includes(name)) {
+        const userLine = chat.push({ kind: 'message', role: 'user', text: line, command: true });
+        this.emitEvent(chat, userLine);
+        this.pushAndEmit(chat, {
+          kind: 'error',
+          role: 'engine',
+          text: `/${name} 由桌面版 DeepSeek Harness 执行；现在桌面版没有运行，这个命令不可用`,
+        });
+        return { ok: true, userSeq: userLine, messageId: null, sessionId: chat.sessionId };
+      }
+      return null;
+    }
+
+    // Ask the host which commands exist, then only intercept names it really has:
+    // an unknown `/word` is ordinary text and must reach the model unchanged.
+    if (!Array.isArray(chat.liveCommands) || Date.now() - (chat.liveCommandsAt ?? 0) > 60_000) {
+      const catalog = await liveListCommands(chat.liveHost, chat.sessionId);
+      chat.liveCommands = catalog.ok ? catalog.commands : [];
+      chat.liveCommandsAt = Date.now();
+    }
+    if (!chat.liveCommands.some((c) => c.name === name)) return null;
+
+    const userLine = chat.push({ kind: 'message', role: 'user', text: line, command: true });
+    this.emitEvent(chat, userLine);
+    const result = await liveExecuteCommand(chat.liveHost, chat.sessionId, line);
+    if (result.unknown) {
+      this.pushAndEmit(chat, { kind: 'error', role: 'engine', text: `/${name} 没有执行：桌面端不认识这条命令` });
+      return { ok: true, userSeq: userLine, messageId: null, sessionId: chat.sessionId };
+    }
+    if (!result.ok) {
+      this.pushAndEmit(chat, { kind: 'error', role: 'engine', text: `/${name} 失败：${result.message}` });
+      return { ok: true, userSeq: userLine, messageId: null, sessionId: chat.sessionId };
+    }
+    this.pushAndEmit(chat, {
+      kind: result.kind === 'error' ? 'error' : 'local',
+      role: 'engine',
+      text: `/${name}：${result.text || (result.kind === 'error' ? '没有执行' : '已完成')}`,
+    });
+    return { ok: true, userSeq: userLine, messageId: null, sessionId: chat.sessionId };
+  }
+
 
   /**
    * One turn through the desktop app's live agent.

@@ -220,6 +220,67 @@ export async function livePrompt(host, { sessionId, text, requestId = crypto.ran
 }
 
 /**
+ * The slash commands the running desktop app offers for one session.
+ *
+ * DSH registers these on the host (`commands/list` / `commands/execute`), and the
+ * desktop composer is the only place that showed them until now: the phone's `/`
+ * panel is a fixed short list, so `/compact`, `/export`, `/goal`, `/permission` and
+ * friends existed everywhere except there. The commands are executed by the host,
+ * not sent to the model, so this is the honest way to offer them to a phone.
+ *
+ * @returns {Promise<Array<{name: string, description: string, hint: string|null}>>}
+ */
+export async function liveListCommands(host, sessionId, options = {}) {
+  const result = await liveCall(host, 'commands/list', { agentId: sessionId }, options);
+  if (!result.ok) return { ok: false, commands: [], code: result.code, message: result.message };
+  const raw = Array.isArray(result.value)
+    ? result.value
+    : (Array.isArray(result.value?.commands) ? result.value.commands : []);
+  return {
+    ok: true,
+    commands: raw
+      .filter((item) => typeof item?.name === 'string' && item.name.length > 0)
+      .map((item) => ({
+        name: item.name,
+        description: typeof item.description === 'string' ? item.description : '',
+        hint: typeof item.input?.hint === 'string' ? item.input.hint : null,
+      })),
+  };
+}
+
+/**
+ * Execute one slash-command line in the live session (no model turn).
+ *
+ * A command that does not resolve is reported as `{ ok: false, unknown: true }`
+ * so the caller can fall back to sending the text as an ordinary prompt — the same
+ * thing the desktop composer does with an unknown `/` line.
+ *
+ * @returns {Promise<{ok: boolean, text?: string, kind?: string, unknown?: boolean, message?: string}>}
+ */
+export async function liveExecuteCommand(host, sessionId, line, options = {}) {
+  const result = await liveCall(
+    host,
+    'commands/execute',
+    { agentId: sessionId, line, submittedAttachments: [] },
+    options,
+  );
+  if (!result.ok) {
+    // The gateway answers `undefined` (a missing value) when syntax or the name
+    // does not resolve, which is not an error the phone should see as a failure.
+    if (result.code === 'gateway/arguments-invalid' || result.code === 'gateway/input-invalid') {
+      return { ok: false, unknown: true, message: result.message };
+    }
+    return { ok: false, message: result.message, code: result.code };
+  }
+  const value = result.value;
+  if (value === undefined || value === null) return { ok: false, unknown: true };
+  const settled = value.result ?? value;
+  const text = typeof settled?.text === 'string' ? settled.text : '';
+  const kind = typeof settled?.kind === 'string' ? settled.kind : 'success';
+  return { ok: true, text, kind };
+}
+
+/**
  * Follow one live conversation over the app's own event stream.
  *
  * `session/follow` with `assistantStream: true` is what the app's web client uses:
