@@ -37,6 +37,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -1556,6 +1557,12 @@ private fun Conversation(
             Column(
                 Modifier
                     .fillMaxWidth()
+                    // The panel now carries the kernel's own commands as well as the
+                    // four local ones, and with the keyboard up the lower rows were
+                    // simply cut off. Cap it and let it scroll instead of hiding
+                    // entries the user was told exist.
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState())
                     .background(MaterialTheme.colorScheme.surfaceVariant),
             ) {
                 SlashRow("模型", if (modelOptions.isEmpty()) "此助手未提供模型列表" else chosenModelLabel, modelOptions.isNotEmpty()) {
@@ -1666,7 +1673,13 @@ private fun SlashRow(label: String, hint: String, enabled: Boolean, onClick: () 
             fontWeight = FontWeight.Medium,
             color = if (enabled) MaterialTheme.colorScheme.onSurface
             else MaterialTheme.colorScheme.outline,
-            modifier = Modifier.width(96.dp),
+            // A fixed 96dp column broke names longer than it ("permission" came
+            // out as "/", "permissio", "n"). The label takes the width it needs
+            // and the hint gets the rest, so a long command stays one line.
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(min = 96.dp).padding(end = 10.dp),
         )
         Text(
             hint,
