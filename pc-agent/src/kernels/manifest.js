@@ -54,6 +54,11 @@ export function manifestFor(entryOrId, lookup) {
   const isCli = transport === 'cli';
   const isCodex = transport === 'app-server';
   const nativeTranscript = isCodex || (isAcp && !entry.shim);
+  // DSH keeps its journal in ~/.dsh/sessions and TermDesk reads it directly
+  // (src/sessions.js), so a recorded DSH conversation CAN be shown even though the
+  // runtime itself does not replay it. That is what makes "open this session" mean
+  // something for this kernel instead of an empty page.
+  const readableTranscript = nativeTranscript || transport === 'sdk';
   const modelSwitch = isCodex || isAcp || isCli;
 
   const schema = [
@@ -93,7 +98,7 @@ export function manifestFor(entryOrId, lookup) {
     driver,
     session: {
       list: ownsSessionStore(entry) || Boolean(entry.resume),
-      read: nativeTranscript,
+      read: readableTranscript,
       resume: canResume(entry),
       fork: isCodex || isAcp,
       nativeTranscript,

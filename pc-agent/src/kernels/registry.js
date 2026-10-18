@@ -27,15 +27,23 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { AcpKernel } from './acp.js';
+import { fileExists, isAsarPath } from './asar.js';
 import { manifestFor } from './manifest.js';
-import { dshScriptFromShim, findNpmCommand, findPathExecutable } from './discovery.js';
+import { resolveDshRuntime } from './dsh-runtime.js';
+import { findNpmCommand, findPathExecutable } from './discovery.js';
 
 const NPM_ROOT = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'npm');
 const LOCAL_PROGRAMS = path.join(os.homedir(), 'AppData', 'Local', 'Programs');
 
-/** Absolute path if it exists and is a file, else null. */
+/**
+ * Absolute path if it exists and is a file, else null.
+ *
+ * Asar-aware: the bundled DSH entry lives inside the desktop app's archive, where
+ * `fs.statSync` cannot see it but the file is really there (see kernels/asar.js).
+ */
 function fileOrNull(candidate) {
   if (!candidate) return null;
+  if (isAsarPath(candidate)) return fileExists(candidate) ? candidate : null;
   try { return fs.statSync(candidate).isFile() ? candidate : null; } catch { return null; }
 }
 
@@ -127,15 +135,24 @@ function resolvePathOrNpm(command, rejections, packages = []) {
   return npm ? { bin: npm.bin, args: npm.args } : null;
 }
 
+/**
+ * Resolve DSH through `kernels/dsh-runtime.js`.
+ *
+ * The entry may live inside the desktop app's `app.asar`, in which case the
+ * command is the app's own Electron binary in `ELECTRON_RUN_AS_NODE` mode — the
+ * only Node that can read the archive. `env` is part of the descriptor so the
+ * chat pipeline starts exactly what discovery found.
+ */
 function resolveDsh(rejections = []) {
-  if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
-  if (process.platform !== 'win32') return firstOnPath(['dsh'], rejections);
-  const entry = dshScriptFromShim({ rejected: rejections });
-  if (entry) return { bin: process.execPath, args: [entry] };
-  const npm = findNpmCommand('dsh', { packages: ['@deepseek-ai/dsh'], rejected: rejections, nodeOnly: true });
-  if (npm?.script) return { bin: process.execPath, args: [npm.script] };
-  // A launcher without its declared SDK entry is not a runnable SDK kernel.
-  return null;
+  const runtime = resolveDshRuntime({ rejected: rejections });
+  if (!runtime) return null;
+  return {
+    bin: runtime.command,
+    args: [...(runtime.prefixArgs ?? [])],
+    script: runtime.script ?? null,
+    env: runtime.env ?? {},
+    source: runtime.source,
+  };
 }
 
 /**
@@ -194,11 +211,13 @@ function table() {
       tier: 'native',
       transport: 'sdk',
       modelRoute: 'default',
-      // Authoritative, not a placeholder: the manager refuses resume from THIS flag
-      // (contract.canResume), so no list can offer a continue button that then
-      // fails. The sentence below says the same thing a second time on purpose.
-      resume: false,
-      detail: 'SDK 运行时：可连续对话；历史恢复尚未开放',
+      // The SDK runtime can reopen a persisted session: `session/resume` loads the
+      // stored history with the model route chosen at initialize, and the next
+      // prompt continues that same conversation. Implemented in ChatManager.resumeDsh
+      // and driven by the phone's "继续对话". One honest limit stays in the note:
+      // the desktop app may be holding the same session, and a resume cannot ask it.
+      resume: true,
+      detail: 'SDK 运行时：可连续对话；可恢复本机保存的会话（桌面端同时打开时两边会各写一份）',
       resolve: resolveDsh,
     },
     {
@@ -592,15 +611,19 @@ export function kernelCommand(entry, rejections = []) {
     // not executable. Check the runtime and script independently.
     const script = fileOrNull(resolved);
     const runtime = executableOrNull(process.execPath, rejections);
-    return script && runtime ? { bin: runtime, args: [script], script } : null;
+    return script && runtime ? { bin: runtime, args: [script], script, env: {} } : null;
   }
   const bin = resolveExecutable(typeof resolved === 'string' ? resolved : resolved.bin, rejections);
   if (!bin) return null;
-  if (typeof resolved === 'string') return { bin, args: [], script: null };
+  if (typeof resolved === 'string') return { bin, args: [], script: null, env: {} };
   const args = [...(resolved.args ?? [])];
+  // A descriptor may name its script separately from the launcher (Electron host +
+  // entry inside an archive). Put it back in argv, where both Node and Electron
+  // expect it, so every consumer sees one spawn shape.
+  if (resolved.script && args[0] !== resolved.script) args.unshift(resolved.script);
   const script = args[0] && !args[0].startsWith('-') ? args[0] : null;
   if (script && !fileOrNull(script)) return null;
-  return { bin, args, script };
+  return { bin, args, script, env: resolved.env ?? {} };
 }
 
 /**
@@ -710,14 +733,17 @@ export function acpKernels() {
   return listKernels().filter((k) => k.tier === 'acp' && k.available);
 }
 
-/** `{ bin, args }` for one kernel id, with cwd applied by the caller. */
+/** `{ bin, args, env? }` for one kernel id, with cwd applied by the caller. */
 export function spawnSpec(id) {
   const entry = allEntries().find((k) => k.id === id);
   if (!entry) return null;
   const command = kernelCommand(entry);
   if (!command) return null;
-  if (entry.tier === 'acp') return { bin: command.bin, args: [...command.args, ...(entry.acpArgs ?? ['acp'])] };
-  return { bin: command.bin, args: command.args };
+  const env = command.env && Object.keys(command.env).length > 0 ? command.env : null;
+  const base = entry.tier === 'acp'
+    ? { bin: command.bin, args: [...command.args, ...(entry.acpArgs ?? ['acp'])] }
+    : { bin: command.bin, args: command.args };
+  return env ? { ...base, env } : base;
 }
 
 /** The recorded CLI contract for a shim kernel, or null. */

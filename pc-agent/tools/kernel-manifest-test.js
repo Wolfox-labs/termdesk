@@ -30,8 +30,16 @@ check('manifest apply scopes use the public enum',
   list.every((kernel) => kernel.manifest.config.schema.every((field) => CONFIG_APPLY.includes(field.apply))));
 check('codex can resume with its native transcript',
   byId.codex?.manifest.session.resume === true && byId.codex?.manifest.session.nativeTranscript === true);
-check('dsh stays explicit about restart recovery being unavailable',
-  byId.dsh?.manifest.session.resume === false && byId.dsh?.manifest.config.requiresRestart === true);
+// DSH is the case that used to be pinned the other way: no resume, no transcript.
+// Both changed on purpose when the SDK resume entry and the on-disk journal reader
+// landed, and the manifest has to say so or the phone hides a working button.
+check('dsh can resume, and says its transcript is readable from the journal',
+  byId.dsh?.manifest.session.resume === true
+    && byId.dsh?.manifest.session.read === true
+    && byId.dsh?.manifest.session.nativeTranscript === false,
+  JSON.stringify(byId.dsh?.manifest.session));
+check('dsh still requires a runtime restart to change its route',
+  byId.dsh?.manifest.config.requiresRestart === true);
 check('ACP model discovery is dynamic',
   byId.opencode?.manifest.model.dynamic === true && byId.opencode?.manifest.model.switch === true);
 check('context window is present in the codex schema',

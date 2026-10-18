@@ -14,6 +14,8 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
+import { resolveDshRuntime } from './kernels/dsh-runtime.js';
+
 /** Resolve the Codex binary: env override, then the known install location. */
 export function findCodex() {
   if (process.env.TERMDESK_CODEX) return process.env.TERMDESK_CODEX;
@@ -30,22 +32,16 @@ export function findCodex() {
   return 'codex';
 }
 
-/** Resolve the DSH launcher entry script. */
+/**
+ * Resolve the DSH entry, through the same discovery the kernel table uses.
+ *
+ * Kept as a path (rather than the full launch descriptor) because this is the
+ * helper other call sites and tests ask "where is it?" of; starting it is the
+ * chat pipeline's job, and that one needs the command *and* its environment.
+ */
 export function findDsh() {
-  if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
-  return path.join(
-    os.homedir(),
-    'AppData',
-    'Roaming',
-    'io.github.hairyf.deepseek-harness-desktop',
-    'dependencies',
-    'dsh',
-    'node_modules',
-    '@deepseek-ai',
-    'dsh',
-    'lib',
-    'bin.js',
-  );
+  const runtime = resolveDshRuntime();
+  return runtime ? (runtime.script ?? runtime.command) : '';
 }
 
 /**

@@ -16,8 +16,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-/** Providers the SDK runtime can mount on its own, needing no overlay. */
-const SELF_MOUNTED = new Set(['deepseek-official']);
+/**
+ * Providers the installed runtime mounts by itself, needing no TermDesk overlay.
+ *
+ * `deepseek-official` is the SDK's documented fallback adapter. `deepseek-account`
+ * and `deepseek` come from the profile's own `deepseek-account-platform` /
+ * `llm-deepseek` entries in the shipped base bundle — verified on the installed
+ * 0.2.1-rc.1 archive by completing an SDK `initialize` with
+ * provider=deepseek-account, model=deepseek-flash (tools/dsh-runtime-test.js).
+ * Writing a pi-ai overlay for those would replace the profile's real settings.
+ */
+const SELF_MOUNTED = new Set(['deepseek-official', 'deepseek-account', 'deepseek']);
 
 /** Model ids are written into a YAML document; keep them unable to break it. */
 const MODEL_ID = /^[A-Za-z0-9._\/:-]+$/;

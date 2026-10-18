@@ -101,11 +101,16 @@ check('a join also reports a file that was written a moment ago',
 check('the sentence says what was measured rather than who wrote it',
   /可能是桌面端应用/.test(joinedDsh.note ?? ''), joinedDsh.note);
 
-// A kernel with no verified resume entry point must be refused, and refused WITHOUT a
-// note: a note under a refusal reads as "it happened anyway".
+// A session this side cannot find must be refused, and refused WITHOUT a note: a
+// note under a refusal reads as "it happened anyway".
+//
+// DSH used to be the case that could not resume at all; since the SDK resume entry
+// landed, the refusal for an unknown id comes from the stored header's working
+// directory not existing — the resume is refused before any runtime is started, and
+// the reason says which fact was missing instead of blaming the kernel.
 const refused = await manager.resume({ engine: 'dsh', id: 'session-nobody-has' });
-check('a kernel that cannot resume is refused rather than queued',
-  refused.ok === false && refused.code === 'resume_unsupported', JSON.stringify(refused));
+check('resuming a session with no stored record is refused with a reason',
+  refused.ok === false && refused.code === 'missing_workspace', JSON.stringify(refused));
 check('a refusal carries no handover note', refused.note === undefined);
 
 // Silence when there is nothing to say: no join, no recent write, no note.

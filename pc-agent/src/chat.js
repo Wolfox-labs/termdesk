@@ -74,7 +74,8 @@ import { discardPreviews as discardStreamedPreviews, handleAssistantChunk as han
 import { Chat } from './chat/chat.js';
 import { decisionFor } from './kernels/codex.js';
 import { CliKernel } from './kernels/cli.js';
-import { ensureOverlay, routeConfig, routeConfigError, runtimeArgs } from './kernels/dsh.js';
+import { ensureOverlay, routeConfig, routeConfigError } from './kernels/dsh.js';
+import { launchArgs, launchEnv, resolveDshRuntime } from './kernels/dsh-runtime.js';
 import { chatEngineIds, getKernel, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
 import {
   canResume,
@@ -85,7 +86,7 @@ import {
   unknownKernelMessage,
 } from './kernels/contract.js';
 import { ApprovalBroker, OPTIONS } from './approvals.js';
-import { dshEventToChatEvent, lastWriteOf } from './sessions.js';
+import { dshEventToChatEvent, lastWriteOf, readSession } from './sessions.js';
 
 /** The only option ids an engine's answer may be translated into. */
 
@@ -135,22 +136,22 @@ const MAX_QUEUED_MESSAGES = 5;
  */
 export const CHAT_ENGINES = chatEngineIds();
 
-/** Resolve the DSH launcher entry script. Mirrors engines.js so tests can override both. */
+/**
+ * The DSH runtime this machine would start.
+ *
+ * Discovery lives in kernels/dsh-runtime.js because it is the same question the
+ * kernel table answers: which entry, launched how, with which environment. The
+ * installed desktop app keeps its CLI inside `app.asar`, so "the file exists" is
+ * not a plain `fs.statSync` question — see kernels/asar.js.
+ */
+function dshRuntime() {
+  return resolveDshRuntime();
+}
+
+/** Where the DSH entry is, as a path a person can read; '' when not found. */
 function findDsh() {
-  if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
-  return path.join(
-    os.homedir(),
-    'AppData',
-    'Roaming',
-    'io.github.hairyf.deepseek-harness-desktop',
-    'dependencies',
-    'dsh',
-    'node_modules',
-    '@deepseek-ai',
-    'dsh',
-    'lib',
-    'bin.js',
-  );
+  const runtime = dshRuntime();
+  return runtime ? (runtime.script ?? runtime.command) : '';
 }
 
 /**
@@ -491,7 +492,9 @@ export class ChatManager {
       ? await this.resumeAcp(engine, id)
       : driver === 'app-server'
         ? await this.resumeCodex(id)
-        : { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
+        : driver === 'sdk'
+          ? await this.resumeDsh(engine, id)
+          : { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
     if (result?.ok) {
       const note = this.takeoverNote({ joined: false, write: writeBefore });
       if (note) result.note = note;
@@ -1513,6 +1516,104 @@ export class ChatManager {
     return { ok: true, chat: chat.detail() };
   }
 
+  /**
+   * Open a recorded DSH session on its own runtime.
+   *
+   * The SDK runtime loads the persisted history itself (`session/resume`), so the
+   * next prompt continues the same conversation: nothing is reconstructed from the
+   * display transcript, and no text is ever re-fed as a prompt.
+   *
+   * Two facts are stated rather than guessed:
+   *   - the working directory comes from the stored session header, because
+   *     resuming a conversation in a different tree would silently change what its
+   *     relative paths mean;
+   *   - the model route comes from this machine's explicit DSH configuration, and
+   *     the runtime applies it to the resumed agent (the protocol says so); the
+   *     session's own last route is not reversible from the log.
+   *
+   * The desktop application may be holding the same session at the same time. The
+   * persistence lock is per process, so this cannot be prevented from here — the
+   * caller has already been told via `takeoverNote` that two writers can diverge.
+   */
+  async resumeDsh(engine, id) {
+    let detail = null;
+    try {
+      detail = await readSession({ engine: 'dsh', id });
+    } catch {
+      detail = null;
+    }
+    const cwd = detail?.meta?.cwd || null;
+    if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+      return {
+        ok: false,
+        code: 'missing_workspace',
+        message: '原会话的工作目录不存在或无法读取，不能静默切换到其他目录',
+      };
+    }
+
+    let route;
+    try {
+      route = routeConfig(process.env, {});
+      const routeError = routeConfigError(route);
+      if (routeError) return { ok: false, code: 'unconfigured', message: routeError };
+    } catch (err) {
+      return { ok: false, code: 'unconfigured', message: String(err?.message ?? err) };
+    }
+
+    this.dropIdleChat();
+    if (this.chats.size >= MAX_CHATS) return { ok: false, code: 'capacity', message: '运行中的会话已达上限' };
+
+    const chat = new Chat({
+      id: `c-${crypto.randomUUID()}`,
+      title: detail?.meta?.title || path.basename(cwd),
+      cwd,
+      engine,
+      provider: route.provider,
+      model: route.model,
+      nativeSessionId: id,
+    });
+    chat.titleSource = 'recorded';
+    this.chats.set(chat.id, chat);
+
+    // The recorded conversation is shown so the phone opens a conversation rather
+    // than an empty page. It is display state only: the runtime owns the prompt
+    // history, and this transcript is never sent to a model.
+    for (const event of detail?.events ?? []) {
+      const at = event.at ? Date.parse(event.at) : NaN;
+      chat.push({
+        kind: event.kind,
+        role: event.role ?? null,
+        text: event.text ?? '',
+        at: Number.isNaN(at) ? undefined : at,
+        name: event.name ?? null,
+        meta: event.meta ?? null,
+      });
+    }
+
+    try {
+      await this.ensureRuntime(chat);
+    } catch (err) {
+      this.chats.delete(chat.id);
+      return { ok: false, code: 'engine_unavailable', message: String(err?.message ?? err) };
+    }
+
+    try {
+      await chat.request('session/resume', { sessionId: id }, INIT_TIMEOUT_MS);
+    } catch (err) {
+      this.dispose(chat, 'resume-failed');
+      this.chats.delete(chat.id);
+      return {
+        ok: false,
+        code: 'session_busy',
+        message: `内核无法恢复该会话：${String(err?.message ?? err)}`,
+      };
+    }
+
+    chat.ready = true;
+    chat.push({ kind: 'local', role: 'engine', text: '已恢复 DSH 本机会话 · 后续消息延续原上下文' });
+    return { ok: true, chat: chat.detail() };
+  }
+
   /** Route one session/update notification into the right transcript. */
   handleAcpUpdate(engineId, sessionId, update) {
     // Session-id routing, with one honest fallback: a CLI kernel usually names
@@ -1781,9 +1882,11 @@ export class ChatManager {
   async ensureRuntime(chat) {
     if (chat.child && chat.child.exitCode === null && chat.ready) return;
 
-    const bin = findDsh();
-    if (!fs.existsSync(bin)) {
-      throw new Error(`找不到 DSH 入口：${bin}`);
+    const runtime = dshRuntime();
+    if (!runtime) {
+      throw new Error(
+        '找不到 DSH 入口：本机没有可用的 dsh 启动器，也没有检测到已安装的 DeepSeek Harness 桌面版',
+      );
     }
 
     // The sdk profile's inherited provider configuration is not known to this
@@ -1797,10 +1900,13 @@ export class ChatManager {
     } catch (err) {
       throw new Error(`DSH 配置无效：${err.message}`);
     }
-    const child = spawn(process.execPath, runtimeArgs(bin, { patch }), {
+    const child = spawn(runtime.command, launchArgs(runtime, { patch }), {
       cwd: chat.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      // The Electron host needs ELECTRON_RUN_AS_NODE; a plain Node entry adds
+      // nothing. Inherit everything else (PATH, credentials, DSH_HOME).
+      env: launchEnv(runtime, process.env),
     });
     chat.child = child;
     chat.ready = false;

@@ -491,6 +491,14 @@ function parseDshSession(filePath, workspaceName) {
       continue;
     }
 
+    // The runtime's own title for the conversation, which is what the phone list
+    // should show; the opening prompt below is only the fallback.
+    if (obj.type === 'session/title') {
+      const title = obj.data?.title;
+      if (typeof title === 'string' && title.trim()) meta.title = title.trim();
+      continue;
+    }
+
     const ev = dshLineToEvent(obj);
     if (ev) events.push(ev);
   }
@@ -570,22 +578,42 @@ function firstUserText(filePath, stat) {
 }
 
 /**
- * Walk the decoded text and return the first thing a *person* said.
+ * Walk the decoded text and return the name this conversation should carry.
+ *
+ * Two sources, in this order:
+ *
+ *   1. `session/title` — the runtime's own title, when the profile generates one.
+ *      It is short and written for a list, which is what a person scrolling the
+ *      phone actually needs ("继续推进TermDesk跨设备会话" instead of the whole
+ *      opening instruction);
+ *   2. the first thing a *person* said, for sessions whose profile has no title
+ *      generator. Injected preamble is skipped: the harness writes its own context
+ *      as a user-role message with a different `source.kind`, and naming every
+ *      conversation after it would make the list useless.
+ *
+ * The scan keeps going after the first question: the title is generated right
+ * after it and usually lands in a later frame, so returning at the first match
+ * would always pick the question and never the title.
  *
  * Split out because there are two ways to get the text (the head of the file, or the whole
  * file when the head is not enough) and the rule must be the same for both.
  */
 function scanForFirstQuestion(readHead, readWhole, size) {
+  let question = null;
   const scan = (text) => {
     for (const line of text.split('\n')) {
-      if (!line.includes('"user/message"')) continue;
+      if (line.includes('"session/title"')) {
+        try {
+          const obj = JSON.parse(line);
+          const title = obj?.data?.title;
+          if (typeof title === 'string' && title.trim()) return title.trim().slice(0, 120);
+        } catch { /* not a complete line yet */ }
+      }
+      if (question !== null || !line.includes('"user/message"')) continue;
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
       const ev = dshLineToEvent(obj);
-      // Injected context is not the person's words: the harness writes its own preamble as a
-      // user-role message with a different `source.kind`, and a title taken from it would name
-      // every conversation in the list after the same paragraph.
-      if (ev && ev.role === 'user' && ev.text && ev.text.trim()) return ev.text.trim().slice(0, 120);
+      if (ev && ev.role === 'user' && ev.text && ev.text.trim()) question = ev.text.trim().slice(0, 120);
     }
     return null;
   };
@@ -604,8 +632,9 @@ function scanForFirstQuestion(readHead, readWhole, size) {
       const end = k + 1 < offsets.length ? offsets[k + 1] : head.length;
       try { text += zlib.zstdDecompressSync(head.subarray(offsets[k], end)).toString('utf8'); } catch { /* torn */ }
 
-      // Each frame is scanned as it arrives, and the loop does NOT stop at the first
-      // `user/message`: the frames that hold the real question are often the later ones.
+      // Each frame is scanned as it arrives. The loop stops at the runtime's own
+      // title, and otherwise keeps looking for one before falling back to the
+      // question it already found.
       const found = scan(text);
       if (found) return found;
     }
@@ -617,9 +646,9 @@ function scanForFirstQuestion(readHead, readWhole, size) {
   // undecodable, so a small file is read the way the rest of this module reads it. Big files
   // keep the head-only attempt: their cost is the reason this function exists.
   if (size <= TITLE_FULL_READ_BYTES) {
-    try { return scan(readWhole()); } catch { return null; }
+    try { return scan(readWhole()) ?? question; } catch { return question; }
   }
-  return null;
+  return question;
 }
 
 export async function listSessions({ engine } = {}) {

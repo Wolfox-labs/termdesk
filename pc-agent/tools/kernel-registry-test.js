@@ -50,7 +50,14 @@ check('an unsupported kernel says why',
 // to offer "continue this conversation" for kernels that cannot, and to hide it
 // for kernels that can.
 check('codex can reopen a past conversation', byId.codex?.resume === true, String(byId.codex?.resume));
-check('dsh cannot (and does not claim to)', byId.dsh?.resume === false, String(byId.dsh?.resume));
+// DSH can now reopen one: the SDK runtime's own `session/resume` loads the stored
+// history and the next prompt continues it (ChatManager.resumeDsh). The flag is
+// still read from the table, so the phone's button and this answer cannot drift.
+check('dsh can reopen a past conversation through the SDK resume entry',
+  byId.dsh?.resume === true, String(byId.dsh?.resume));
+check('dsh resume is only offered when the entry is really available',
+  !byId.dsh?.available || byId.dsh?.manifest.session.resume === true,
+  String(byId.dsh?.manifest?.session?.resume));
 check('ACP kernels can reopen a past conversation',
   list.filter((k) => k.tier === 'acp').every((k) => k.resume === true),
   list.filter((k) => k.tier === 'acp').map((k) => `${k.id}:${k.resume}`).join(','));
