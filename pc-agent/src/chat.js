@@ -1573,6 +1573,13 @@ export class ChatManager {
       nativeSessionId: id,
     });
     chat.titleSource = 'recorded';
+    // Opening a recorded session must not TAKE the session. DSH's `session/resume`
+    // opens a write handle, and it is refused while any other process (the desktop
+    // app, most of the time) holds one — so attaching here would make "just look at
+    // the history" fail, and, worse, would take ownership away from the app that is
+    // showing the conversation right now. The handle is therefore taken when the
+    // first message is actually sent (see ensureRuntime).
+    chat.pendingResume = true;
     this.chats.set(chat.id, chat);
 
     // The recorded conversation is shown so the phone opens a conversation rather
@@ -1590,27 +1597,11 @@ export class ChatManager {
       });
     }
 
-    try {
-      await this.ensureRuntime(chat);
-    } catch (err) {
-      this.chats.delete(chat.id);
-      return { ok: false, code: 'engine_unavailable', message: String(err?.message ?? err) };
-    }
-
-    try {
-      await chat.request('session/resume', { sessionId: id }, INIT_TIMEOUT_MS);
-    } catch (err) {
-      this.dispose(chat, 'resume-failed');
-      this.chats.delete(chat.id);
-      return {
-        ok: false,
-        code: 'session_busy',
-        message: `内核无法恢复该会话：${String(err?.message ?? err)}`,
-      };
-    }
-
-    chat.ready = true;
-    chat.push({ kind: 'local', role: 'engine', text: '已恢复 DSH 本机会话 · 后续消息延续原上下文' });
+    chat.push({
+      kind: 'local',
+      role: 'engine',
+      text: '已打开本机保存的 DSH 会话记录 · 发送下一条消息时接管这次会话（桌面端正在使用时会拒绝）',
+    });
     return { ok: true, chat: chat.detail() };
   }
 
@@ -1954,6 +1945,24 @@ export class ChatManager {
         );
       }
       throw err;
+    }
+    // A chat opened from history takes ownership HERE, at the first real turn,
+    // not when the transcript was shown. DSH refuses `session/resume` while another
+    // process holds the write handle, and that refusal is the honest answer: the
+    // desktop application is still in that conversation.
+    if (chat.pendingResume) {
+      try {
+        await chat.request('session/resume', { sessionId: chat.sessionId }, INIT_TIMEOUT_MS);
+        chat.pendingResume = false;
+      } catch (err) {
+        const message = String(err?.message ?? err);
+        this.dispose(chat, 'resume-refused');
+        throw new Error(
+          `无法接管这次会话：${message}。它很可能正由桌面端 DeepSeek Harness 打开，`
+          + '那里的对话框关掉后再试，或直接在那里继续。',
+        );
+      }
+      chat.push({ kind: 'local', role: 'engine', text: '已接管本机 DSH 会话 · 后续消息延续原上下文' });
     }
     chat.ready = true;
     chat.lastError = null;

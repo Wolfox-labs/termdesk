@@ -64,6 +64,15 @@ export class Chat {
      */
     this.sessionId = nativeSessionId ?? threadId ?? `termdesk-${id}-${Date.now().toString(36)}`;
     this.nativeResume = Boolean(nativeSessionId);
+    /**
+     * Opened from a recorded DSH session whose write handle has not been taken yet.
+     *
+     * Browsing history must not own the conversation: `session/resume` opens a
+     * write handle and is refused while another process (the desktop app) holds
+     * one, so the handle is taken at the first prompt instead. See
+     * `ChatManager.ensureRuntime`.
+     */
+    this.pendingResume = false;
     this.runtimeStarted = false;
     /** Codex thread id (engine=codex only), kept separately for resume. */
     this.threadId = threadId;

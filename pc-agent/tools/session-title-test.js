@@ -85,6 +85,53 @@ try {
     lines: [header('C:\\Users\\test\\empty')],
   });
 
+  // The runtime writes a truncated fallback title first and replaces it once the
+  // title model answers. Taking the first one is how the phone ended up showing
+  // `"E:\aiPic\termdesk\documents\收敛与` for a conversation the desktop called
+  // "继续推进TermDesk跨设备会话".
+  writeSession({
+    workspace: '--C-Users-test-titled--',
+    id: 'session-with-a-real-title',
+    lines: [
+      header('C:\\Users\\test\\titled'),
+      userSays('"E:\\work\\documents\\a-very-long-checklist-name.md" 接着推进'),
+      {
+        type: 'session/title',
+        seq: 3,
+        time: Date.now(),
+        data: { title: '"E:\\work\\documents\\a-very-lon', source: { kind: 'fallback' } },
+      },
+      {
+        type: 'session/title',
+        seq: 4,
+        time: Date.now(),
+        data: { title: '继续推进跨设备会话', source: { kind: 'provider', model: 'title-fixture' } },
+      },
+    ],
+  });
+
+  // A later fallback must not overwrite the real title either.
+  writeSession({
+    workspace: '--C-Users-test-titled-late--',
+    id: 'session-with-a-late-fallback',
+    lines: [
+      header('C:\\Users\\test\\titled-late'),
+      userSays('打开那个清单'),
+      {
+        type: 'session/title',
+        seq: 3,
+        time: Date.now(),
+        data: { title: '打开那个清单', source: { kind: 'provider', model: 'title-fixture' } },
+      },
+      {
+        type: 'session/title',
+        seq: 4,
+        time: Date.now(),
+        data: { title: '打开那个清', source: { kind: 'fallback' } },
+      },
+    ],
+  });
+
   writeSession({
     workspace: '--D-work--',
     id: 'session-being-written',
@@ -110,11 +157,18 @@ try {
   const listed = await listSessions({ engine: 'dsh' });
   const byId = new Map(listed.map((s) => [s.id, s]));
 
-  check('every fixture session is listed', listed.length === 3, `${listed.length} listed`);
+  check('every fixture session is listed', listed.length === 5, `${listed.length} listed`);
 
   const titled = byId.get('session-with-a-question');
   check('the opening question becomes the title', titled?.title === '把通知做成可靠的，后台也要能收到',
     String(titled?.title));
+
+  check('the runtime title replaces the fallback copy',
+    byId.get('session-with-a-real-title')?.title === '继续推进跨设备会话',
+    String(byId.get('session-with-a-real-title')?.title));
+  check('a later fallback does not overwrite a real title',
+    byId.get('session-with-a-late-fallback')?.title === '打开那个清单',
+    String(byId.get('session-with-a-late-fallback')?.title));
 
   const silent = byId.get('session-that-has-not-spoken');
   check('a session that has not said anything has no title', silent?.title === null,

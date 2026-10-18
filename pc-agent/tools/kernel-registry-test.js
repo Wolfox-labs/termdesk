@@ -104,6 +104,12 @@ check('spawn spec for an unknown id is null', spawnSpec('definitely-not-a-kernel
 
 // The pipeline itself: every selectable engine is accepted, and anything else
 // is refused with an explanation that names the tier.
+//
+// DSH refuses to start without an explicit provider/model (the SDK runtime cannot
+// inherit one), so the fixture states a self-mounted route. Nothing is spawned and
+// no model is called: this is the configuration the check needs, not a turn.
+process.env.TERMDESK_CHAT_PROVIDER = process.env.TERMDESK_CHAT_PROVIDER || 'deepseek-official';
+process.env.TERMDESK_CHAT_MODEL = process.env.TERMDESK_CHAT_MODEL || 'deepseek-flash';
 const manager = new ChatManager();
 for (const id of chatEngineIds()) {
   const created = manager.create({ engine: id, cwd: process.cwd() });

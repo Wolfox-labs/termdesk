@@ -492,10 +492,15 @@ function parseDshSession(filePath, workspaceName) {
     }
 
     // The runtime's own title for the conversation, which is what the phone list
-    // should show; the opening prompt below is only the fallback.
+    // should show; the opening prompt below is only the fallback. The profile first
+    // records a truncated fallback and replaces it once the title model answers, so
+    // a fallback must never overwrite a real title.
     if (obj.type === 'session/title') {
       const title = obj.data?.title;
-      if (typeof title === 'string' && title.trim()) meta.title = title.trim();
+      const fallback = obj.data?.source?.kind === 'fallback';
+      if (typeof title === 'string' && title.trim() && (!fallback || !meta.title)) {
+        meta.title = title.trim();
+      }
       continue;
     }
 
@@ -580,34 +585,40 @@ function firstUserText(filePath, stat) {
 /**
  * Walk the decoded text and return the name this conversation should carry.
  *
- * Two sources, in this order:
+ * Three sources, in this order:
  *
- *   1. `session/title` — the runtime's own title, when the profile generates one.
- *      It is short and written for a list, which is what a person scrolling the
- *      phone actually needs ("继续推进TermDesk跨设备会话" instead of the whole
- *      opening instruction);
+ *   1. the runtime's own `session/title`, LAST one wins — the profile writes a
+ *      truncated fallback immediately and replaces it when the title model
+ *      answers, so the first event is the worst one;
  *   2. the first thing a *person* said, for sessions whose profile has no title
  *      generator. Injected preamble is skipped: the harness writes its own context
  *      as a user-role message with a different `source.kind`, and naming every
- *      conversation after it would make the list useless.
+ *      conversation after it would make the list useless;
+ *   3. the fallback title, when the session has no visible question at all.
  *
- * The scan keeps going after the first question: the title is generated right
- * after it and usually lands in a later frame, so returning at the first match
- * would always pick the question and never the title.
+ * The scan therefore never returns early on a title: it keeps reading frames until
+ * the head budget is spent and remembers the latest answer.
  *
  * Split out because there are two ways to get the text (the head of the file, or the whole
  * file when the head is not enough) and the rule must be the same for both.
  */
 function scanForFirstQuestion(readHead, readWhole, size) {
   let question = null;
+  let title = null;
+  let fallbackTitle = null;
   const scan = (text) => {
     for (const line of text.split('\n')) {
       if (line.includes('"session/title"')) {
         try {
           const obj = JSON.parse(line);
-          const title = obj?.data?.title;
-          if (typeof title === 'string' && title.trim()) return title.trim().slice(0, 120);
+          const value = obj?.data?.title;
+          if (typeof value === 'string' && value.trim()) {
+            const clean = value.trim().slice(0, 120);
+            if (obj?.data?.source?.kind === 'fallback') fallbackTitle = clean;
+            else title = clean;
+          }
         } catch { /* not a complete line yet */ }
+        continue;
       }
       if (question !== null || !line.includes('"user/message"')) continue;
       let obj;
@@ -615,8 +626,8 @@ function scanForFirstQuestion(readHead, readWhole, size) {
       const ev = dshLineToEvent(obj);
       if (ev && ev.role === 'user' && ev.text && ev.text.trim()) question = ev.text.trim().slice(0, 120);
     }
-    return null;
   };
+  const best = () => title ?? question ?? fallbackTitle;
 
   try {
     const head = readHead();
@@ -631,13 +642,10 @@ function scanForFirstQuestion(readHead, readWhole, size) {
     for (let k = 0; k < offsets.length; k += 1) {
       const end = k + 1 < offsets.length ? offsets[k + 1] : head.length;
       try { text += zlib.zstdDecompressSync(head.subarray(offsets[k], end)).toString('utf8'); } catch { /* torn */ }
-
-      // Each frame is scanned as it arrives. The loop stops at the runtime's own
-      // title, and otherwise keeps looking for one before falling back to the
-      // question it already found.
-      const found = scan(text);
-      if (found) return found;
+      scan(text);
+      if (title !== null) break; // a real title arrived; later frames cannot improve on it
     }
+    if (title !== null) return title;
   } catch {
     // fall through to the whole-file attempt
   }
@@ -646,9 +654,9 @@ function scanForFirstQuestion(readHead, readWhole, size) {
   // undecodable, so a small file is read the way the rest of this module reads it. Big files
   // keep the head-only attempt: their cost is the reason this function exists.
   if (size <= TITLE_FULL_READ_BYTES) {
-    try { return scan(readWhole()) ?? question; } catch { return question; }
+    try { scan(readWhole()); } catch { /* keep what the head gave us */ }
   }
-  return question;
+  return best();
 }
 
 export async function listSessions({ engine } = {}) {
