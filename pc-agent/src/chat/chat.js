@@ -81,8 +81,12 @@ export class Chat {
      * API and follows its journal instead of starting a second runtime.
      */
     this.liveHost = null;
-    /** The journal follower for a live-attached turn (see ChatManager.sendDshLive). */
-    this.liveTail = null;
+    /** The event stream that mirrors a live-attached conversation (ChatManager.startLiveWatch). */
+    this.liveStream = null;
+    this.liveClosed = false;
+    this.liveReconnect = null;
+    this.liveLastSeq = -1;
+    this.liveSeenSnapshot = false;
     /**
      * The live message this side submitted and has not seen echoed yet.
      *

@@ -76,7 +76,7 @@ import { decisionFor } from './kernels/codex.js';
 import { CliKernel } from './kernels/cli.js';
 import { ensureOverlay, routeConfig, routeConfigError } from './kernels/dsh.js';
 import { launchArgs, launchEnv, resolveDshRuntime } from './kernels/dsh-runtime.js';
-import { discoverLiveHost, liveCall, livePrompt, tailJournal } from './kernels/dsh-live.js';
+import { discoverLiveHost, followSession, liveCall, livePrompt } from './kernels/dsh-live.js';
 import { chatEngineIds, getKernel, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
 import {
   canResume,
@@ -798,9 +798,9 @@ export class ChatManager {
       return { ok: false, code: 'no_journal', message: messageText, userSeq };
     }
 
-    // The journal is watched for the whole attachment, not just this turn: the
+    // The stream is watched for the whole attachment, not just this turn: the
     // desktop user may type there too, and both ends must show one conversation.
-    this.startLiveWatch(chat, file);
+    this.startLiveWatch(chat, chat.sessionId);
 
     chat.status = 'running';
     chat.ready = true;
@@ -842,24 +842,101 @@ export class ChatManager {
    * type there at any time, and the phone is meant to show the same conversation.
    * It starts at the current end so history is not replayed twice.
    */
-  startLiveWatch(chat, file) {
-    if (chat.liveTail) return;
-    chat.liveTail = tailJournal(file, {
-      pollMs: 500,
-      onEvent: (event) => this.handleLiveJournalEvent(chat, event),
-      onError: () => {},
-      shouldStop: () => false,
-    });
+  /**
+   * Follow the live conversation through the desktop app's own event stream.
+   *
+   * The stream carries the durable events AND the model's live chunk frames, which
+   * is the only way to show an answer while it is being written: the v4 journal
+   * keeps finished messages only. It reconnects on its own, and a fresh snapshot
+   * after a reconnect fills the gap; durable events are deduped by seq.
+   */
+  startLiveWatch(chat, sessionId) {
+    if (chat.liveStream) return;
+    chat.liveClosed = false;
+    chat.liveSeenSnapshot = false;
+    if (typeof chat.liveLastSeq !== 'number') chat.liveLastSeq = -1;
+    const open = () => {
+      if (chat.liveClosed) return;
+      chat.liveStream = followSession(chat.liveHost, {
+        sessionId,
+        onSnapshot: (snapshot) => this.handleLiveSnapshot(chat, snapshot),
+        onEvent: (event) => this.handleLiveEvent(chat, event),
+        onChunk: (frame) => this.handleLiveChunk(chat, frame),
+        onError: () => {},
+        onClose: () => {
+          chat.liveStream = null;
+          if (chat.liveClosed) return;
+          chat.liveReconnect = setTimeout(open, 1200);
+          chat.liveReconnect.unref?.();
+        },
+      });
+    };
+    open();
   }
 
   stopLiveTail(chat) {
+    chat.liveClosed = true;
+    if (chat.liveReconnect) {
+      clearTimeout(chat.liveReconnect);
+      chat.liveReconnect = null;
+    }
     if (chat.liveDeadline) {
       clearTimeout(chat.liveDeadline);
       chat.liveDeadline = null;
     }
-    if (!chat.liveTail) return;
-    try { chat.liveTail.stop(); } catch { /* already stopped */ }
-    chat.liveTail = null;
+    if (chat.liveStream) {
+      try { chat.liveStream.close(); } catch { /* already closed */ }
+      chat.liveStream = null;
+    }
+  }
+
+  /**
+   * The opening snapshot.
+   *
+   * On the first open it is history this side already seeded from the journal, so
+   * it only sets the seq floor (the stream continues from cursor+1). After a
+   * reconnect the same page is the gap filler: records above the floor are handed
+   * to the normal event path.
+   */
+  handleLiveSnapshot(chat, snapshot) {
+    const records = Array.isArray(snapshot?.records) ? snapshot.records : [];
+    const cursor = typeof snapshot?.cursor === 'number' ? snapshot.cursor : null;
+    if (!chat.liveSeenSnapshot) {
+      chat.liveSeenSnapshot = true;
+      if (cursor !== null) chat.liveLastSeq = Math.max(chat.liveLastSeq, cursor);
+      return;
+    }
+    for (const record of records) {
+      const event = record?.event;
+      if (!event || typeof event.seq !== 'number' || event.seq <= chat.liveLastSeq) continue;
+      chat.liveLastSeq = event.seq;
+      this.handleLiveJournalEvent(chat, event);
+    }
+    if (cursor !== null) chat.liveLastSeq = Math.max(chat.liveLastSeq, cursor);
+  }
+
+  handleLiveEvent(chat, event) {
+    if (!event) return;
+    if (typeof event.seq === 'number') {
+      if (event.seq <= chat.liveLastSeq) return;
+      chat.liveLastSeq = event.seq;
+    }
+    this.handleLiveJournalEvent(chat, event);
+  }
+
+  /**
+   * One live chunk frame from the app's `agent/assistant-stream`.
+   *
+   * `frame.chunk` is the same shape the resident runtime sends as `assistant/chunk`,
+   * so the preview rules in chat/stream.js are reused rather than copied: deltas
+   * grow one record that is re-emitted, and the finished `assistant/message` later
+   * replaces it.
+   */
+  handleLiveChunk(chat, frame) {
+    if (!frame || frame.type !== 'chunk' || !frame.chunk) return;
+    this.handleSessionEvent(chat, {
+      event: { type: 'assistant/chunk', data: { chunk: frame.chunk } },
+    });
   }
 
   /** The state a pending live message owns; cleared on every exit path. */
@@ -1836,7 +1913,8 @@ export class ChatManager {
       // Mirror the conversation from the moment of attaching: messages typed on
       // the desktop must arrive here too, and the phone must never be the reason a
       // second writer exists.
-      if (detail?.meta?.filePath) this.startLiveWatch(chat, detail.meta.filePath);      chat.push({
+      this.startLiveWatch(chat, id);
+      chat.push({
         kind: 'local',
         role: 'engine',
         text: '已接入桌面版 DeepSeek Harness 的实时会话：消息直接进入桌面端的对话，回复也从那里读回',

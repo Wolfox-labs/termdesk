@@ -37,6 +37,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { execFileSync } from 'node:child_process';
+import { WebSocket } from 'ws';
 
 const COOKIE_PREFIX = 'dsh-auth-';
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
@@ -216,6 +217,95 @@ export async function livePrompt(host, { sessionId, text, requestId = crypto.ran
       ...(clientTimeZone ? { clientTimeZone } : {}),
     },
   }, options);
+}
+
+/**
+ * Follow one live conversation over the app's own event stream.
+ *
+ * `session/follow` with `assistantStream: true` is what the app's web client uses:
+ * it opens with a snapshot, then pushes every durable event AND the model's live
+ * chunk frames (block-start / text-delta / reasoning-delta / block-end). The
+ * journal alone cannot do this — the v4 log keeps only finished messages, which is
+ * why the phone used to show an answer a paragraph at a time.
+ *
+ * The stream is gap-strict on durable events (it errors if a seq is skipped), so
+ * the caller must dedupe by seq and re-open after a disconnect; a reconnect opens
+ * with a fresh snapshot that can be used to fill the gap.
+ *
+ * @returns {{ close: () => void }}
+ */
+export function followSession(host, {
+  sessionId,
+  onSnapshot,
+  onEvent,
+  onChunk,
+  onError,
+  onClose,
+} = {}) {
+  const secret = browserSessionSecret();
+  if (!secret) {
+    onError?.(new Error('no browser-session credential'));
+    onClose?.();
+    return { close() {} };
+  }
+  const { name, value } = mintCookie(secret, host.authority);
+  const streamId = `termdesk-${crypto.randomUUID()}`;
+  let closed = false;
+  const ws = new WebSocket(`ws://${host.authority}/api/remote.mux`, {
+    headers: { cookie: `${name}=${value}` },
+    handshakeTimeout: 8000,
+  });
+  ws.on('open', () => {
+    if (closed) return;
+    ws.send(JSON.stringify({
+      type: 'open',
+      streamId,
+      endpoint: 'session/follow',
+      payload: {
+        args: {
+          request: {
+            address: { kind: 'session', sessionId },
+            assistantStream: true,
+            // A bounded opening page: the transcript itself is seeded from the
+            // journal, and a smaller page keeps the first frame fast.
+            maxMessages: 50,
+          },
+        },
+      },
+    }));
+  });
+  ws.on('message', (raw) => {
+    if (closed) return;
+    let frame;
+    try { frame = JSON.parse(raw.toString()); } catch { return; }
+    if (frame?.type === 'item') {
+      const item = frame.value ?? {};
+      if (item.type === 'snapshot') onSnapshot?.(item);
+      else if (item.type === 'event') onEvent?.(item.event);
+      else if (item.type === 'assistant-stream') onChunk?.(item.frame);
+      return;
+    }
+    if (frame?.type === 'error') {
+      onError?.(new Error(frame.error?.message ?? 'remote stream error'));
+    }
+  });
+  ws.on('close', () => {
+    if (closed) return;
+    closed = true;
+    onClose?.();
+  });
+  ws.on('error', (err) => {
+    if (closed) return;
+    onError?.(err);
+  });
+  return {
+    close() {
+      if (closed) return;
+      closed = true;
+      try { ws.send(JSON.stringify({ type: 'cancel', streamId })); } catch { /* already closing */ }
+      try { ws.close(); } catch { /* already closed */ }
+    },
+  };
 }
 
 /**

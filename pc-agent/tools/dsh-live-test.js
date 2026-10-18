@@ -206,6 +206,61 @@ if (host) {
     manager.disposeAll();
   }
 }
+// --- token-level streaming ---------------------------------------------------
+{
+  const { ChatManager } = await import('../src/chat.js');
+  process.env.TERMDESK_CHAT_PROVIDER = process.env.TERMDESK_CHAT_PROVIDER || 'deepseek-official';
+  process.env.TERMDESK_CHAT_MODEL = process.env.TERMDESK_CHAT_MODEL || 'deepseek-flash';
+  const manager = new ChatManager();
+  try {
+    const created = manager.create({ engine: 'dsh', cwd: tmp });
+    const chat = manager.get(created.chat.id);
+    // The app's stream sends the same chunk shapes the resident runtime does, so
+    // the preview rules are reused: deltas grow ONE record that the phone replaces.
+    manager.handleLiveChunk(chat, { type: 'chunk', chunk: { type: 'block-start', index: 0, blockType: 'text' } });
+    manager.handleLiveChunk(chat, { type: 'chunk', chunk: { type: 'text-delta', index: 0, text: '你' } });
+    manager.handleLiveChunk(chat, { type: 'chunk', chunk: { type: 'text-delta', index: 0, text: '好' } });
+    const preview = chat.events[chat.events.length - 1];
+    check('live text deltas grow one streaming record',
+      preview?.kind === 'message' && preview?.role === 'assistant' && preview?.streaming === true && preview?.text === '你好',
+      JSON.stringify({ kind: preview?.kind, text: preview?.text, streaming: preview?.streaming }));
+    const before = chat.events.length;
+    manager.handleLiveChunk(chat, { type: 'chunk', chunk: { type: 'text-delta', index: 0, text: '！' } });
+    check('a later delta replaces the same record instead of adding a line',
+      chat.events.length === before && chat.events[chat.events.length - 1].text === '你好！');
+
+    // Reasoning deltas are a different block and must not glue onto the answer.
+    manager.handleLiveChunk(chat, { type: 'chunk', chunk: { type: 'block-start', index: 1, blockType: 'reasoning' } });
+    manager.handleLiveChunk(chat, { type: 'chunk', chunk: { type: 'reasoning-delta', index: 1, text: '想一想' } });
+    const reasoning = chat.events[chat.events.length - 1];
+    check('reasoning deltas land in their own record',
+      reasoning?.kind === 'reasoning' && reasoning?.text === '想一想', JSON.stringify({ kind: reasoning?.kind, text: reasoning?.text }));
+  } finally {
+    manager.disposeAll();
+  }
+}
+
+if (host) {
+  const { followSession } = await import('../src/kernels/dsh-live.js');
+  const listed = await liveCall(host, 'session/list', { _request: {} });
+  const live = listed.ok ? listed.value.items.find((s) => s.agentAvailable) : null;
+  if (live) {
+    const snapshot = await new Promise((resolve) => {
+      const handle = followSession(host, {
+        sessionId: live.sessionId,
+        onSnapshot: resolve,
+        onEvent: () => {},
+        onChunk: () => {},
+        onError: () => resolve(null),
+        onClose: () => resolve(null),
+      });
+      setTimeout(() => { handle.close(); resolve(null); }, 6000);
+    });
+    check('the live stream opens with a snapshot carrying a cursor and an assistant baseline',
+      Boolean(snapshot) && typeof snapshot.cursor === 'number' && typeof snapshot.assistantStream?.revision === 'number',
+      snapshot ? 'cursor ' + snapshot.cursor + ' rev ' + snapshot.assistantStream?.revision : 'no snapshot');
+  }
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 const failed = results.filter((r) => !r.passed).length;
 console.log(`\nDSH live attach: ${results.length - failed}/${results.length} passed`);
