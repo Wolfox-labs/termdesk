@@ -86,7 +86,7 @@ export function createRelay({ config, configFile = null }) {
       attempts.set(peer, { count: prev?.until > Date.now() ? prev.count + 1 : 1, until: Date.now() + 30_000 });
       send(ws, { type: 'auth.fail', reason: 'invalid credentials' }); ws.close(4401, 'unauthorized');
     };
-    ws.on('message', (raw, binary) => {
+    const onFrame = (raw, binary) => {
       const f = !binary && parse(raw);
       if (!f) { ws.close(4400, 'invalid frame'); return; }
       if (!identity) {
@@ -108,6 +108,26 @@ export function createRelay({ config, configFile = null }) {
             catch { ws.close(1011, 'credential storage unavailable'); return; }
           }
           if (!device || !nodeInfo(device.nodeId)) { reject(); return; }
+          // A freshly redeemed code is the phone's credential, and it has to be
+          // handed over even when there is no room to attach right now. Refusing
+          // first would burn the code and leave the phone with nothing to retry
+          // with once a slot frees up.
+          if (paired) {
+            send(ws, { type: 'device.paired', token: paired.token, deviceId: device.id });
+            // The computer's list of phones is now stale; tell it, so it can refresh.
+            send(nodes.get(device.nodeId), { type: 'relay.devices.changed', nodeId: device.nodeId });
+          }
+          // A phone that reconnects is still the same phone. Its previous socket
+          // is a leftover from a network change or an app restart, and counting it
+          // as a second phone would let one handset occupy every slot and then
+          // refuse its own reconnect. The newest connection takes over; the phone
+          // side already ignores events from the older one.
+          for (const previous of clients.values()) {
+            if (previous.nodeId !== device.nodeId || previous.deviceId !== device.id) continue;
+            clients.delete(previous.id);
+            console.log(`[relay] phone ${device.id} replaced its own older connection`);
+            previous.ws.close(1000, 'replaced by a newer connection');
+          }
           // The execution agent has one event route. Be explicit instead of letting
           // clients steal it silently, and say how many are allowed rather than
           // leaving the limit implicit in the code.
@@ -117,14 +137,14 @@ export function createRelay({ config, configFile = null }) {
             ws.close(4409, 'another client is active'); return;
           }
           const c = { id: crypto.randomUUID(), ws, nodeId: device.nodeId, deviceId: device.id, attached: false };
-          identity = { role: 'client', id: c.id }; clients.set(c.id, c);
+          // Kept on the identity, not only in `clients`: a replaced socket is
+          // removed above before it closes, and its close still has to tell the
+          // computer to drop that connection.
+          identity = { role: 'client', id: c.id, client: c }; clients.set(c.id, c);
           // Which phone, how many are online: the two facts worth having in the log
           // when a phone says it cannot connect and nothing else does.
           console.log(`[relay] phone ${device.id} online (${connected + 1}/${maxClientsPerNode}, node ${device.nodeId})`);
           clearTimeout(timeout); attempts.delete(peer);
-          if (paired) send(ws, { type: 'device.paired', token: paired.token, deviceId: device.id });
-          // The computer's list of phones is now stale; tell it, so it can refresh.
-          if (paired) send(nodes.get(device.nodeId), { type: 'relay.devices.changed', nodeId: device.nodeId });
           const node = nodes.get(c.nodeId);
           nodeStatus(c, Boolean(node));
           if (node) openClient(c, node);
@@ -163,7 +183,11 @@ export function createRelay({ config, configFile = null }) {
         if (f.type === 'relay.frame' && f.frame && typeof f.frame.type === 'string') send(c.ws, f.frame);
         if (f.type === 'relay.closed') { c.attached = false; nodeStatus(c, false); }
       } else {
-        const c = clients.get(identity.id), node = nodes.get(c.nodeId);
+        // A socket replaced by the same phone's newer connection is no longer in
+        // `clients`; its late frames are dropped instead of crashing the relay.
+        const c = clients.get(identity.id);
+        if (!c) return;
+        const node = nodes.get(c.nodeId);
         if (f.type === 'auth') { ws.close(4400, 'already authenticated'); return; }
         if (f.type === 'device.unpair') {
           // The phone is giving up its own credential. Forget it here as well, so
@@ -177,19 +201,33 @@ export function createRelay({ config, configFile = null }) {
         if (node && c.attached) send(node, { type: 'relay.frame', connectionId: c.id, frame: f });
         else send(ws, { type: 'error', code: 'node_offline', message: '电脑内核离线，客户端仍可查看已缓存内容；内核上线后自动恢复' });
       }
+    };
+    // One unexpected frame must not take the relay down for every computer behind
+    // it; the frame is dropped and the connection stays up.
+    ws.on('message', (raw, binary) => {
+      try { onFrame(raw, binary); } catch (err) { console.error(`[relay] dropped a frame: ${err?.message ?? err}`); }
     });
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
       clearTimeout(timeout);
       if (!identity) return;
       if (identity.role === 'node' && nodes.get(identity.id) === ws) {
         nodes.delete(identity.id);
+        console.log(`[relay] computer ${identity.id} offline (${code} ${reason.toString() || '-'})`);
         for (const c of clients.values()) if (c.nodeId === identity.id) { c.attached = false; nodeStatus(c, false); }
         for (const [ticket, t] of tickets) if (t.nodeId === identity.id) { clearTimeout(t.timer); tickets.delete(ticket); t.res.writeHead(503); t.res.end(); }
         for (const transfer of transfers) if (transfer.nodeId === identity.id) transfer.ws.terminate();
       } else if (identity.role === 'client') {
-        const c = clients.get(identity.id); clients.delete(identity.id);
-        if (c) console.log(`[relay] phone ${c.deviceId} offline`);
-        if (c) send(nodes.get(c.nodeId), { type: 'relay.close', connectionId: c.id });
+        // Taken from the identity, because a socket replaced by the same phone's
+        // newer connection has already been removed from `clients` — and the
+        // computer still has to be told to drop it.
+        const c = identity.client;
+        clients.delete(identity.id);
+        if (c) {
+          // The closing code says who ended it: 1006 with no reason is a
+          // connection that died under us, 1000 is a phone that left on purpose.
+          console.log(`[relay] phone ${c.deviceId} offline (${code} ${reason.toString() || '-'})${ws.droppedByHeartbeat ? ' by heartbeat' : ''}`);
+          send(nodes.get(c.nodeId), { type: 'relay.close', connectionId: c.id });
+        }
       }
     });
   }
@@ -232,7 +270,14 @@ export function createRelay({ config, configFile = null }) {
     req.resume();
   }
   const heartbeat = setInterval(() => {
-    for (const ws of wss.clients) { if (ws.alive === false) ws.terminate(); else { ws.alive = false; ws.ping(); } }
+    for (const ws of wss.clients) {
+      if (ws.alive === false) {
+        // Marked so the close log can say the relay ended it, rather than leaving
+        // a bare 1006 that looks like the phone vanishing on its own.
+        ws.droppedByHeartbeat = true;
+        ws.terminate();
+      } else { ws.alive = false; ws.ping(); }
+    }
     for (const [peer, rec] of attempts) if (rec.until < Date.now()) attempts.delete(peer);
   }, 20_000);
   heartbeat.unref();

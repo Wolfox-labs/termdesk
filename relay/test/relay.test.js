@@ -346,3 +346,35 @@ test('a deployment that allows two phones keeps both connected and refuses a thi
   a.ws.close(); b.ws.close(); node.ws.close();
 });
 
+test('a phone that reconnects takes over its own older socket, not a second slot', async t => {
+  // The real sequence: the phone changes network, the old socket is still open
+  // at the relay, and the app dials again. Treating that as a second phone let
+  // one handset occupy both slots and then refuse its own reconnect.
+  const { url, node } = await seated(t);
+  const mine = await pairPhone(url, node, 'A');
+  const other = await pairPhone(url, node, 'B');
+
+  const first = await signIn(url, mine.token);
+  assert.equal((await first.read('node.status')).online, true);
+
+  const second = await signIn(url, mine.token);
+  assert.equal((await second.read('node.status')).online, true);
+  const [code, reason] = await once(first.ws, 'close');
+  assert.equal(code, 1000);
+  assert.equal(reason.toString(), 'replaced by a newer connection');
+
+  // The replaced socket was removed from the relay's map before it finished
+  // closing, so a late frame arrives with no client behind it. It is ignored —
+  // this used to throw and take the whole relay process down.
+  try { send(first.ws, { type: 'ping', t: 1 }); } catch { /* already closed */ }
+  await new Promise(resolve => setTimeout(resolve, 50));
+
+  // The single slot is held by the newer socket, so a different phone is still
+  // refused, and the first phone can keep using its replacement.
+  const third = await signIn(url, other.token);
+  assert.equal((await once(third.ws, 'close'))[0], 4409);
+  send(second.ws, { type: 'ping', t: 7 });
+  assert.equal((await second.read('pong')).t, 7);
+  second.ws.close(); node.ws.close();
+});
+
