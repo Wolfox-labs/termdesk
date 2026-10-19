@@ -78,6 +78,8 @@ data class LocalKernelState(
     val installedVersion: String? = null,
     /** The health check's own output, so a failure can be read, not guessed. */
     val healthOutput: String? = null,
+    /** Fetching a computer's package metadata does not change the local installation. */
+    val manifestError: String? = null,
 ) {
     val installed: Boolean get() = stage == LocalKernelStage.READY
     val busy: Boolean
@@ -92,7 +94,12 @@ data class LocalKernelState(
  * presence of a file, because a half-unpacked tree looks exactly like an
  * installed one until something tries to run.
  */
-class LocalKernelInstaller(private val context: Context, private val http: OkHttpClient) {
+class LocalKernelInstaller internal constructor(
+    private val appFilesDir: File,
+    private val appCacheDir: File,
+    private val http: OkHttpClient,
+) {
+    constructor(context: Context, http: OkHttpClient) : this(context.filesDir, context.cacheDir, http)
 
     /**
      * A step-by-step trace. Each stage is logged and each failure keeps the whole
@@ -108,9 +115,9 @@ class LocalKernelInstaller(private val context: Context, private val http: OkHtt
      *  symlinks are baked to that path. */
     private fun targetDir(): File = File(filesDir(), _state.value.manifest?.installDir ?: "usr")
 
-    private fun filesDir(): File = context.filesDir
+    private fun filesDir(): File = appFilesDir
 
-    private fun stampFile(): File = File(context.filesDir, "local-kernel-installed.json")
+    private fun stampFile(): File = File(filesDir(), "local-kernel-installed.json")
 
     /** What is on the phone right now, without touching the network. */
     fun inspect(): LocalKernelState {
@@ -141,12 +148,17 @@ class LocalKernelInstaller(private val context: Context, private val http: OkHtt
         )
     }
 
-    fun refresh() { _state.value = inspect() }
+    fun refresh() {
+        if (!_state.value.busy) _state.value = inspect().copy(manifest = _state.value.manifest)
+    }
 
     /**
      * Fetch the PC's manifest. Metadata only: no payload bytes, no unpacking.
      */
     suspend fun loadManifest(base: String, token: String): LocalKernelState = withContext(Dispatchers.IO) {
+        if (_state.value.busy) return@withContext _state.value
+        // Inspect disk before any network request, including the first failed request.
+        refresh()
         val result = runCatching {
             val request = Request.Builder()
                 .url("$base/kernel/local")
@@ -164,11 +176,12 @@ class LocalKernelInstaller(private val context: Context, private val http: OkHtt
                 manifest
             }
         }
+        // A slow metadata response must not overwrite an installation in progress.
+        if (_state.value.busy) return@withContext _state.value
         result.fold(
             onSuccess = { manifest ->
                 val current = inspect()
-                LocalKernelState(
-                    stage = if (current.installed) LocalKernelStage.READY else LocalKernelStage.ABSENT,
+                current.copy(
                     // Never overwrite a warning with a cheerful line: leftover files from a
                     // half-finished install are exactly what the user needs to see.
                     note = when {
@@ -177,12 +190,14 @@ class LocalKernelInstaller(private val context: Context, private val http: OkHtt
                         else -> "可以安装（${manifest.version}，${Storage.format(manifest.sizeBytes)}）"
                     },
                     manifest = manifest,
-                    installedBytes = current.installedBytes,
-                    installedVersion = current.installedVersion,
+                    manifestError = null,
                 )
             },
             onFailure = { err ->
-                _state.value.copy(note = "读不到载荷清单：${err.message}", stage = if (_state.value.installed) LocalKernelStage.READY else LocalKernelStage.FAILED)
+                inspect().copy(
+                    manifest = _state.value.manifest,
+                    manifestError = "无法读取电脑上的安装包信息：${err.message}",
+                )
             },
         ).also { _state.value = it }
     }
@@ -191,7 +206,7 @@ class LocalKernelInstaller(private val context: Context, private val http: OkHtt
     suspend fun install(base: String, token: String): LocalKernelState = withContext(Dispatchers.IO) {
         val manifest = _state.value.manifest ?: loadManifest(base, token).manifest
         if (manifest == null) return@withContext _state.value
-        val pkg = File(context.cacheDir, manifest.packageName)
+        val pkg = File(appCacheDir, manifest.packageName)
 
         // 1. download, hashing as it goes: the hash of the bytes actually
         //    received, not of a file assumed to be right.
@@ -335,7 +350,7 @@ class LocalKernelInstaller(private val context: Context, private val http: OkHtt
     suspend fun remove(): LocalKernelState = withContext(Dispatchers.IO) {
         deleteRecursively(targetDir())
         stampFile().delete()
-        File(context.cacheDir, _state.value.manifest?.packageName ?: "").delete()
+        _state.value.manifest?.packageName?.let { File(appCacheDir, it).delete() }
         inspect().also { _state.value = it }
     }
 

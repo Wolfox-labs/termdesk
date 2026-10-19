@@ -33,6 +33,14 @@ export const C2S = {
   TERM_CLOSE: 'term.close',
   TERM_LIST: 'term.list',
   KERNELS_LIST: 'kernels.list',
+  // Management, not just discovery: the console pairs, renames and revokes the
+  // phones this machine knows, and turns kernels on or off without uninstalling
+  // them.
+  DEVICES_LIST: 'devices.list',
+  DEVICE_RENAME: 'devices.rename',
+  DEVICE_REVOKE: 'devices.revoke',
+  DEVICE_REMOVE: 'devices.remove',
+  KERNELS_MANAGE: 'kernels.manage',
   // Agent processes running on this machine that THIS agent did not start. The
   // phone asks when it wants to show "what is actually running over there",
   // including the agents the person launched in their own terminal.
@@ -42,6 +50,11 @@ export const C2S = {
   CODEX_RESTORE: 'codex.restore',
   SESSIONS_LIST: 'sessions.list',
   SESSIONS_READ: 'sessions.read',
+  SESSIONS_DELETE: 'sessions.delete',
+  // Show a file the console is talking about in Explorer/Finder. A management
+  // window that names a path should be able to open it, and a browser tab
+  // cannot do that for a path on the PC.
+  PATH_REVEAL: 'path.reveal',
   CHAT_LIST: 'chat.list',
   CHAT_CREATE: 'chat.create',
   CHAT_RESUME: 'chat.resume',
@@ -51,12 +64,17 @@ export const C2S = {
   // it, because a kernel only declares its model list once a session exists.
   CHAT_MODELS: 'chat.models',
   CHAT_READ: 'chat.read',
+  CHAT_CLAIM: 'chat.claim',
+  CHAT_RELEASE: 'chat.release',
+  CHAT_SYNC: 'chat.sync',
   CHAT_CANCEL: 'chat.cancel',
   CHAT_CLOSE: 'chat.close',
   CHAT_APPROVE: 'chat.approve',
   // The command lines a conversation is running. Listing is also what starts
   // live output flowing, so a phone that is not looking is not flooded.
   CHAT_TERMINALS: 'chat.terminals',
+  // The desktop host's slash commands, reachable from this conversation.
+  CHAT_COMMANDS: 'chat.commands',
   CHAT_TERMINAL_READ: 'chat.terminal.read',
   CHAT_TERMINAL_INPUT: 'chat.terminal.input',
   CHAT_TERMINAL_STOP: 'chat.terminal.stop',
@@ -91,6 +109,7 @@ export const S2C = {
   TERM_EXIT: 'term.exit',
   TERM_LIST: 'term.list',
   KERNELS: 'kernels',
+  DEVICES: 'devices',
   // What is running on the PC that this agent did not start, so the phone can
   // show it instead of only showing conversations the agent itself created.
   KERNEL_RUNS: 'kernels.runs',
@@ -107,6 +126,8 @@ export const S2C = {
   CHAT_CLOSED: 'chat.closed',
   CHAT_APPROVAL: 'chat.approval',
   CHAT_TERMINALS: 'chat.terminals',
+  // The desktop host's slash commands, reachable from this conversation.
+  CHAT_COMMANDS: 'chat.commands',
   CHAT_TERMINAL: 'chat.terminal',
   CHAT_TERMINAL_OUTPUT: 'chat.terminal.output',
   CHAT_TERMINAL_INPUT: 'chat.terminal.input',

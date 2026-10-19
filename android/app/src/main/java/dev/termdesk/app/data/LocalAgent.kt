@@ -60,6 +60,10 @@ class LocalAgent(private val context: Context) {
     private fun tokenFile(): File = File(home(), ".termdesk/token")
     private fun stampFile(): File = File(agentDir(), ".staged")
 
+    private fun embeddedFingerprint(): String = runCatching {
+        context.assets.open("local-agent/agent-fingerprint.txt").bufferedReader().use { it.readText().trim() }
+    }.getOrDefault("")
+
     /** Is there a sandbox to host this at all? */
     fun installed(): Boolean = bashBin().exists() && nodeBin().exists()
 
@@ -85,9 +89,9 @@ class LocalAgent(private val context: Context) {
     /**
      * Copy the agent out of the APK into the app's private dir.
      *
-     * Re-staged when the app version changes: the agent and the app are one build,
-     * so a new app means a new agent, and leaving the old one behind would be
-     * exactly the version drift this design exists to prevent.
+     * Re-stage when either the app version or the embedded agent content changes.
+     * Android keeps files/ across an `adb install -r`, so versionName alone is
+     * insufficient for debug builds where the UI and agent can change together.
      */
     suspend fun stage(force: Boolean = false): Boolean = withContext(Dispatchers.IO) {
         if (!installed()) return@withContext false
@@ -95,15 +99,17 @@ class LocalAgent(private val context: Context) {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
         }.getOrNull().orEmpty()
         val stamp = stampFile()
+        val fingerprint = embeddedFingerprint()
+        val expected = listOf(version, fingerprint).filter { it.isNotEmpty() }.joinToString(":")
         val current = if (stamp.exists()) stamp.readText().trim() else ""
-        if (!force && current == version && File(agentDir(), "src/server.js").exists()) return@withContext true
+        if (!force && current == expected && File(agentDir(), "src/server.js").exists()) return@withContext true
 
         _state.value = _state.value.copy(stage = LocalAgentStage.STAGED, note = "正在解包本地代理…")
         runCatching {
             val dest = agentDir()
             dest.deleteRecursively()  // never walk symlinks: this tree has none
             copyAssetTree("local-agent", dest)
-            stamp.writeText(version)
+            stamp.writeText(expected)
         }.onFailure { err ->
             _state.value = LocalAgentState(
                 stage = LocalAgentStage.FAILED,
@@ -111,7 +117,7 @@ class LocalAgent(private val context: Context) {
             )
             return@withContext false
         }
-        Log.i(TAG, "staged local agent for $version")
+        Log.i(TAG, "staged local agent for $expected")
         true
     }
 
@@ -152,6 +158,7 @@ class LocalAgent(private val context: Context) {
         val child = runCatching {
             ProcessBuilder(argv())
                 .directory(agentDir())
+                .redirectErrorStream(true)
                 .apply { environment().putAll(env()) }
                 .start()
         }.getOrElse { return@withContext fail("本地代理起不来：${it.message}") }
@@ -194,6 +201,7 @@ class LocalAgent(private val context: Context) {
             }
             Thread.sleep(200)
         }
+        if (!child.isAlive) reader.join(500)
         val why = synchronized(tailLock) { tail.joinToString("\n").takeLast(400) }
         fail(
             if (child.isAlive) "本地代理启动了但一直没有应答（端口 $PORT）${if (why.isBlank()) "" else "：$why"}"
@@ -270,17 +278,6 @@ class LocalAgent(private val context: Context) {
             "TERMDESK_ROOTS" to "$home;$usr",
             "TERMDESK_SHELL" to bashBin().absolutePath,
             "TERMDESK_SHELL_CWD" to home,
-            // The sandbox routes to the free model by default. A desktop default of a
-            // paid model is a cost decision that should not be inherited by a phone
-            // someone taps at; the model can still be named per turn through the agent.
-            // The sandbox needs a model that actually answers. `mimo-v2.6-flash` is
-            // in the provider's catalogue but never returns - measured from this
-            // machine: 45 s timeout against /v1/chat/completions, HTTP 000 - and a
-            // turn that ends with no content is exactly the failure this default
-            // exists to avoid. `spe/deepseek-v4.1-flash` answers (HTTP 200) and is
-            // the same model the desktop profile defaults to.
-            "TERMDESK_CHAT_PROVIDER" to "wolfox",
-            "TERMDESK_CHAT_MODEL" to "spe/deepseek-v4.1-flash",
         )
         // DSH, when it has been installed into the sandbox. The kernel table asks
         // TERMDESK_DSH first, and DSH_HOME keeps its profiles, credentials and

@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -61,6 +63,7 @@ fun SystemSection(
     status: HostStatus?,
     processes: List<ProcessInfo>,
     services: List<ServiceInfo>,
+    inventoryError: String?,
     loading: Boolean,
     onRefreshProcesses: (String) -> Unit,
     onRefreshServices: (String) -> Unit,
@@ -90,12 +93,14 @@ fun SystemSection(
             SystemTab.Metrics -> MetricsPane(status)
             SystemTab.Processes -> ProcessPane(
                 processes = processes,
+                inventoryError = inventoryError,
                 loading = loading,
                 onRefresh = onRefreshProcesses,
                 onKill = onKillProcess,
             )
             SystemTab.Services -> ServicePane(
                 services = services,
+                inventoryError = inventoryError,
                 loading = loading,
                 onRefresh = onRefreshServices,
                 onAction = onServiceAction,
@@ -164,6 +169,7 @@ private fun MetricsPane(status: HostStatus?) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -172,14 +178,14 @@ private fun MetricsPane(status: HostStatus?) {
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             MetricCard(
-                label = "CPU",
+                label = if (status.platform.startsWith("android")) "沙盒 CPU" else "CPU",
                 value = formatPercent(status.cpuUsagePercent),
-                caption = "${status.cpuCores} 核",
+                caption = if (status.platform.startsWith("android")) "代理进程" else "${status.cpuCores} 核",
                 percent = status.cpuUsagePercent ?: 0.0,
                 modifier = Modifier.weight(1f),
             )
             MetricCard(
-                label = "内存",
+                label = if (status.platform.startsWith("android")) "手机内存" else "内存",
                 value = formatPercent(status.memoryUsedPercent),
                 caption = "${formatBytes(status.memoryUsedBytes)} / ${formatBytes(status.memoryTotalBytes)}",
                 percent = status.memoryUsedPercent,
@@ -266,6 +272,7 @@ private fun SearchBar(
 @Composable
 private fun ProcessPane(
     processes: List<ProcessInfo>,
+    inventoryError: String?,
     loading: Boolean,
     onRefresh: (String) -> Unit,
     onKill: (Int) -> Unit,
@@ -289,6 +296,10 @@ private fun ProcessPane(
             onRefresh = { onRefresh(query) },
         )
 
+        if (inventoryError != null && !loading) {
+            ErrorHint(inventoryError) { onRefresh(query) }
+            return@Column
+        }
         if (shown.isEmpty() && !loading) {
             EmptyHint("没有匹配的进程")
             return@Column
@@ -367,6 +378,7 @@ private fun ProcessRow(proc: ProcessInfo, onKill: () -> Unit) {
 @Composable
 private fun ServicePane(
     services: List<ServiceInfo>,
+    inventoryError: String?,
     loading: Boolean,
     onRefresh: (String) -> Unit,
     onAction: (String, String) -> Unit,
@@ -393,6 +405,10 @@ private fun ServicePane(
             onRefresh = { onRefresh(query) },
         )
 
+        if (inventoryError != null && !loading) {
+            ErrorHint(inventoryError) { onRefresh(query) }
+            return@Column
+        }
         if (shown.isEmpty() && !loading) {
             EmptyHint("没有匹配的服务")
             return@Column
@@ -471,6 +487,25 @@ private fun ServiceRow(svc: ServiceInfo, onAction: (String) -> Unit) {
                 tint = if (svc.isRunning) MaterialTheme.colorScheme.error else MeterChars.ok,
                 modifier = Modifier.size(18.dp),
             )
+        }
+    }
+}
+
+@Composable
+private fun ErrorHint(text: String, onRetry: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+        Spacer(Modifier.height(10.dp))
+        if (!text.startsWith("当前设备不支持")) {
+            androidx.compose.material3.TextButton(onClick = onRetry) { Text("重试") }
         }
     }
 }

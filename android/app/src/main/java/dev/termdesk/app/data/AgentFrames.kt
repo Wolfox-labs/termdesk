@@ -96,6 +96,28 @@ import org.json.JSONObject
             }
         }
     }
+    internal fun parseChatOwner(o: JSONObject?): ChatOwner? {
+        if (o == null) return null
+        val id = o.optString("deviceId").takeIf { it.isNotBlank() } ?: return null
+        return ChatOwner(
+            deviceId = id,
+            deviceName = o.optString("deviceName").ifBlank { id },
+            clientKind = o.optString("clientKind").ifBlank { "unknown" },
+            acquiredAt = o.optLong("acquiredAt"),
+            lastSeenAt = o.optLong("lastSeenAt"),
+            leaseExpiresAt = o.optLong("leaseExpiresAt"),
+        )
+    }
+
+    internal fun parseChatOwnership(o: JSONObject?): ChatOwnership {
+        if (o == null) return ChatOwnership()
+        return ChatOwnership(
+            owner = parseChatOwner(o.optJSONObject("owner")),
+            mode = o.optString("mode", "available"),
+            queued = o.optBoolean("queued", false),
+            leaseMs = o.optLong("leaseMs"),
+        )
+    }
     internal fun parseChatInfo(o: JSONObject): ChatInfo? {
         val id = o.optString("id")
         if (id.isEmpty()) return null
@@ -119,6 +141,7 @@ import org.json.JSONObject
             lastUsedAt = o.optLong("lastUsedAt"),
             eventCount = o.optInt("eventCount"),
             lastError = if (o.isNull("lastError")) null else o.optString("lastError"),
+            ownership = parseChatOwnership(o.optJSONObject("ownership")),
         )
     }
     internal fun parseChatEvents(arr: JSONArray): List<ChatEvent> {
@@ -153,6 +176,40 @@ import org.json.JSONObject
      * An entry without a path is dropped rather than shown: the point of the row is that a
      * tap opens the file, and there is nothing to open.
      */
+    /**
+     * `chat.commands`: the slash commands this conversation can run.
+     *
+     * The list is the kernel's own declaration (the PC asks its host), so only the
+     * field names are pinned here: a renamed field must show as an absent command,
+     * not as a row labelled "null".
+     */
+    internal fun parseChatCommands(frame: JSONObject): ChatCommands? {
+        val chatId = frame.optString("chatId")
+        if (chatId.isBlank()) return null
+        val commands = frame.optJSONArray("commands")?.let { arr ->
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val name = o.optString("name")
+                    if (name.isBlank()) continue
+                    add(
+                        ChatCommand(
+                            name = name,
+                            description = o.optString("description"),
+                            hint = if (o.isNull("hint")) null else o.optString("hint").ifBlank { null },
+                        ),
+                    )
+                }
+            }
+        }.orEmpty()
+        val note = if (frame.isNull("note")) null else frame.optString("note").ifBlank { null }
+        return ChatCommands(
+            chatId = chatId,
+            supported = frame.optBoolean("supported", false),
+            commands = commands,
+            note = note,
+        )
+    }
     internal fun parseChatFiles(arr: JSONArray?): List<ChatFile> {
         if (arr == null) return emptyList()
         val out = ArrayList<ChatFile>(arr.length())
@@ -309,6 +366,72 @@ import org.json.JSONObject
             modelsError = if (o.isNull("modelsError")) null else o.optString("modelsError"),
         )
     }
+    internal fun parseKernelManifest(o: JSONObject?): KernelManifest? {
+        if (o == null) return null
+        fun bool(value: JSONObject?, key: String) = value?.optBoolean(key, false) ?: false
+        val session = o.optJSONObject("session")?.let { s ->
+            KernelSessionCapabilities(
+                list = bool(s, "list"),
+                read = bool(s, "read"),
+                resume = bool(s, "resume"),
+                fork = bool(s, "fork"),
+                nativeTranscript = bool(s, "nativeTranscript"),
+            )
+        } ?: KernelSessionCapabilities()
+        val turn = o.optJSONObject("turn")?.let { t ->
+            KernelTurnCapabilities(
+                cancel = t.optString("cancel", "none"),
+                queue = t.optBoolean("queue", false),
+                liveTerminals = t.optBoolean("liveTerminals", false),
+            )
+        } ?: KernelTurnCapabilities()
+        val model = o.optJSONObject("model")?.let { m ->
+            KernelModelCapabilities(
+                source = m.optString("source", "default"),
+                dynamic = m.optBoolean("dynamic", false),
+                switch = m.optBoolean("switch", false),
+                add = m.optBoolean("add", false),
+            )
+        } ?: KernelModelCapabilities()
+        val config = o.optJSONObject("config")?.let { c ->
+            val fields = c.optJSONArray("schema")?.let { arr ->
+                buildList {
+                    for (i in 0 until arr.length()) {
+                        val f = arr.optJSONObject(i) ?: continue
+                        add(
+                            KernelConfigField(
+                                id = f.optString("id"),
+                                type = f.optString("type"),
+                                support = f.optString("support", "unsupported"),
+                                apply = f.optString("apply", "session"),
+                                label = f.optString("label").takeIf { it.isNotBlank() },
+                                valuesSource = f.optString("valuesSource").takeIf { it.isNotBlank() },
+                                min = if (f.has("min")) f.optLong("min") else null,
+                                max = if (f.has("max")) f.optLong("max") else null,
+                                unit = f.optString("unit").takeIf { it.isNotBlank() },
+                            ),
+                        )
+                    }
+                }
+            } ?: emptyList()
+            KernelConfigCapabilities(
+                scope = c.optString("scope", "none"),
+                liveApply = c.optBoolean("liveApply", false),
+                requiresRestart = c.optBoolean("requiresRestart", false),
+                schema = fields,
+            )
+        } ?: KernelConfigCapabilities()
+        return KernelManifest(
+            version = o.optInt("version", 1),
+            known = o.optBoolean("known", false),
+            transport = o.optString("transport").takeIf { it.isNotBlank() && it != "null" },
+            driver = o.optString("driver", "none"),
+            session = session,
+            turn = turn,
+            model = model,
+            config = config,
+        )
+    }
     internal fun parseKernels(arr: JSONArray?): List<KernelInfo> {
         if (arr == null) return emptyList()
         return buildList {
@@ -326,6 +449,7 @@ import org.json.JSONObject
                         detail = o.optString("detail"),
                         resume = o.optBoolean("resume", false),
                         selectableOnPc = if (o.has("selectable")) o.optBoolean("selectable") else null,
+                        manifest = parseKernelManifest(o.optJSONObject("manifest")),
                     ),
                 )
             }

@@ -24,8 +24,8 @@ const MAX_TERMINAL_OUTPUT_CHARS = 64 * 1024;
 /**
  * The transcript is bounded for the same reason the terminal output is: a long
  * conversation must not be able to grow this process without limit. The oldest
- * events are dropped first, and `seq` keeps increasing, so an incremental client
- * can still tell "newer" from "older" after a drop.
+ * events are dropped first. Clients repair their bounded copy with an on-demand
+ * authoritative snapshot, including edits and deletions of older events.
  */
 const MAX_EVENTS_PER_CHAT = 1200;
 
@@ -64,6 +64,43 @@ export class Chat {
      */
     this.sessionId = nativeSessionId ?? threadId ?? `termdesk-${id}-${Date.now().toString(36)}`;
     this.nativeResume = Boolean(nativeSessionId);
+    /**
+     * Opened from a recorded DSH session whose write handle has not been taken yet.
+     *
+     * Browsing history must not own the conversation: `session/resume` opens a
+     * write handle and is refused while another process (the desktop app) holds
+     * one, so the handle is taken at the first prompt instead. See
+     * `ChatManager.ensureRuntime`.
+     */
+    this.pendingResume = false;
+    /**
+     * The desktop app's live host this chat is attached to, or null.
+     *
+     * Set when the session is opened while DeepSeek Harness Desktop is running:
+     * that process owns the session's write handle, so this chat sends over its
+     * API and follows its journal instead of starting a second runtime.
+     */
+    this.liveHost = null;
+    /** The event stream that mirrors a live-attached conversation (ChatManager.startLiveWatch). */
+    this.liveStream = null;
+    this.liveClosed = false;
+    this.liveReconnect = null;
+    this.liveLastSeq = -1;
+    this.liveSeenSnapshot = false;
+    /**
+     * The live message this side submitted and has not seen echoed yet.
+     *
+     * Kept so the desktop's queue events can be interpreted: an insertion means
+     * "waiting there", and a cancellation means "deleted there" -- which the phone
+     * must hear about instead of showing a cancelled message as still queued.
+     */
+    this.livePendingText = null;
+    this.livePendingLine = null;
+    this.liveQueued = false;
+    this.liveQueuedNoted = false;
+    this.liveEchoSeen = false;
+    this.liveTurnStarted = false;
+    this.liveDeadline = null;
     this.runtimeStarted = false;
     /** Codex thread id (engine=codex only), kept separately for resume. */
     this.threadId = threadId;
@@ -246,13 +283,19 @@ export class Chat {
       lastError: this.lastError,
       usage: this.usage,
       live: Boolean((this.child && this.child.exitCode === null) || this.kernelLive),
+      /** True when the answer comes from the desktop app's own agent. */
+      liveAttached: Boolean(this.liveHost),
     };
   }
 
-  detail(afterSeq = 0) {
+  // Full, bounded, authoritative snapshots repair edits and deletions of old
+  // events. A sequence-only delta cannot do that. afterSeq is ignored for old
+  // callers; clients request a snapshot on open, reconnect or explicit refresh.
+  detail() {
     return {
       ...this.summary(),
-      events: this.events.filter((e) => e.seq > afterSeq),
+      events: [...this.events],
+      eventSync: { mode: 'full', complete: true },
     };
   }
 }

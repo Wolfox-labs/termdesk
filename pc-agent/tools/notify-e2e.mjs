@@ -38,6 +38,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const env = {
   ...process.env,
+  // Notification delivery must finish without an attached permission UI.
+  // Approval round trips are covered separately by chat-approval-test.js.
+  FAKE_ACP_SKIP_PERMISSION: '1',
   TERMDESK_ACP_KERNELS: JSON.stringify([
     {
       id: 'stub',
@@ -130,6 +133,13 @@ try {
   check('a conversation is created', Boolean(chatA), String(chatA));
   a.ws.send(JSON.stringify({ type: 'chat.send', chatId: chatA, text: 'first', requestId: 'a-1' }));
   await waitForTurnEnd(a);
+  // Turn completion and its notification are separate frames. Wait for the
+  // notification itself rather than racing the next WebSocket callback.
+  const notificationDeadline = Date.now() + 5000;
+  while (Date.now() < notificationDeadline
+    && !a.frames.some((f) => f.type === 'notify' && f.kind === 'turn_done' && f.chatId === chatA)) {
+    await sleep(25);
+  }
   stopA();
   check('a client that is attached is told about the finished turn',
     a.frames.some((f) => f.type === 'notify' && f.kind === 'turn_done' && f.chatId === chatA),
@@ -145,10 +155,14 @@ try {
   const stopB = pump(b);
   const chatB = await createChat(b);
   b.ws.send(JSON.stringify({ type: 'chat.send', chatId: chatB, text: 'while nobody is looking', requestId: 'b-1' }));
-  await sleep(150);
+  const startedDeadline = Date.now() + 10000;
+  const started = () => b.frames.some((f) => f.type === 'chat.status' && f.chatId === chatB && f.status === 'running');
+  while (Date.now() < startedDeadline && !started()) await sleep(25);
   check('the second client started a turn before leaving',
-    b.frames.some((f) => f.type === 'chat.sent' || f.type === 'chat.status'),
+    started(),
     b.frames.filter((f) => f.type === 'chat.status').map((f) => f.status).join(','));
+  check('it disconnects before its turn completes',
+    !b.frames.some((f) => f.type === 'chat.turn' && f.chatId === chatB && f.state === 'ended'));
   b.ws.close();
   stopB();
   // Let that turn finish with nobody attached — the case the whole feature is for.

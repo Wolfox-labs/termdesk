@@ -7,6 +7,8 @@ import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarDuration
@@ -57,6 +59,7 @@ fun AppRoot(
     val processes by vm.processes.collectAsState()
     val services by vm.services.collectAsState()
     val loading by vm.loading.collectAsState()
+    val inventoryError by vm.inventoryError.collectAsState()
     val lastAction by vm.lastAction.collectAsState()
     val pendingNotifications by vm.pendingNotifications.collectAsState()
     val listing by vm.listing.collectAsState()
@@ -78,8 +81,12 @@ fun AppRoot(
     val termUnavailable by vm.termUnavailable.collectAsState()
     val codexConfig by vm.codexConfig.collectAsState()
     val codexTemplates by vm.codexTemplates.collectAsState()
+    val codexTarget by vm.codexTarget.collectAsState()
+    val computers by vm.computerList.collectAsState()
+    val activeComputerId by vm.activeComputerId.collectAsState()
     val chats by vm.chats.collectAsState()
     val chatModels by vm.chatModels.collectAsState()
+    val chatCommands by vm.chatCommands.collectAsState()
     val lastUpload by vm.lastUpload.collectAsState()
     val activeChat by vm.activeChat.collectAsState()
     val chatEvents by vm.chatEvents.collectAsState()
@@ -107,7 +114,19 @@ fun AppRoot(
      * at every "new conversation"; when nothing has been chosen yet, the first
      * kernel this machine can actually drive is used instead of a guess.
      */
-    val engineForNewChat = defaultEngine ?: engines.firstOrNull { it.selectable }?.id
+    val selectableEngineIds = engines.filter { it.selectable }.map { it.id }.toSet()
+    val engineForNewChat = defaultEngine?.takeIf { it in selectableEngineIds }
+        ?: engines.firstOrNull { it.selectable }?.id
+    val canCreateChat = link is LinkState.Connected && engineForNewChat != null
+
+    // A stale preference must never win over the current agent's discovery result.
+    // Do this only after discovery has returned; an empty list during connection is
+    // not evidence that the saved preference is invalid.
+    LaunchedEffect(kernelTarget, engines, defaultEngine) {
+        if (engines.isNotEmpty() && defaultEngine != engineForNewChat) {
+            vm.setDefaultEngine(engineForNewChat)
+        }
+    }
 
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -137,6 +156,7 @@ fun AppRoot(
     // judgement left on this side is whether they are already looking at that very
     // conversation, which the PC cannot know. An approval is never suppressed: the kernel is
     // blocked until somebody answers it.
+    var backgroundGuideOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
     LaunchedEffect(Unit) {
         AgentNotifications.ensureChannel(context)
@@ -229,6 +249,11 @@ fun AppRoot(
         if (chats.any { it.id == target.chatId }) vm.openChat(target.chatId)
     }
     val connected = link is LinkState.Connected
+    // On-demand repair; stream events carry normal updates. Returning to the
+    // foreground or reconnecting must also repair changed/deleted old events.
+    LaunchedEffect(connected, activeChat?.id, windowVisible) {
+        if (connected && windowVisible) activeChat?.id?.let(vm::syncChat)
+    }
     // Kernel discovery is metadata only (it never runs a model), so it can be
     // refreshed on every connect: Settings and the new-chat sheet then show what
     // this machine can actually talk to instead of a guessed list. The recorded
@@ -254,16 +279,16 @@ fun AppRoot(
     // while it is on screen (see the effect in ChatSection), so the question is asked
     // when somebody is actually looking at the answer.
 
-    val hostname = when (val state = link) {
+    val hostname = if (kernelTarget == "local") "本机手机" else when (val state = link) {
         is LinkState.Connected -> state.hostname
         is LinkState.NodeOffline -> state.hostname
         else -> "TermDesk"
     }
     val connectionLabel = when (val state = link) {
         is LinkState.NodeOffline -> "VPS 已连接 · ${state.hostname} 内核离线，上线后自动恢复"
-        is LinkState.Connecting -> "正在连接节点 · 已缓存记录仍可查看"
+        is LinkState.Connecting -> "正在连接 · 已缓存内容仍可查看"
         is LinkState.ProtocolMismatch -> "版本不匹配 · ${state.reason}"
-        is LinkState.Failed -> "连接暂不可用 · 点击查看：${state.reason}"
+        is LinkState.Failed -> "暂时无法连接 · 点击管理设备"
         else -> "离线模式 · 点击连接或管理设备"
     }
 
@@ -305,8 +330,25 @@ fun AppRoot(
             duration = SnackbarDuration.Long,
         )
         if (answer == SnackbarResult.ActionPerformed) {
-            runCatching { context.startActivity(BatteryGuidance.intentFor(context)) }
+            backgroundGuideOpen = true
         }
+    }
+
+    if (backgroundGuideOpen) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { backgroundGuideOpen = false },
+            title = { Text("允许后台运行") },
+            text = { Text("为及时收到消息，请在系统设置中允许 TermDesk 后台运行。\n\n小米 / Redmi 可检查“省电策略”和“后台自启动”；OPPO 可检查“允许后台活动”。菜单名称以当前系统为准。") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    backgroundGuideOpen = false
+                    runCatching { context.startActivity(BatteryGuidance.intentFor(context)) }
+                }) { Text("打开系统设置") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { backgroundGuideOpen = false }) { Text("稍后") }
+            },
+        )
     }
 
     // Surface every action outcome, including refusals, so the user is never
@@ -357,6 +399,8 @@ fun AppRoot(
 
             openFile != null -> FileEditor(
                 file = openFile!!,
+                saveResult = lastAction,
+                connected = connected,
                 onSave = vm::writeFile,
                 onClose = vm::closeOpenFile,
             )
@@ -366,6 +410,7 @@ fun AppRoot(
                 hostname = hostname,
                 processes = processes,
                 services = services,
+                inventoryError = inventoryError,
                 listing = listing,
                 loading = loading,
                 transfer = transfer,
@@ -393,7 +438,7 @@ fun AppRoot(
                 onTerminalNew = vm::openTerminal,
                 onTerminalList = vm::listTerminals,
                 termUnavailable = termUnavailable,
-                onTermOpen = vm::openTerminal,
+                onTermOpen = vm::ensureTerminal,
                 onSetKernelTarget = vm::setKernelTarget,
                 onTermRun = vm::runCommand,
                 onTermInterrupt = vm::interruptCommand,
@@ -401,13 +446,22 @@ fun AppRoot(
                 onTermClose = vm::closeTerminal,
                 codexConfig = codexConfig,
                 chatModels = chatModels,
+                chatCommands = chatCommands,
                 lastUpload = lastUpload,
+                draftScope = vm.draftScope,
+                onClaimChat = vm::claimChat,
                 onUploadFile = vm::uploadFile,
                 onClearUpload = vm::clearLastUpload,
                 onRequestChatModels = vm::requestChatModels,
+                onRequestChatCommands = vm::requestChatCommands,
                 codexTemplates = codexTemplates,
-                onCodexLoad = vm::loadCodexConfig,
-                onCodexApply = vm::applyCodexProvider,
+                codexTarget = codexTarget,
+                codexTargets = computers.sortedBy { if (it.id == activeComputerId) 0 else 1 },
+                onOpenCodex = vm::openCodexConfig,
+                onCloseCodex = vm::closeCodexConfig,
+                onSelectCodexTarget = vm::selectCodexTarget,
+                onCodexLoad = vm::reloadCodexConfig,
+                onCodexApply = vm::applyCodexConfig,
                 onCodexRestore = vm::restoreCodexBackup,
                 defaultCwd = vm.defaultCwd,
                 chats = chats,
@@ -423,8 +477,10 @@ fun AppRoot(
                 // A new conversation starts immediately, on the kernel and in the
                 // directory the home page is already showing.
                 onCreateChat = { cwd ->
-                    vm.createChat(cwd = cwd ?: vm.defaultCwd, engine = engineForNewChat)
-                    section = Section.Sessions
+                    if (canCreateChat) {
+                        vm.createChat(cwd = cwd ?: vm.defaultCwd, engine = engineForNewChat)
+                        section = Section.Sessions
+                    }
                 },
                 onOpenChat = { id ->
                     vm.openChat(id)
@@ -446,6 +502,7 @@ fun AppRoot(
                 kernelRunsNote = kernelRunsNote,
                 onLoadKernelRuns = vm::loadKernelRuns,
                 sessionSort = sessionSort,
+                canCreateChat = canCreateChat,
                 onSetSessionSort = vm::setSessionSort,
                 // Ask the file section for that directory and switch to it: the
                 // conversation says WHERE, the file browser is where it can be seen.
@@ -483,8 +540,10 @@ fun AppRoot(
                 onSetWorkingDirectory = vm::setWorkingDirectory,
                 roots = roots,
                 onNewChatNow = {
-                    vm.createChat(cwd = vm.defaultCwd, engine = engineForNewChat)
-                    section = Section.Sessions
+                    if (canCreateChat) {
+                        vm.createChat(cwd = vm.defaultCwd, engine = engineForNewChat)
+                        section = Section.Sessions
+                    }
                 },
                 chatTerminals = chatTerminals,
                 terminalView = terminalView,
@@ -532,14 +591,16 @@ fun AppRoot(
 
         SnackbarHost(
             hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(
+                bottom = if (!connectionOpen && openFile == null && preview == null &&
+                    primaryNavigationVisible(section, activeChat != null || sessionDetail != null)) 80.dp else 0.dp,
+            ),
         ) { data ->
             Snackbar(
+                snackbarData = data,
                 containerColor = MaterialTheme.colorScheme.surfaceVariant,
                 contentColor = MaterialTheme.colorScheme.onSurface,
-            ) {
-                Text(data.visuals.message, style = MaterialTheme.typography.bodySmall)
-            }
+            )
         }
     }
 }

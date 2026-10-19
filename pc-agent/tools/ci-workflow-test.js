@@ -40,7 +40,7 @@ const check = (name, passed, detail = '') => {
 };
 
 const text = fs.readFileSync(WORKFLOW, 'utf8');
-const lines = text.split('\n');
+const lines = text.split(/\r?\n/);
 
 /**
  * Steps, as `{ name, run, uses, workingDirectory, withBlock }`.

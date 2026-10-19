@@ -1,58 +1,33 @@
 /**
- * The DSH `sdk` profile, made self-contained.
+ * DSH SDK route selection and its TermDesk-owned provider overlay.
  *
- * Where does `dsh --profile sdk` learn which providers exist? From the shared
- * settings file `~/.dsh/settings.yaml` (dsh-settings-file). On this machine that
- * file is gone - only `settings.yaml.bak-before-fluxion`, `settings.yaml.bak-
- * before-yzj-high` and `settings.yaml.imported` remain - and the one place the
- * `wolfox` provider still exists is the DESKTOP profile's own patch, which the
- * sdk profile never reads. The runtime therefore refused TermDesk's route at the
- * handshake, before any turn could run:
+ * The SDK profile's effective provider configuration is not discoverable through
+ * the interfaces used by this process. TermDesk therefore requires an explicit
+ * provider and model instead of assuming that another DSH profile's settings are
+ * inherited. Third-party providers also need an explicit endpoint, API type, and
+ * credential-variable name. A separate overlay is written under TermDesk's own
+ * directory; no DSH-owned settings file is modified.
  *
- *   initialize -> -32603: no adapter registered for provider "wolfox"
- *
- * ...which the phone renders as "无法启动 DSH 运行时" on a machine where the DSH
- * desktop app talks to that same model perfectly well.
- *
- * The fix uses the mechanism DSH already provides: `--patch <overlay>`, a profile
- * overlay applied after every bundle layer. TermDesk writes its own overlay, so
- * the route it asks for is defined by TermDesk instead of by whichever profile
- * another app happened to configure. Nothing under `~/.dsh` is written.
- *
- * One more rule from DSH's own patch format: a patch REPLACES the whole config of
- * the row it targets, so the single row we own (`llm-pi-ai`, the provider
- * registry) is restated in full rather than merged.
+ * DSH patches replace the full config of the targeted row. The overlay restates
+ * the provider registry row and only supplies values that TermDesk actually
+ * knows; it does not invent context-window, output-limit, or modality claims.
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-/** Providers the SDK runtime can mount on its own, needing no overlay. */
-const SELF_MOUNTED = new Set(['deepseek-official']);
-
 /**
- * Known third-party providers TermDesk can address.
+ * Providers the installed runtime mounts by itself, needing no TermDesk overlay.
  *
- * These are facts about the provider, not about one machine's DSH install: the
- * endpoint and the env var holding the key. The key itself is never copied -
- * `apiKeyEnv` makes DSH read it from its own credentials store.
+ * `deepseek-official` is the SDK's documented fallback adapter. `deepseek-account`
+ * and `deepseek` come from the profile's own `deepseek-account-platform` /
+ * `llm-deepseek` entries in the shipped base bundle — verified on the installed
+ * 0.2.1-rc.1 archive by completing an SDK `initialize` with
+ * provider=deepseek-account, model=deepseek-flash (tools/dsh-runtime-test.js).
+ * Writing a pi-ai overlay for those would replace the profile's real settings.
  */
-const PROVIDERS = {
-  wolfox: {
-    displayName: 'Wolfox 中转',
-    baseURL: 'https://api.wolfoxlabs.xyz/v1',
-    api: 'openai-completions',
-    apiKeyEnv: 'WOLFOX_API_KEY',
-    models: [
-      'spe/deepseek-v4-flash',
-      'spe/deepseek-v4-pro',
-      'spe/deepseek-v4.1-flash',
-      'mimo-v2.6-flash',
-      'mimo-v2.6-pro',
-    ],
-  },
-};
+const SELF_MOUNTED = new Set(['deepseek-official', 'deepseek-account', 'deepseek']);
 
 /** Model ids are written into a YAML document; keep them unable to break it. */
 const MODEL_ID = /^[A-Za-z0-9._\/:-]+$/;
@@ -71,73 +46,103 @@ export function overlayPath(env = process.env) {
  * configuration change, not a code change - the same rule the kernel table
  * follows.
  */
-export function routeConfig(env = process.env) {
-  const provider = env.TERMDESK_CHAT_PROVIDER || 'wolfox';
-  const model = env.TERMDESK_CHAT_MODEL || 'spe/deepseek-v4.1-flash';
-  const known = PROVIDERS[provider] ?? null;
+export function routeConfig(env = process.env, overrides = {}) {
+  const provider = overrides.provider || env.TERMDESK_CHAT_PROVIDER || null;
+  const model = overrides.model || env.TERMDESK_CHAT_MODEL || null;
   const models = (env.TERMDESK_DSH_MODELS || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
   return {
     provider,
+    configuredProvider: env.TERMDESK_CHAT_PROVIDER || null,
     model,
-    baseURL: env.TERMDESK_DSH_BASE_URL || known?.baseURL || null,
-    api: env.TERMDESK_DSH_API || known?.api || 'openai-completions',
-    apiKeyEnv: env.TERMDESK_DSH_API_KEY_ENV || known?.apiKeyEnv || null,
-    displayName: known?.displayName || provider,
-    models: models.length > 0 ? models : (known?.models ?? [model]),
+    baseURL: env.TERMDESK_DSH_BASE_URL || null,
+    api: env.TERMDESK_DSH_API || null,
+    apiKeyEnv: env.TERMDESK_DSH_API_KEY_ENV || null,
+    displayName: env.TERMDESK_DSH_DISPLAY_NAME || provider,
+    models: models.length > 0 ? models : (model ? [model] : []),
   };
 }
 
+/** Explain exactly which explicit DSH route settings are missing. */
+export function routeConfigError(route) {
+  const missing = [];
+  if (!route.provider) missing.push('TERMDESK_CHAT_PROVIDER');
+  if (!route.model) missing.push('TERMDESK_CHAT_MODEL');
+  if (route.provider && route.configuredProvider && route.provider !== route.configuredProvider
+      && !SELF_MOUNTED.has(route.provider)) {
+    missing.push(`TERMDESK_CHAT_PROVIDER must match the selected provider "${route.provider}"`);
+  }
+  if (route.provider && !SELF_MOUNTED.has(route.provider)) {
+    if (!route.baseURL) missing.push('TERMDESK_DSH_BASE_URL');
+    if (!route.api) missing.push('TERMDESK_DSH_API');
+    if (!route.apiKeyEnv) missing.push('TERMDESK_DSH_API_KEY_ENV');
+    if (route.apiKeyEnv && !/^[A-Z][A-Z0-9_]*$/.test(route.apiKeyEnv)) {
+      missing.push('TERMDESK_DSH_API_KEY_ENV must be an environment variable name');
+    }
+    if (route.baseURL) {
+      let endpoint;
+      try { endpoint = new URL(route.baseURL); } catch { endpoint = null; }
+      if (!endpoint || !['http:', 'https:'].includes(endpoint.protocol)) {
+        missing.push('TERMDESK_DSH_BASE_URL must be a valid http:// or https:// URL');
+      }
+    }
+  }
+  if (route.provider && !MODEL_ID.test(route.provider)) missing.push('TERMDESK_CHAT_PROVIDER must be a valid provider id');
+  if (route.model && !MODEL_ID.test(route.model)) missing.push('TERMDESK_CHAT_MODEL must be a valid model id');
+  if (route.models.some((id) => !MODEL_ID.test(id))) missing.push('TERMDESK_DSH_MODELS must contain valid model ids');
+  if (missing.length === 0) return null;
+  return `DSH 尚未配置可用路由（缺少 ${missing.join('、')}）。请为运行此 Agent 的设备配置 provider、model；第三方 provider 还需配置 endpoint、API 类型和凭据环境变量。`;
+}
+
+/** JSON string literals are valid YAML double-quoted scalars. */
+function yamlString(value) {
+  return JSON.stringify(String(value));
+}
+
 /**
- * Render the overlay. Returns null when no overlay is needed (a provider the SDK
- * mounts by itself) or when the route is missing the two facts an overlay row
- * cannot invent: where the endpoint is, and which env var holds the key.
+ * Render the overlay. Returns null only when no overlay is needed (a provider
+ * the SDK mounts by itself); incomplete third-party routes are rejected.
  */
 export function renderOverlay(route) {
+  const error = routeConfigError(route);
+  if (error) throw new Error(error);
   if (SELF_MOUNTED.has(route.provider)) return null;
-  if (!route.baseURL || !route.apiKeyEnv) return null;
+  let endpoint;
+  try { endpoint = new URL(route.baseURL); } catch {
+    throw new Error('DSH endpoint 必须是有效的 http:// 或 https:// URL');
+  }
+  if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') {
+    throw new Error('DSH endpoint 必须使用 http:// 或 https://');
+  }
+  if (!/^[A-Z][A-Z0-9_]*$/.test(route.apiKeyEnv)) {
+    throw new Error('DSH API key 配置必须是有效的环境变量名');
+  }
 
   const models = [...new Set([route.model, ...route.models])];
+  if (!MODEL_ID.test(route.provider)) throw new Error(`DSH provider id 无效：${route.provider}`);
   for (const id of models) {
     if (!MODEL_ID.test(id)) throw new Error(`DSH 模型 id 不能写进覆盖配置：${id}`);
   }
 
   const lines = [
     '# Written by TermDesk. Do not edit: it is regenerated from the route in use.',
-    '#',
-    '# Why it exists: `dsh --profile sdk` has no provider of its own. The shared',
-    '# settings file that used to supply one is absent, and the desktop profile\'s',
-    '# patch (which does have it) is not read by the sdk profile, so the runtime',
-    '# answered the handshake with:',
-    '#   no adapter registered for provider "' + route.provider + '"',
-    '#',
-    '# A patch replaces the targeted row\'s whole config, so the provider registry',
-    "# row ('llm-pi-ai') is restated in full.",
+    '# It contains only the explicit route; no model capabilities are inferred.',
     '- id: llm-pi-ai',
     "  name: '@deepseek-ai/dsh-llm-pi-ai'",
     '  config:',
     '    providers:',
-    `      ${route.provider}:`,
-    `        displayName: ${route.displayName}`,
-    `        apiKeyEnv: ${route.apiKeyEnv}`,
-    `        api: ${route.api}`,
-    `        baseURL: ${route.baseURL}`,
+    `      ${yamlString(route.provider)}:`,
+    `        displayName: ${yamlString(route.displayName || route.provider)}`,
+    `        apiKeyEnv: ${yamlString(route.apiKeyEnv)}`,
+    `        api: ${yamlString(route.api)}`,
+    `        baseURL: ${yamlString(route.baseURL)}`,
     '        models:',
   ];
   for (const id of models) {
-    lines.push(`          - id: ${id}`);
-    lines.push('            contextWindow: 1000000');
-    lines.push('            maxTokens: 128000');
-    lines.push('            input:');
-    lines.push('              - text');
-    lines.push('              - image');
+    lines.push(`          - id: ${yamlString(id)}`);
   }
-  lines.push('    defaultContextWindow: 262144');
-  lines.push('    defaultMaxTokens: 32768');
-  lines.push('    defaultInput:');
-  lines.push('      - text');
   lines.push('    headers: {}');
   lines.push('');
   return lines.join('\n');
@@ -149,6 +154,8 @@ export function renderOverlay(route) {
  * runtime cannot make the file look changed when nothing did.
  */
 export function ensureOverlay(route = routeConfig()) {
+  const error = routeConfigError(route);
+  if (error) throw new Error(error);
   const text = renderOverlay(route);
   if (text === null) return null;
   const file = overlayPath();

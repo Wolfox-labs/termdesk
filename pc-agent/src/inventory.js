@@ -12,7 +12,10 @@
  * Process inventory is expensive (~1s, 40KB), so results are cached briefly and
  * repeated callers within the TTL share one collection.
  */
+import fsSync from 'node:fs';
 import { runJsonArray } from './exec.js';
+
+const IS_WINDOWS = process.platform === 'win32';
 
 const PROCESS_CACHE_MS = 4000;
 const SERVICE_CACHE_MS = 15000;
@@ -110,6 +113,42 @@ function normalizeService(row) {
 }
 
 /** Process list, sorted by memory descending, capped at MAX_ITEMS. */
+function readPosixProcess(pid) {
+  try {
+    const stat = fsSync.readFileSync('/proc/' + pid + '/stat', 'utf8');
+    const open = stat.indexOf('(');
+    const close = stat.lastIndexOf(')');
+    if (open < 0 || close < 0) return null;
+    const rest = stat.slice(close + 2).trim().split(/\s+/);
+    const status = fsSync.readFileSync('/proc/' + pid + '/status', 'utf8');
+    const threads = Number(status.match(/^Threads:\s+(\d+)/m)?.[1] ?? 0);
+    const rssKb = Number(status.match(/^VmRSS:\s+(\d+)/m)?.[1] ?? 0);
+    return {
+      pid: Number(stat.slice(0, open).trim()),
+      name: stat.slice(open + 1, close),
+      parentPid: Number(rest[1] ?? 0),
+      cpuSeconds: Number(((Number(rest[11] ?? 0) + Number(rest[12] ?? 0)) / 100).toFixed(2)),
+      memBytes: Math.max(0, rssKb) * 1024,
+      startTime: null,
+      threads,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function listPosixProcesses() {
+  let names;
+  names = fsSync.readdirSync('/proc');
+  const items = names
+    .filter((name) => /^\d+$/.test(name))
+    .map((name) => readPosixProcess(Number(name)))
+    .filter(Boolean)
+    .sort((a, b) => b.memBytes - a.memBytes)
+    .slice(0, MAX_ITEMS);
+  return { capturedAt: new Date().toISOString(), items };
+}
+
 export async function listProcesses({ force = false } = {}) {
   const now = Date.now();
   if (!force && processCache.value && now - processCache.at < PROCESS_CACHE_MS) {
@@ -120,6 +159,11 @@ export async function listProcesses({ force = false } = {}) {
 
   const run = (async () => {
     try {
+      if (!IS_WINDOWS) {
+        const value = listPosixProcesses();
+        processCache = { at: Date.now(), value, inFlight: null };
+        return value;
+      }
       const rows = await runJsonArray(PROCESS_SCRIPT, { timeoutMs: 30000 });
       const items = rows.map(normalizeProcess);
       const value = { capturedAt: new Date().toISOString(), items };
@@ -137,6 +181,12 @@ export async function listProcesses({ force = false } = {}) {
 
 /** Service list. */
 export async function listServices({ force = false } = {}) {
+  if (!IS_WINDOWS) {
+    const err = new Error('Android/Linux 当前不提供 Windows 服务列表');
+    err.code = 'platform_unsupported';
+    throw err;
+  }
+
   const now = Date.now();
   if (!force && serviceCache.value && now - serviceCache.at < SERVICE_CACHE_MS) {
     return serviceCache.value;

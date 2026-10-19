@@ -52,13 +52,11 @@ const ids = listKernels().map((k) => k.id);
 
 const EXPECTED = {
   codex: { driver: 'app-server', resume: true, live: true, cancel: 'ask-kernel' },
-  dsh: { driver: 'sdk', resume: false, live: false, cancel: 'kill-process' },
+  // dsh gained a real resume path when the installed runtime became launchable: the\n  // SDK's session/resume loads the stored history and the next prompt continues\n  // it (ChatManager.resumeDsh), so the table -- and this pin -- say true.\n  dsh: { driver: 'sdk', resume: true, live: false, cancel: 'kill-process' },
   opencode: { driver: 'acp', resume: true, live: false, cancel: 'close-session' },
   mimo: { driver: 'acp', resume: true, live: false, cancel: 'close-session' },
   'command-code': { driver: 'acp', resume: true, live: false, cancel: 'close-session' },
   qoder: { driver: 'acp', resume: true, live: false, cancel: 'close-session' },
-  antigravity: { driver: 'none', resume: false, live: false, cancel: 'none' },
-  doubao: { driver: 'none', resume: false, live: false, cancel: 'none' },
 };
 
 for (const [id, want] of Object.entries(EXPECTED)) {
@@ -100,9 +98,9 @@ check('every driver named is one the manager actually implements',
   // resume at all by the old code either - the registry did not list them as
   // selectable - so the reference has to include that, or it is asserting something
   // the old code never did.
-  const nameBasedResume = (id) => EXPECTED[id]?.driver !== 'none' && id !== 'dsh';
+  const nameBasedResume = (id) => EXPECTED[id]?.driver !== 'none';
   const diverged = ids.filter((id) => EXPECTED[id] && nameBasedResume(id) !== canResume(id, lookup));
-  check('and resumability matches the old special case for dsh, over the kernels that had a driver',
+  check('and resumability matches the driver for every kernel that has one',
     diverged.length === 0, diverged.join(','));
 }
 

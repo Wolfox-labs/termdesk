@@ -11,6 +11,7 @@
  *   node tools/acp-stream-test.js
  */
 import { ChatManager } from '../src/chat.js';
+import { Chat } from '../src/chat/chat.js';
 
 const results = [];
 const check = (name, passed, detail = '') => {
@@ -22,8 +23,10 @@ const frames = [];
 const manager = new ChatManager();
 manager.attach((payload) => frames.push(payload));
 
-const created = manager.create({ engine: 'opencode', cwd: process.cwd() });
-const chat = manager.get(created.chat.id);
+// This test feeds stub ACP frames directly, so it must not require an OpenCode
+// installation just to construct its chat state.
+const chat = new Chat({ id: 'c-acp-stream', title: 'ACP stream', engine: 'opencode', cwd: process.cwd() });
+manager.chats.set(chat.id, chat);
 manager.acpSessions.set('ses_stream', chat);
 
 // Three chunks, as an ACP kernel sends them.

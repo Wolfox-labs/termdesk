@@ -1,0 +1,20 @@
+* text=auto
+*.kt text eol=lf
+*.kts text eol=lf
+*.md text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.pdf binary
+
+# Preserve the three historical CRLF blobs on main. Normalize these only in a
+# dedicated formatting change; functional changes must not rewrite all lines.
+/REQUIREMENTS.md -text whitespace=cr-at-eol
+/android/app/src/main/java/dev/termdesk/app/ui/AppRoot.kt -text whitespace=cr-at-eol
+/android/app/src/main/java/dev/termdesk/app/ui/AppViewModel.kt -text whitespace=cr-at-eol
+
+# Keep retained historical probe blobs intact during repository cleanup.
+/pc-agent/tools/probes/sessions-live.js -text whitespace=cr-at-eol

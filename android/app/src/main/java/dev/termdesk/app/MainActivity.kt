@@ -11,6 +11,11 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.SideEffect
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.core.view.WindowCompat
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -58,6 +63,17 @@ class MainActivity : ComponentActivity() {
             val pair by pairRequest.collectAsState()
             val open by openRequest.collectAsState()
             TermDeskTheme(mode = mode) {
+                val background = MaterialTheme.colorScheme.background
+                SideEffect {
+                    val light = background.luminance() > 0.5f
+                    window.decorView.setBackgroundColor(background.toArgb())
+                    window.statusBarColor = background.toArgb()
+                    window.navigationBarColor = background.toArgb()
+                    WindowCompat.getInsetsController(window, window.decorView).apply {
+                        isAppearanceLightStatusBars = light
+                        isAppearanceLightNavigationBars = light
+                    }
+                }
                 Surface(
                     modifier = Modifier
                         .windowInsetsPadding(WindowInsets.safeDrawing)

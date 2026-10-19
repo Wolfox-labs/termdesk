@@ -290,3 +290,91 @@ test('the agent-side connector mints, lists and revokes over its own channel', a
   assert.equal((await rejected.read('auth.fail')).reason, 'invalid credentials');
   assert.deepEqual(await connector.devices().then(d => d.filter(x => !x.revoked)), []);
 });
+
+/** A relay with a given `maxClientsPerNode`, paired phones and a node online. */
+async function seated(t, extra = {}) {
+  const relay = createRelay({ config: { version: 1, nodes: [{ id: 'pc', label: 'Test PC', keyHash: digest('node-key') }], devices: [], pairings: [], ...extra } });
+  const port = await listen(relay.server);
+  t.after(() => relay.close());
+  const url = `ws://127.0.0.1:${port}`, node = await asNode(url);
+  // The node answers a phone's ping the way an agent does, so "still connected"
+  // can be stated as a round trip instead of a socket state.
+  node.ws.on('message', raw => {
+    let f; try { f = JSON.parse(raw.toString()); } catch { return; }
+    if (f.type === 'relay.frame' && f.frame?.type === 'ping') {
+      send(node.ws, { type: 'relay.frame', connectionId: f.connectionId, frame: { type: 'pong', t: f.frame.t } });
+    }
+  });
+  return { url, node, relay };
+}
+async function signIn(url, token) {
+  const phone = await connect(url + '/client');
+  send(phone.ws, { type: 'auth', token });
+  return phone;
+}
+
+test('by default a computer keeps exactly one phone connected', async t => {
+  const { url, node } = await seated(t);
+  const first = await pairPhone(url, node, 'A'), second = await pairPhone(url, node, 'B');
+
+  const a = await signIn(url, first.token);
+  assert.equal((await a.read('node.status')).online, true);
+
+  const b = await signIn(url, second.token);
+  const [code, reason] = await once(b.ws, 'close');
+  assert.equal(code, 4409);
+  assert.equal(reason.toString(), 'another client is active');
+  // The phone already connected is not pushed out by the newcomer.
+  send(a.ws, { type: 'ping', t: 1 });
+  assert.equal((await a.read('pong')).t, 1);
+  a.ws.close(); node.ws.close();
+});
+
+test('a deployment that allows two phones keeps both connected and refuses a third', async t => {
+  const { url, node } = await seated(t, { maxClientsPerNode: 2 });
+  const phones = [];
+  for (const name of ['A', 'B', 'C']) phones.push(await pairPhone(url, node, name));
+
+  const a = await signIn(url, phones[0].token);
+  const b = await signIn(url, phones[1].token);
+  assert.equal((await a.read('node.status')).online, true);
+  assert.equal((await b.read('node.status')).online, true);
+
+  const c = await signIn(url, phones[2].token);
+  const [code] = await once(c.ws, 'close');
+  assert.equal(code, 4409);
+  a.ws.close(); b.ws.close(); node.ws.close();
+});
+
+test('a phone that reconnects takes over its own older socket, not a second slot', async t => {
+  // The real sequence: the phone changes network, the old socket is still open
+  // at the relay, and the app dials again. Treating that as a second phone let
+  // one handset occupy both slots and then refuse its own reconnect.
+  const { url, node } = await seated(t);
+  const mine = await pairPhone(url, node, 'A');
+  const other = await pairPhone(url, node, 'B');
+
+  const first = await signIn(url, mine.token);
+  assert.equal((await first.read('node.status')).online, true);
+
+  const second = await signIn(url, mine.token);
+  assert.equal((await second.read('node.status')).online, true);
+  const [code, reason] = await once(first.ws, 'close');
+  assert.equal(code, 1000);
+  assert.equal(reason.toString(), 'replaced by a newer connection');
+
+  // The replaced socket was removed from the relay's map before it finished
+  // closing, so a late frame arrives with no client behind it. It is ignored —
+  // this used to throw and take the whole relay process down.
+  try { send(first.ws, { type: 'ping', t: 1 }); } catch { /* already closed */ }
+  await new Promise(resolve => setTimeout(resolve, 50));
+
+  // The single slot is held by the newer socket, so a different phone is still
+  // refused, and the first phone can keep using its replacement.
+  const third = await signIn(url, other.token);
+  assert.equal((await once(third.ws, 'close'))[0], 4409);
+  send(second.ws, { type: 'ping', t: 7 });
+  assert.equal((await second.read('pong')).t, 7);
+  second.ws.close(); node.ws.close();
+});
+

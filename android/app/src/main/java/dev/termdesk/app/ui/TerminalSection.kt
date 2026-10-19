@@ -130,7 +130,7 @@ fun TerminalSection(
     // backend this app is connected to. It used to be remote-only, which left the
     // local kernel with no session at all: every command then answered "no session"
     // instead of running.
-    LaunchedEffect(sessionId, unavailable) {
+    LaunchedEffect(kernel) {
         if (sessionId == null && unavailable == null) onOpen()
     }
 
@@ -171,9 +171,9 @@ fun TerminalSection(
             // so this is the way between them - and the way to start another.
             Text(
                 text = when {
-                    kernel == "local" -> (sessionId?.let { "$it · bash" } ?: "本地内核 · bash")
                     unavailable != null -> "不可用"
-                    sessionId == null -> "连接中…"
+                    sessionId == null -> "暂无终端"
+                    kernel == "local" -> "$sessionId · bash"
                     else -> "${sessionId} · PowerShell"
                 },
                 style = MaterialTheme.typography.labelMedium,
@@ -313,8 +313,7 @@ fun TerminalSection(
                 text = {
                     Column {
                         Text(
-                            "填一个目录，终端就切过去。相对路径以当前目录为基准；" +
-                                "目录不存在时 shell 会报错，位置不会变。",
+                            "输入完整路径，或相对于当前目录的路径。",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -365,11 +364,16 @@ fun TerminalSection(
                 }
             } else if (lines.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        "输入命令开始",
+                        if (sessionId == null) "终端已关闭" else "等待输入命令",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (sessionId == null) {
+                        TextButton(onClick = onNewTerminal) { Text("新建终端") }
+                    }
+                    }
                 }
             } else {
                 LazyColumn(

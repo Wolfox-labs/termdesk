@@ -5,7 +5,21 @@
  *
  *   node tools/kernel-registry-test.js
  */
-import { listKernels, chatEngineIds, spawnSpec, kernelTier, isAcpKernel, isCliKernel, shimSpec } from '../src/kernels/registry.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import {
+  listKernels,
+  chatEngineIds,
+  spawnSpec,
+  kernelTier,
+  isAcpKernel,
+  isCliKernel,
+  shimSpec,
+  setKernelPath,
+  clearKernelPath,
+} from '../src/kernels/registry.js';
 import { CHAT_ENGINES, ChatManager } from '../src/chat.js';
 
 const results = [];
@@ -36,7 +50,14 @@ check('an unsupported kernel says why',
 // to offer "continue this conversation" for kernels that cannot, and to hide it
 // for kernels that can.
 check('codex can reopen a past conversation', byId.codex?.resume === true, String(byId.codex?.resume));
-check('dsh cannot (and does not claim to)', byId.dsh?.resume === false, String(byId.dsh?.resume));
+// DSH can now reopen one: the SDK runtime's own `session/resume` loads the stored
+// history and the next prompt continues it (ChatManager.resumeDsh). The flag is
+// still read from the table, so the phone's button and this answer cannot drift.
+check('dsh can reopen a past conversation through the SDK resume entry',
+  byId.dsh?.resume === true, String(byId.dsh?.resume));
+check('dsh resume is only offered when the entry is really available',
+  !byId.dsh?.available || byId.dsh?.manifest.session.resume === true,
+  String(byId.dsh?.manifest?.session?.resume));
 check('ACP kernels can reopen a past conversation',
   list.filter((k) => k.tier === 'acp').every((k) => k.resume === true),
   list.filter((k) => k.tier === 'acp').map((k) => `${k.id}:${k.resume}`).join(','));
@@ -83,6 +104,12 @@ check('spawn spec for an unknown id is null', spawnSpec('definitely-not-a-kernel
 
 // The pipeline itself: every selectable engine is accepted, and anything else
 // is refused with an explanation that names the tier.
+//
+// DSH refuses to start without an explicit provider/model (the SDK runtime cannot
+// inherit one), so the fixture states a self-mounted route. Nothing is spawned and
+// no model is called: this is the configuration the check needs, not a turn.
+process.env.TERMDESK_CHAT_PROVIDER = process.env.TERMDESK_CHAT_PROVIDER || 'deepseek-official';
+process.env.TERMDESK_CHAT_MODEL = process.env.TERMDESK_CHAT_MODEL || 'deepseek-flash';
 const manager = new ChatManager();
 for (const id of chatEngineIds()) {
   const created = manager.create({ engine: id, cwd: process.cwd() });
@@ -95,6 +122,38 @@ check('the refusal explains the tier', String(refused.message).includes('shim'),
 const unknown = manager.create({ engine: 'nope' });
 check('chat.create refuses an unknown engine', unknown.ok === false && unknown.code === 'bad_engine');
 manager.disposeAll();
+
+// ---- path overrides ---------------------------------------------------------
+//
+// The console may point a kernel at another executable. That choice is a local
+// override, not an install, and it must be reversible: discovery's own answer is
+// kept so "恢复自动检测" is one call away.
+{
+  const file = path.join(os.tmpdir(), `termdesk-kernel-paths-${process.pid}-${Date.now()}.json`);
+  process.env.TERMDESK_KERNEL_PATHS = file;
+  try {
+    const before = listKernels().find((k) => k.id === 'codex');
+    const original = before?.path;
+    const saved = setKernelPath('codex', process.execPath);
+    check('setKernelPath saves an existing executable', saved.ok === true, saved.message);
+    const overridden = listKernels().find((k) => k.id === 'codex');
+    check('the descriptor reports the override and keeps the discovered path',
+      overridden?.override === true && overridden?.autoPath === original,
+      JSON.stringify({ override: overridden?.override, autoPath: overridden?.autoPath }));
+    const relative = setKernelPath('codex', 'node.exe');
+    check('a relative path is refused', relative.ok === false && relative.code === 'bad_path', relative.message);
+    const missing = setKernelPath('codex', path.join(os.tmpdir(), 'definitely-not-here.exe'));
+    check('a missing file is refused', missing.ok === false && missing.code === 'bad_path', missing.message);
+    const cleared = clearKernelPath('codex');
+    check('clearKernelPath restores discovery', cleared.ok === true, cleared.message);
+    check('the path is the discovered one again',
+      listKernels().find((k) => k.id === 'codex')?.path === original,
+      listKernels().find((k) => k.id === 'codex')?.path);
+  } finally {
+    delete process.env.TERMDESK_KERNEL_PATHS;
+    fs.rmSync(file, { force: true });
+  }
+}
 
 const failures = results.filter((r) => !r.passed).length;
 console.log(`\nRegistry: ${results.length - failures}/${results.length} passed`);

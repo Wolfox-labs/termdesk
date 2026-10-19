@@ -280,12 +280,13 @@ export function discoverThreadIdsFromDisk({ root, limit = 80 } = {}) {
 }
 
 export class CodexAppServer extends EventEmitter {
-  constructor({ bin = findCodex(), args = ['app-server', '--listen', 'stdio://'], cwd = null, log = console.log } = {}) {
+  constructor({ bin = findCodex(), args = ['app-server', '--listen', 'stdio://'], cwd = null, log = console.log, spawnProcess = spawn } = {}) {
     super();
     this.bin = bin;
     this.args = args;
     this.cwd = cwd;
     this.log = log;
+    this.spawnProcess = spawnProcess;
     this.child = null;
     this.starting = null;
     this.nextId = 1;
@@ -318,7 +319,7 @@ export class CodexAppServer extends EventEmitter {
       // service, hidden shell) cannot break the launch. Fall back to a shell
       // only when we are left with a bare command name.
       const shell = process.platform === 'win32' && !fs.existsSync(this.bin);
-      const child = spawn(this.bin, this.args, {
+      const child = this.spawnProcess(this.bin, this.args, {
         cwd: this.cwd ?? undefined,
         stdio: ['pipe', 'pipe', 'pipe'],
         shell,

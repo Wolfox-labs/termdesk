@@ -96,34 +96,16 @@ fun Meter(percent: Double) {
 
 @Composable
 fun DiskRow(root: String, percent: Double, caption: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            root,
-            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            modifier = Modifier.width(46.dp),
-        )
-        Box(Modifier.weight(1f)) { Meter(percent) }
-        Spacer(Modifier.width(10.dp))
-        // No fixed width here: at a 145% font scale a hard 42dp clipped "80%"
-        // onto two lines. The percentage is short, so letting it size itself and
-        // keeping it on one line is both correct and simpler.
-        Text(
-            "${percent.roundToInt()}%",
-            style = MaterialTheme.typography.bodySmall,
-            color = MeterColor.forPercent(percent),
-            maxLines = 1,
-            softWrap = false,
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            caption,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            modifier = Modifier.weight(1f, fill = false),
-        )
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        androidx.compose.foundation.text.selection.SelectionContainer {
+            Text(root, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp), fontWeight = FontWeight.Medium)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) { Meter(percent) }
+            Spacer(Modifier.width(10.dp))
+            Text("${percent.roundToInt()}%", style = MaterialTheme.typography.bodySmall, color = MeterColor.forPercent(percent), maxLines = 1)
+        }
+        Text(caption, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

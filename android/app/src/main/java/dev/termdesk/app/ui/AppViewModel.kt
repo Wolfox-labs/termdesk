@@ -10,12 +10,16 @@ import dev.termdesk.app.data.ActionResult
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatInfo
+import dev.termdesk.app.data.ChatCommands
 import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.ChatTerminal
 import dev.termdesk.app.data.TerminalInfo
 import dev.termdesk.app.data.TerminalView
+import dev.termdesk.app.data.CodexApplyRequest
 import dev.termdesk.app.data.CodexConfig
+import dev.termdesk.app.data.CodexConfigClient
 import dev.termdesk.app.data.CodexProviderTemplate
+import dev.termdesk.app.data.CodexTargetState
 import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.LocalAgentState
@@ -66,6 +70,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val status: StateFlow<HostStatus?> = client.status
     val processes: StateFlow<List<ProcessInfo>> = client.processes
     val services: StateFlow<List<ServiceInfo>> = client.services
+    val inventoryError: StateFlow<String?> = client.inventoryError
     val lastAction: StateFlow<ActionResult?> = client.lastAction
     val loading: StateFlow<Boolean> = client.loading
 
@@ -97,13 +102,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val termUnavailable: StateFlow<String?> = client.termUnavailable
 
     fun openTerminal() = client.openTerminal()
+    fun ensureTerminal() = client.ensureTerminal()
     fun attachTerminal(sessionId: String) = client.attachTerminal(sessionId)
     fun listTerminals() = client.listTerminals()
     fun runCommand(command: String) = client.runCommand(command)
     /** One kernel for the whole app: chosen in Settings, obeyed everywhere. */
     fun setKernelTarget(target: String) {
         val clean = if (target == "local") "local" else "remote"
+        if (clean == client.kernelTarget.value) return
         client.setKernelTarget(clean)
+        _defaultEngine.value = prefs.getString(engineKey(clean), null)
+        _workingDir.value = prefs.getString(directoryKey(clean), null).orEmpty()
         if (clean == "local") {
             // "Local" is a process that may not be running yet: bring it up, then
             // talk to it exactly like the PC.
@@ -121,19 +130,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun clearTerminal() = client.clearTerminal()
 
     // ---- Codex provider configuration ----
+    //
+    // This is the computer's config, never this phone's sandbox: the page opens its
+    // own short connection to the selected paired computer, so reading or writing
+    // it does not depend on where conversations currently run.
+    private val codex = CodexConfigClient(viewModelScope)
+    val codexTarget: StateFlow<CodexTargetState> = codex.state
+
+    /** Kept for the conversation's model picker, which asks the active agent. */
     val codexConfig: StateFlow<CodexConfig?> = client.codexConfig
     val codexTemplates: StateFlow<List<CodexProviderTemplate>> = client.codexTemplates
 
     fun loadCodexConfig() = client.loadCodexConfig()
-    fun applyCodexProvider(
-        providerId: String,
-        model: String,
-        apiKey: String?,
-        reasoningEffort: String?,
-        contextWindow: Long?,
-    ) = client.applyCodexProvider(providerId, model, apiKey, reasoningEffort, contextWindow)
 
-    fun restoreCodexBackup(name: String?) = client.restoreCodexBackup(name)
+    fun openCodexConfig() {
+        val active = computers.active() ?: return
+        selectCodexTarget(active.id)
+    }
+
+    fun selectCodexTarget(id: String) {
+        val target = computers.list().firstOrNull { it.id == id } ?: return
+        val token = computers.credentialFor(id)
+        if (token.isBlank()) {
+            codex.close()
+            client.reportLocalMessage("${target.name} 的凭据不在了，请重新配对")
+            return
+        }
+        codex.open(target, token, client.configClientId, client.configClientName)
+    }
+
+    fun closeCodexConfig() = codex.close()
+    fun reloadCodexConfig() = codex.reload()
+    fun applyCodexConfig(request: CodexApplyRequest) = codex.apply(request)
+    fun restoreCodexBackup(name: String?) = codex.restore(name)
 
     // ---- local kernel (the sandbox that runs on this phone) ----
 
@@ -164,13 +193,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * choice is a user preference, not a per-chat guess, so it lives in prefs and
      * the new-chat sheet only pre-selects it (the user can still override).
      */
-    private val _defaultEngine = MutableStateFlow(prefs.getString(KEY_ENGINE, null))
+    private fun engineKey(target: String = client.kernelTarget.value) = "defaultEngine.$target"
+    private fun directoryKey(target: String = client.kernelTarget.value) = "startPath.$target"
+
+    private val _defaultEngine = MutableStateFlow(
+        prefs.getString(engineKey(), prefs.getString(KEY_ENGINE, null)),
+    )
     val defaultEngine: StateFlow<String?> = _defaultEngine.asStateFlow()
 
     fun setDefaultEngine(engine: String?) {
         val clean = engine?.takeIf { it.isNotBlank() }
         _defaultEngine.value = clean
-        prefs.edit().putString(KEY_ENGINE, clean).apply()
+        prefs.edit().putString(engineKey(), clean).apply()
     }
 
     /**
@@ -182,14 +216,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * reports first" (see [startPath]).
      */
     private val _workingDir = MutableStateFlow(
-        prefs.getString(KEY_START_PATH, null)?.takeIf { it.isNotBlank() } ?: "",
+        prefs.getString(directoryKey(), prefs.getString(KEY_START_PATH, null))?.takeIf { it.isNotBlank() } ?: "",
     )
     val workingDirectory: StateFlow<String> = _workingDir.asStateFlow()
 
     fun setWorkingDirectory(path: String) {
         val clean = path.trim()
         _workingDir.value = clean
-        prefs.edit().putString(KEY_START_PATH, clean).apply()
+        prefs.edit().putString(directoryKey(), clean).apply()
     }
 
     /**
@@ -257,10 +291,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun clearLastUpload() = client.clearLastUpload()
 
     /** Model lists per chat, answered by the kernel itself. */
-    val chatModels: StateFlow<Map<String, ChatModels>> = client.chatModels
+    val draftScope: String get() = if (kernelTarget.value == "local") "local" else "remote:${activeComputerId.value ?: savedUrl}"
+    fun claimChat(chatId: String, force: Boolean) = client.claimChat(chatId, force)
+    fun syncChat(chatId: String) = client.syncChat(chatId)
+
+    val chatModels: StateFlow<Map<String, ChatModels>> = client.chatModels    /** Slash commands each conversation offers, as the PC declared them. */
+    val chatCommands: StateFlow<Map<String, ChatCommands>> = client.chatCommands
 
     /** Ask what the open conversation can switch to (no model runs for this). */
     fun requestChatModels(chatId: String) = client.requestChatModels(chatId)
+
+    fun requestChatCommands(chatId: String) = client.requestChatCommands(chatId)
 
     // ---- the open conversation's command lines ----
 
@@ -491,6 +532,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
+        // Migrate the old shared preference only into the currently selected target.
+        if (!prefs.contains(engineKey())) prefs.edit().putString(engineKey(), _defaultEngine.value).apply()
+        if (!prefs.contains(directoryKey())) prefs.edit().putString(directoryKey(), _workingDir.value).apply()
         client.registerNetworkCallback()
         computers.migrateLegacy()
         refreshComputers()

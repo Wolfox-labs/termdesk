@@ -90,6 +90,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import dev.termdesk.app.data.ChatDraft
+import dev.termdesk.app.data.ChatDraftStore
+import android.content.Context
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -120,6 +124,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.findViewTreeLifecycleOwner
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
+import dev.termdesk.app.data.ChatCommands
 import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.SessionGroups
 import dev.termdesk.app.data.UploadedFile
@@ -168,10 +173,14 @@ fun ChatSection(
     engines: List<KernelInfo>,
     codexConfig: CodexConfig?,
     chatModels: Map<String, ChatModels>,
+    chatCommands: Map<String, ChatCommands>,
     lastUpload: UploadedFile?,
+    draftScope: String,
+    onClaimChat: (String, Boolean) -> Unit,
     onUploadFile: (android.net.Uri, String) -> Unit,
     onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
+    onRequestChatCommands: (String) -> Unit,
     onOpenSections: () -> Unit,
     onLoadChats: () -> Unit,
     onCreateChat: (String?) -> Unit,
@@ -326,6 +335,13 @@ fun ChatSection(
         }
     }
 
+    // Slash commands are declared by the kernel that owns the session (the desktop
+    // app's host), so they are asked for when a conversation opens. Without this
+    // the `/` panel could only show the four rows compiled into the app.
+    LaunchedEffect(activeChat?.id, connected) {
+        val chat = activeChat ?: return@LaunchedEffect
+        if (connected && chatCommands[chat.id] == null) onRequestChatCommands(chat.id)
+    }
     val open = activeChat != null || recordedSession != null
 
     // Back walks out of the conversation, not out of the app: the command lines
@@ -445,7 +461,10 @@ fun ChatSection(
                                 events = events,
                                 sending = sending,
                                 models = chatModels[activeChat.id],
+                                commands = chatCommands[activeChat.id],
                                 lastUpload = lastUpload,
+                                draftScope = draftScope,
+                                onClaimChat = onClaimChat,
                                 onUploadFile = onUploadFile,
                                 onClearUpload = onClearUpload,
                                 onSend = onSend,
@@ -526,8 +545,8 @@ fun ChatSection(
                             GroupedSessionList(
                                 chats = visibleChats,
                                 sessions = emptyList(),
-                                emptyTitle = "还没有进行中的对话",
-                                emptyHint = "在 $defaultCwd 中新建一个，就能在手机上和电脑里的助手连续对话。",
+                                emptyTitle = "暂无进行中的会话",
+                                emptyHint = "工作目录：$defaultCwd",
                                 onOpenChat = onOpenChat,
                                 onCloseChat = onCloseChat,
                                 onOpenSession = onOpenSession,
@@ -541,7 +560,7 @@ fun ChatSection(
                                 chats = visibleChats,
                                 sessions = visibleSessions,
                                 emptyTitle = "没有找到历史会话",
-                                emptyHint = "电脑上记录过的对话会出现在这里，点开即可阅读或继续。",
+                                emptyHint = "显示当前设备上的历史记录。",
                                 onOpenChat = onOpenChat,
                                 onCloseChat = onCloseChat,
                                 onOpenSession = onOpenSession,
@@ -576,7 +595,7 @@ fun ChatSection(
                     onClick = { deferredApproval = null },
                     modifier = Modifier.padding(bottom = 18.dp),
                 ) {
-                    Text("内核还在等你确认 · 点这里回答")
+                    Text("助手正在等待确认 · 查看请求")
                 }
             }
         } else if (open) {
@@ -690,7 +709,7 @@ private fun ApprovalDialog(
         // A visible way out, so the sentence above it is not a promise about a gesture nobody
         // can guess.
         dismissButton = {
-            TextButton(onClick = onDefer) { Text("稍后再说") }
+            TextButton(onClick = onDefer) { Text("稍后处理") }
         },
         containerColor = MaterialTheme.colorScheme.surfaceVariant,
     )
@@ -731,7 +750,7 @@ private fun SessionBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(48.dp)
+            .heightIn(min = 48.dp)
             .background(MaterialTheme.colorScheme.surface)
             .padding(start = 4.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -747,7 +766,7 @@ private fun SessionBar(
             text = title,
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
         )
@@ -818,7 +837,7 @@ private fun ChatDetailPanel(
     val currentLabel = when {
         chat.model.isNotBlank() -> labelOf(chat.model)
         declaredCurrent != null -> labelOf(declaredCurrent)
-        else -> "内核默认"
+        else -> "默认"
     }
     val levels = remember(catalog, chat.model) {
         catalog.firstOrNull { it.slug == chat.model }?.reasoningLevels
@@ -831,12 +850,14 @@ private fun ChatDetailPanel(
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
+        Text(chat.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             KernelBadge(chat.engine)
             Spacer(Modifier.width(8.dp))
             Text(
                 text = buildString {
-                    append(chat.model.ifBlank { "内核默认模型" })
+                    append(chat.model.ifBlank { "默认模型" })
                     append(" · 思考 ")
                     append(chat.effort.ifBlank { "默认" })
                     when {
@@ -904,7 +925,8 @@ private fun ChatDetailPanel(
             )
         } else if (modelIds.size > CHIP_LIMIT) {
             Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "模型",
                     style = MaterialTheme.typography.labelSmall,
@@ -923,8 +945,9 @@ private fun ChatDetailPanel(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                }
                 Text(
-                    modelIds.size.toString() + " 个可选 · 可搜索",
+                    modelIds.size.toString() + " 个模型",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -955,10 +978,10 @@ private fun ChatDetailPanel(
             val note = models?.note
             Text(
                 when {
-                    models == null && chat.engine != "codex" -> "正在读取这个内核的模型清单…"
+                    models == null && chat.engine != "codex" -> "正在读取模型列表…"
                     !note.isNullOrBlank() -> note
-                    chat.engine == "codex" -> "Codex 的模型清单见设置（models.json）"
-                    else -> "该内核没有声明模型清单，由它自己决定。"
+                    chat.engine == "codex" -> "模型列表需在 Codex 中配置。"
+                    else -> "此助手未提供模型列表。"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -987,6 +1010,8 @@ private fun RecordedDetailPanel(session: SessionDetail) {
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
+        Text(session.title?.takeIf { it.isNotBlank() } ?: session.id, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             KernelBadge(session.engine)
             Spacer(Modifier.width(8.dp))
@@ -1944,7 +1969,7 @@ private fun EngineScopeRow(
                     .clip(RoundedCornerShape(8.dp))
                     .background(
                         if (isSelected) MaterialTheme.colorScheme.secondaryContainer
-                        else MaterialTheme.colorScheme.surface,
+                        else MaterialTheme.colorScheme.surfaceVariant,
                     )
                     .clickable { onSelect(choice) }
                     .padding(horizontal = 10.dp, vertical = 5.dp),
@@ -2073,7 +2098,7 @@ internal fun ChatRow(
                 chat.title,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(2.dp))
@@ -2127,7 +2152,10 @@ private fun Conversation(
     events: List<ChatEvent>,
     sending: Boolean,
     models: ChatModels?,
+    commands: ChatCommands?,
     lastUpload: UploadedFile?,
+    draftScope: String,
+    onClaimChat: (String, Boolean) -> Unit,
     onUploadFile: (android.net.Uri, String) -> Unit,
     onClearUpload: () -> Unit,
     onSend: (String, String) -> Unit,
@@ -2159,15 +2187,32 @@ private fun Conversation(
     val chosenModelLabel = when {
         chat.model.isNotBlank() -> models?.labelOf(chat.model) ?: chat.model
         models?.current != null -> models.labelOf(models.current!!)
-        else -> "内核默认"
+        else -> "默认"
     }
-    val chosenModeLabel = chosenMode?.let { id -> modeOptions.firstOrNull { it.first == id }?.second ?: id } ?: "内核默认"
+    val chosenModeLabel = chosenMode?.let { id -> modeOptions.firstOrNull { it.first == id }?.second ?: id } ?: "默认"
     var modelPickerOpen by remember(chat.id) { mutableStateOf(false) }
     var modePickerOpen by remember(chat.id) { mutableStateOf(false) }
     // The file picked with `+`, once the PC has actually got it. The prompt then
     // carries its path, which every kernel can read - no kernel-specific image
     // block is invented here.
-    var attachment by remember(chat.id) { mutableStateOf<UploadedFile?>(null) }
+    val context = LocalContext.current
+    val draftStore = remember(context) { ChatDraftStore(context.getSharedPreferences("termdesk.chat-drafts", Context.MODE_PRIVATE)) }
+    val savedDraft = remember(draftScope, chat.id) { draftStore.read(draftScope, chat.id) }
+    var draft by remember(draftScope, chat.id) { mutableStateOf(TextFieldValue(savedDraft.text)) }
+    var attachment by remember(draftScope, chat.id) { mutableStateOf(savedDraft.attachment) }
+    /** 文本与光标一起改，并落盘（远程带来的草稿持久化）。 */
+    fun updateDraftValue(value: TextFieldValue) {
+        draft = value
+        draftStore.write(draftScope, chat.id, ChatDraft(draft.text, attachment))
+    }
+    /** 只要文本：清空输入框、插入标记时用。 */
+    fun updateDraft(value: String) {
+        updateDraftValue(TextFieldValue(value))
+    }
+    fun updateAttachment(value: UploadedFile?) {
+        attachment = value
+        draftStore.write(draftScope, chat.id, ChatDraft(draft.text, attachment))
+    }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) onUploadFile(uri, chat.cwd)
     }
@@ -2181,7 +2226,7 @@ private fun Conversation(
     LaunchedEffect(lastUpload?.path) {
         val done = lastUpload ?: return@LaunchedEffect
         if (done.path.startsWith(chat.cwd.trimEnd('\\', '/'))) {
-            attachment = done
+            updateAttachment(done)
             onClearUpload()
         }
     }
@@ -2190,7 +2235,6 @@ private fun Conversation(
     val listState = key(chat.id) { rememberLazyListState() }
     // 文本和光标是一对，必须一起存：只存文本的话，输入框在外面换掉文本时会保留
     // 原来的光标偏移，插入「@标记」之后光标还停在 @ 后面（见 ChatMentions.insertion）。
-    var draft by remember(chat.id) { mutableStateOf(TextFieldValue("")) }
     // ── 「@网页生成」这条路的界面状态 ──────────────────────────────────
     // 骨架资源包内嵌在 APK 里（assets/templates/web/），发消息时把选中的那一份
     // 整份装配进指令。读它要 Context，所以在这里取一次、记住，别在每次重组时重读。
@@ -2275,7 +2319,7 @@ private fun Conversation(
         val text: String = copyDraftText(mention.id, copyType, copyPoint, copyTone)
         val expanded: String = ChatMentions.expand(text, skeletonOf, blueprintOf)
         onSend(chat.id, expanded)
-        draft = TextFieldValue("")
+        updateDraft("")
         copyFormFor = null
     }
 
@@ -2327,7 +2371,7 @@ private fun Conversation(
         val style = PosterStyles.byId(posterStyleId)
             ?: PosterStyles.pick(posterTitle + " " + posterScene)
         posterFormOpen = false
-        draft = TextFieldValue("")
+        updateDraft("")
         paintPoster(
             PosterRecipe(
                 styleId = style.id,
@@ -2417,7 +2461,7 @@ private fun Conversation(
             if (result.saved > 0) {
                 imageFormOpen = false
                 imageUris = emptyList()
-                draft = TextFieldValue("")
+                updateDraft("")
             }
         }
     }
@@ -2476,8 +2520,8 @@ private fun Conversation(
         // can read a file, and the transcript then shows what was sent.
         val full = attachment?.let { "[附件] ${it.name} → ${it.path}\n$expanded" } ?: expanded
         onSend(chat.id, full)
-        draft = TextFieldValue("")
-        attachment = null
+        updateDraft("")
+        updateAttachment(null)
         previewOpen = false
         themeAsked = false
         pagesAsked = false
@@ -2587,10 +2631,16 @@ private fun Conversation(
     }
 
     Column(Modifier.fillMaxSize()) {
+        if (chat.ownership.isBusy) {
+            Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("由 "+(chat.ownership.owner?.deviceName ?: "另一台设备")+" 控制", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+                TextButton(onClick = { onClaimChat(chat.id, true) }, enabled = connected && !chat.isRunning) { Text(if (chat.isRunning) "生成中" else "接管") }
+            }
+        }
         Box(Modifier.weight(1f)) {
             if (events.isEmpty()) {
                 Text(
-                    "还没有内容。发一条消息开始对话。",
+                    "发送消息开始对话",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(16.dp),
@@ -2686,7 +2736,7 @@ private fun Conversation(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = { attachment = null }, modifier = Modifier.size(26.dp)) {
+                IconButton(onClick = { updateAttachment(null) }, modifier = Modifier.size(26.dp)) {
                     Icon(
                         Icons.Outlined.Close,
                         contentDescription = "移除附件",
@@ -3680,23 +3730,48 @@ private fun Conversation(
             Column(
                 Modifier
                     .fillMaxWidth()
+                    // The panel now carries the kernel's own commands as well as the
+                    // four local ones, and with the keyboard up the lower rows were
+                    // simply cut off. Cap it and let it scroll instead of hiding
+                    // entries the user was told exist.
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState())
                     .background(MaterialTheme.colorScheme.surfaceVariant),
             ) {
-                SlashRow("模型", if (modelOptions.isEmpty()) "该内核没有模型清单" else chosenModelLabel, modelOptions.isNotEmpty()) {
-                    draft = TextFieldValue("")
+                SlashRow("模型", if (modelOptions.isEmpty()) "此助手未提供模型列表" else chosenModelLabel, modelOptions.isNotEmpty()) {
+                    updateDraft("")
                     modelPickerOpen = true
                 }
-                SlashRow("权限模式", if (modeOptions.isEmpty()) "该内核没有权限开关" else chosenModeLabel, modeOptions.isNotEmpty()) {
-                    draft = TextFieldValue("")
+                SlashRow("权限模式", if (modeOptions.isEmpty()) "此助手不支持切换权限模式" else chosenModeLabel, modeOptions.isNotEmpty()) {
+                    updateDraft("")
                     modePickerOpen = true
                 }
-                SlashRow("附件", "传到电脑，随下一条消息发出", true) {
-                    draft = TextFieldValue("")
-                    filePicker.launch(arrayOf(MIME_ANY))
+                SlashRow("附件", "上传至当前设备，随消息发送", true) {
+                    updateDraft("")
+                    filePicker.launch(arrayOf("*/*"))
                 }
                 SlashRow("关闭会话", "结束这个对话", true) {
-                    draft = TextFieldValue("")
+                    updateDraft("")
                     onClose(chat.id)
+                }
+                // Commands the PC's kernel actually declares (DSH: /compact,
+                // /export, /goal, /permission, ...). Tapping one puts the line in
+                // the box instead of running it: compacting a conversation by
+                // accident is not undoable, so the last step stays the user's.
+                val declared = commands
+                if (declared != null && declared.commands.isNotEmpty()) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                    for (command in declared.commands) {
+                        val hint = command.hint?.takeIf { it.isNotBlank() }
+                            ?: command.description.takeIf { it.isNotBlank() }
+                            ?: "由 " + chat.engine + " 执行"
+                        SlashRow(command.name, hint, true) {
+                            updateDraft("/" + command.name + " ")
+                        }
+                    }
+                } else if (!declared?.note.isNullOrBlank()) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                    SlashRow("命令", declared?.note ?: "", false) {}
                 }
             }
         }
@@ -3704,7 +3779,7 @@ private fun Conversation(
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
         Composer(
             draft = draft,
-            onDraftChange = { draft = it },
+            onDraftChange = { updateDraftValue(it) },
             onAttach = { attachChooserOpen = true },
             sending = sending,
             running = chat.isRunning,
@@ -3712,7 +3787,7 @@ private fun Conversation(
             // the tap, which is precisely the state the offline queue exists for: the message is
             // held on the phone, the "待发 N 条 · 连上就发" line explains it, and it goes out when
             // the link returns. A dead button taught the opposite.
-            canSend = chat.ready || chat.isRunning || chat.status != "stopped",
+            canSend = !chat.ownership.isBusy && (chat.ready || chat.isRunning || chat.status != "stopped"),
             pendingCount = pendingSends,
             droppedCount = pendingDropped,
             onSend = {
@@ -3866,7 +3941,13 @@ private fun SlashRow(label: String, hint: String, enabled: Boolean, onClick: () 
             fontWeight = FontWeight.Medium,
             color = if (enabled) MaterialTheme.colorScheme.onSurface
             else MaterialTheme.colorScheme.outline,
-            modifier = Modifier.width(96.dp),
+            // A fixed 96dp column broke names longer than it ("permission" came
+            // out as "/", "permissio", "n"). The label takes the width it needs
+            // and the hint gets the rest, so a long command stays one line.
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(min = 96.dp).padding(end = 10.dp),
         )
         Text(
             hint,
@@ -4157,7 +4238,7 @@ private fun Composer(
     Column(Modifier.fillMaxWidth()) {
         if (pendingCount > 0) {
             Text(
-                text = "待发 $pendingCount 条 · 连上就发",
+                text = "待发 $pendingCount 条 · 重连后自动发送",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 12.dp, top = 4.dp),
@@ -4203,7 +4284,7 @@ private fun Composer(
             value = draft,
             onValueChange = onDraftChange,
             modifier = Modifier.weight(1f),
-            placeholder = { Text("说点什么…", style = MaterialTheme.typography.bodyMedium) },
+            placeholder = { Text("输入消息", style = MaterialTheme.typography.bodyMedium) },
             textStyle = MaterialTheme.typography.bodyMedium,
             maxLines = 5,
             shape = RoundedCornerShape(11.dp),

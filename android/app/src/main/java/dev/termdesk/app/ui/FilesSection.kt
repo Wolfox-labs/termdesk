@@ -33,8 +33,11 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -102,6 +105,7 @@ fun FilesSection(
     ) {
         listing?.parent?.takeIf { it.isNotBlank() }?.let(onNavigate)
     }
+    var newMenuOpen by remember { mutableStateOf(false) }
     var showNewFolder by remember { mutableStateOf(false) }
     var showNewFile by remember { mutableStateOf(false) }
 
@@ -153,7 +157,7 @@ fun FilesSection(
                 )
             }
             Text(
-                text = currentPath.ifBlank { "选择目录" },
+                text = currentPath.trimEnd('\\', '/').substringAfterLast('\\').substringAfterLast('/').ifBlank { currentPath.ifBlank { "选择目录" } },
                 style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -220,10 +224,22 @@ fun FilesSection(
                 Spacer(Modifier.width(5.dp))
                 Text("上传", style = MaterialTheme.typography.labelSmall)
             }
-            TextButton(onClick = { showNewFolder = true }) {
-                Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(5.dp))
-                Text("新建", style = MaterialTheme.typography.labelSmall)
+            Box {
+                TextButton(onClick = { newMenuOpen = true }) {
+                    Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("新建", style = MaterialTheme.typography.labelSmall)
+                }
+                DropdownMenu(expanded = newMenuOpen, onDismissRequest = { newMenuOpen = false }) {
+                    DropdownMenuItem(text = { Text("新建文件夹") }, onClick = {
+                        newMenuOpen = false
+                        showNewFolder = true
+                    })
+                    DropdownMenuItem(text = { Text("新建文件") }, onClick = {
+                        newMenuOpen = false
+                        showNewFile = true
+                    })
+                }
             }
         }
 
@@ -406,7 +422,7 @@ private fun FileRow(
                 entry.name,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = if (entry.isDir) FontWeight.Medium else FontWeight.Normal,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             if (!entry.isDir) {
@@ -417,31 +433,16 @@ private fun FileRow(
                 )
             }
         }
-        if (!entry.isDir) {
-            IconButton(onClick = onDownload) {
-                Icon(
-                    Icons.Outlined.Download,
-                    contentDescription = "下载到手机",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp),
-                )
+        var menuOpen by remember { mutableStateOf(false) }
+        Box {
+            IconButton(onClick = { menuOpen = true }) {
+                Icon(Icons.Outlined.MoreVert, contentDescription = "文件操作", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        }
-        IconButton(onClick = onRename) {
-            Icon(
-                Icons.Outlined.DriveFileRenameOutline,
-                contentDescription = "重命名",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
-        }
-        IconButton(onClick = onDelete) {
-            Icon(
-                Icons.Outlined.Delete,
-                contentDescription = "删除",
-                tint = MaterialTheme.colorScheme.error,
-                modifier = Modifier.size(18.dp),
-            )
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                if (!entry.isDir) DropdownMenuItem(text = { Text("下载到手机") }, onClick = { menuOpen = false; onDownload() })
+                DropdownMenuItem(text = { Text("重命名") }, onClick = { menuOpen = false; onRename() })
+                DropdownMenuItem(text = { Text("删除", color = MaterialTheme.colorScheme.error) }, onClick = { menuOpen = false; onDelete() })
+            }
         }
     }
 }
@@ -456,6 +457,14 @@ fun NameInputDialog(
     onDismiss: () -> Unit,
 ) {
     var value by remember { mutableStateOf(initial) }
+    val clean = value.trim()
+    val nameError = when {
+        clean.isEmpty() -> null
+        clean == "." || clean == ".." -> "名称不能是 . 或 .."
+        clean.any { it == '/' || it == '\\' || it.code < 32 } -> "名称不能包含路径分隔符或控制字符"
+        else -> null
+    }
+    val valid = clean.isNotEmpty() && nameError == null
 
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
@@ -466,14 +475,16 @@ fun NameInputDialog(
                 onValueChange = { value = it },
                 singleLine = true,
                 label = { Text("名称") },
+                isError = nameError != null,
+                supportingText = { nameError?.let { Text(it) } },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 modifier = Modifier.fillMaxWidth(),
             )
         },
         confirmButton = {
             androidx.compose.material3.TextButton(
-                onClick = { if (value.isNotBlank()) onConfirm(value.trim()) },
-                enabled = value.isNotBlank(),
+                onClick = { if (valid) onConfirm(clean) },
+                enabled = valid,
             ) { Text(confirmLabel) }
         },
         dismissButton = {
@@ -501,7 +512,7 @@ private fun SearchResultsList(
             Text(
                 text = buildString {
                     append("\u201c${results.query}\u201d 找到 ${results.items.size} 项")
-                    if (results.truncated) append(" · 已达上限，缩小关键词更准")
+                    if (results.truncated) append(" · 结果未全部显示，请缩小搜索范围")
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -582,7 +593,7 @@ private fun PathEditDialog(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "在电脑上打开这个目录。路径必须位于允许的根目录内。",
+                    "输入当前设备上的目录路径，需位于允许访问的目录内。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

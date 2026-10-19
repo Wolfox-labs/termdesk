@@ -149,9 +149,12 @@ check('the command reports its own exit code', exit.code === 0, String(exit.code
 ws.send(JSON.stringify({ type: 'kernels.list' }));
 const kernels = await waitFrame((f) => f.type === 'kernels', 15000, 'kernels');
 const list = kernels.kernels ?? [];
-check('the kernel table answers', list.length > 0, `${list.length}`);
-check('nothing is offered that this host cannot run',
-  list.every((k) => !k.available || k.selectable === true), list.map((k) => `${k.id}=${k.available}`).join(' '));
+check('the local kernel table is a detected list, even when empty',
+  Array.isArray(kernels.kernels) && kernels.scope === 'local' && kernels.discovery === 'filesystem', `${list.length}`);
+check('uninstalled catalogue entries are absent from local discovery', list.every((k) => k.available === true));
+check('selectable kernels are installed and detected-only programs remain unavailable for chat',
+  list.every((k) => !k.selectable || (k.available && k.tier !== 'unsupported')),
+  list.map((k) => `${k.id}: installed=${k.available}, selectable=${k.selectable}`).join(' '));
 
 check('the banner says what this is', /本地内核/.test(banner), banner.split('\n').find((l) => l.includes('本地内核')) ?? '');
 

@@ -10,7 +10,6 @@
 import QRCode from 'qrcode';
 import jsQR from 'jsqr';
 import { pairPayload, qrSvg, qrTerminal, pairPage, devicesPage, choosePairingUrl, pairingUrlReason } from '../src/pair.js';
-import { findCloudflared, tunnelConfigPath, Tunnel, healthIsOurs } from '../src/tunnel.js';
 
 let passes = 0;
 let failures = 0;
@@ -22,7 +21,7 @@ function check(name, ok, detail = '') {
 // --- payload --------------------------------------------------------------
 
 const payload = pairPayload({
-  wsUrl: 'wss://calm-river-1234.trycloudflare.com',
+  wsUrl: 'ws://192.168.1.8:7420',
   token: 'a'.repeat(43),
   name: 'yaosw',
 });
@@ -31,7 +30,7 @@ check('payload is a termdesk:// uri', payload.startsWith('termdesk://pair?'), pa
   const parsed = new URL(payload);
   check('scheme is termdesk', parsed.protocol === 'termdesk:');
   check('host is pair', parsed.host === 'pair');
-  check('url survives encoding', parsed.searchParams.get('url') === 'wss://calm-river-1234.trycloudflare.com');
+  check('url survives encoding', parsed.searchParams.get('url') === 'ws://192.168.1.8:7420');
   check('token survives encoding', parsed.searchParams.get('token') === 'a'.repeat(43));
   check('name is carried', parsed.searchParams.get('name') === 'yaosw');
 }
@@ -74,57 +73,23 @@ function matrixToRgba(matrix, scale = 4, quiet = 4) {
   check('terminal qr is multi-line', terminal.split('\n').length > 10);
   const page = await pairPage({
     payload,
-    wsUrl: 'wss://calm-river-1234.trycloudflare.com',
+    wsUrl: 'ws://192.168.1.8:7420',
     token: 'a'.repeat(43),
-    tunnel: { url: 'https://calm-river-1234.trycloudflare.com', mode: 'quick' },
     lanUrls: ['192.168.1.8'],
   });
   check('page embeds the code', page.includes('<svg'));
-  check('page labels the tunnel mode', page.includes('临时地址'));
+  check('page labels direct LAN access', page.includes('局域网直连'));
   check('page escapes the token', !page.includes('<script'), 'no injected markup');
 }
 
-// --- which address the code carries ---------------------------------------
-//
-// The failure this guards against is not cosmetic: the printed QR carried a
-// tunnel hostname that DNS pointed at the VPS relay, so the phone sent its
-// pairing token to a stranger and was told "invalid credentials". An address is
-// only advertised when the agent answering there proved to be us.
-
-check(
-  'a verified public address is used as-is (wss)',
-  choosePairingUrl({ tunnelUrl: 'https://term.example.com', tunnelIsOurs: true, lanUrls: ['ws://10.0.0.5:7420'] })
-    === 'wss://term.example.com',
-);
-check(
-  'an unverified public address is NOT advertised',
-  choosePairingUrl({ tunnelUrl: 'https://term.example.com', tunnelIsOurs: false, lanUrls: ['ws://10.0.0.5:7420'] })
-    === 'ws://10.0.0.5:7420',
-);
-check(
-  'with nothing verified, the LAN address wins over loopback',
-  choosePairingUrl({ tunnelUrl: null, tunnelIsOurs: false, lanUrls: ['ws://192.168.1.8:7420'], port: 7420 })
-    === 'ws://192.168.1.8:7420',
-);
-check(
-  'with no LAN address either, loopback is the honest last resort',
-  choosePairingUrl({ tunnelUrl: null, tunnelIsOurs: false, lanUrls: [], port: 7420 }) === 'ws://127.0.0.1:7420',
-);
-check(
-  'the reason names the awkward case',
-  pairingUrlReason({ tunnelUrl: 'https://term.example.com', tunnelIsOurs: false, lanUrls: ['ws://10.0.0.5:7420'] })
-    === 'public_not_ours',
-);
-check(
-  'and the happy case',
-  pairingUrlReason({ tunnelUrl: 'https://term.example.com', tunnelIsOurs: true, lanUrls: [] }) === 'public',
-);
-
-// Identity of the thing answering /healthz: a 200 from another service is not us.
-check('our own healthz is recognised', healthIsOurs('{"ok":true,"service":"termdesk-pc-agent","protocol":1}'));
-check('another service is not', !healthIsOurs('{"ok":true,"service":"termdesk-relay","protocol":1}'));
-check('a non-JSON answer is not', !healthIsOurs('<html>error 1033</html>'));
-check('an empty answer is not', !healthIsOurs(''));
+// Direct pairing never advertises a legacy tunnel URL, even if old callers pass it.
+check('direct pairing selects LAN',
+  choosePairingUrl({ lanUrls: ['ws://10.0.0.5:7420'] }) === 'ws://10.0.0.5:7420');
+check('legacy tunnel fields cannot override LAN',
+  choosePairingUrl({ tunnelUrl: 'https://obsolete.example', tunnelIsOurs: true, lanUrls: ['ws://10.0.0.5:7420'] }) === 'ws://10.0.0.5:7420');
+check('loopback is the last resort', choosePairingUrl({ port: 7420 }) === 'ws://127.0.0.1:7420');
+check('the reason identifies LAN', pairingUrlReason({ lanUrls: ['ws://10.0.0.5:7420'] }) === 'lan');
+check('the reason identifies loopback', pairingUrlReason() === 'loopback');
 
 // --- pairing through the relay -------------------------------------------
 //
@@ -159,7 +124,6 @@ check('an empty answer is not', !healthIsOurs(''));
     payload: pairPayload({ wsUrl: 'ws://10.0.0.5:7420', token: 'x'.repeat(43), name: 'yaosw' }),
     wsUrl: 'ws://10.0.0.5:7420',
     token: 'x'.repeat(43),
-    tunnel: { url: null },
     urlReason: 'lan',
     relayError: '中转未连接',
     lanUrls: ['ws://10.0.0.5:7420'],
@@ -189,18 +153,6 @@ check('an empty answer is not', !healthIsOurs(''));
 {
   const page = devicesPage({ devices: [], hostname: 'yaosw', relayUrl: null });
   check('without a relay, the page says per-phone revocation is unavailable', page.includes('没法单独吊销'));
-}
-
-// --- tunnel plumbing ------------------------------------------------------
-
-check('cloudflared is present', findCloudflared() !== null, findCloudflared() ?? 'not found');
-check('tunnel config path is under the home dir', tunnelConfigPath().includes('.termdesk'));
-{
-  const tunnel = new Tunnel();
-  const status = tunnel.status();
-  check('idle tunnel reports not running', status.running === false && status.url === null);
-  tunnel.stop();
-  check('stopping an idle tunnel is safe', tunnel.status().running === false);
 }
 
 console.log(`\n${passes} passed, ${failures} failed`);

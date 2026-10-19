@@ -491,6 +491,19 @@ function parseDshSession(filePath, workspaceName) {
       continue;
     }
 
+    // The runtime's own title for the conversation, which is what the phone list
+    // should show; the opening prompt below is only the fallback. The profile first
+    // records a truncated fallback and replaces it once the title model answers, so
+    // a fallback must never overwrite a real title.
+    if (obj.type === 'session/title') {
+      const title = obj.data?.title;
+      const fallback = obj.data?.source?.kind === 'fallback';
+      if (typeof title === 'string' && title.trim() && (!fallback || !meta.title)) {
+        meta.title = title.trim();
+      }
+      continue;
+    }
+
     const ev = dshLineToEvent(obj);
     if (ev) events.push(ev);
   }
@@ -570,25 +583,51 @@ function firstUserText(filePath, stat) {
 }
 
 /**
- * Walk the decoded text and return the first thing a *person* said.
+ * Walk the decoded text and return the name this conversation should carry.
+ *
+ * Three sources, in this order:
+ *
+ *   1. the runtime's own `session/title`, LAST one wins — the profile writes a
+ *      truncated fallback immediately and replaces it when the title model
+ *      answers, so the first event is the worst one;
+ *   2. the first thing a *person* said, for sessions whose profile has no title
+ *      generator. Injected preamble is skipped: the harness writes its own context
+ *      as a user-role message with a different `source.kind`, and naming every
+ *      conversation after it would make the list useless;
+ *   3. the fallback title, when the session has no visible question at all.
+ *
+ * The scan therefore never returns early on a title: it keeps reading frames until
+ * the head budget is spent and remembers the latest answer.
  *
  * Split out because there are two ways to get the text (the head of the file, or the whole
  * file when the head is not enough) and the rule must be the same for both.
  */
 function scanForFirstQuestion(readHead, readWhole, size) {
+  let question = null;
+  let title = null;
+  let fallbackTitle = null;
   const scan = (text) => {
     for (const line of text.split('\n')) {
-      if (!line.includes('"user/message"')) continue;
+      if (line.includes('"session/title"')) {
+        try {
+          const obj = JSON.parse(line);
+          const value = obj?.data?.title;
+          if (typeof value === 'string' && value.trim()) {
+            const clean = value.trim().slice(0, 120);
+            if (obj?.data?.source?.kind === 'fallback') fallbackTitle = clean;
+            else title = clean;
+          }
+        } catch { /* not a complete line yet */ }
+        continue;
+      }
+      if (question !== null || !line.includes('"user/message"')) continue;
       let obj;
       try { obj = JSON.parse(line); } catch { continue; }
       const ev = dshLineToEvent(obj);
-      // Injected context is not the person's words: the harness writes its own preamble as a
-      // user-role message with a different `source.kind`, and a title taken from it would name
-      // every conversation in the list after the same paragraph.
-      if (ev && ev.role === 'user' && ev.text && ev.text.trim()) return ev.text.trim().slice(0, 120);
+      if (ev && ev.role === 'user' && ev.text && ev.text.trim()) question = ev.text.trim().slice(0, 120);
     }
-    return null;
   };
+  const best = () => title ?? question ?? fallbackTitle;
 
   try {
     const head = readHead();
@@ -603,12 +642,10 @@ function scanForFirstQuestion(readHead, readWhole, size) {
     for (let k = 0; k < offsets.length; k += 1) {
       const end = k + 1 < offsets.length ? offsets[k + 1] : head.length;
       try { text += zlib.zstdDecompressSync(head.subarray(offsets[k], end)).toString('utf8'); } catch { /* torn */ }
-
-      // Each frame is scanned as it arrives, and the loop does NOT stop at the first
-      // `user/message`: the frames that hold the real question are often the later ones.
-      const found = scan(text);
-      if (found) return found;
+      scan(text);
+      if (title !== null) break; // a real title arrived; later frames cannot improve on it
     }
+    if (title !== null) return title;
   } catch {
     // fall through to the whole-file attempt
   }
@@ -617,9 +654,9 @@ function scanForFirstQuestion(readHead, readWhole, size) {
   // undecodable, so a small file is read the way the rest of this module reads it. Big files
   // keep the head-only attempt: their cost is the reason this function exists.
   if (size <= TITLE_FULL_READ_BYTES) {
-    try { return scan(readWhole()); } catch { return null; }
+    try { scan(readWhole()); } catch { /* keep what the head gave us */ }
   }
-  return null;
+  return best();
 }
 
 export async function listSessions({ engine } = {}) {
@@ -697,4 +734,47 @@ export async function readSession({ engine, id, sessionPath }) {
 }
 export function sessionRoots() {
   return { codex: codexRoot(), dsh: dshRoot() };
+}
+
+/**
+ * Delete one recorded session.
+ *
+ * Only the two roots TermDesk already reads are writable, and only after
+ * `insideRoot` has resolved the client-supplied path — the same gate the reader
+ * uses. A DSH session is a directory; a Codex session is one rollout file.
+ * Anything else (ACP kernels keep their own stores) is refused rather than
+ * guessed at.
+ */
+export async function deleteSession({ engine, id, sessionPath } = {}) {
+  if (!sessionPath) {
+    return { ok: false, code: 'no_path', message: '这条记录没有给出文件路径，无法删除' };
+  }
+  if (engine === 'codex') {
+    const file = insideRoot(sessionPath, codexRoot());
+    if (!file) {
+      return { ok: false, code: 'outside_root', message: '拒绝删除：文件不在 Codex 会话目录内' };
+    }
+    let stat;
+    try { stat = fs.statSync(file); } catch { return { ok: false, code: 'not_found', message: '文件已经不存在' }; }
+    if (!stat.isFile()) return { ok: false, code: 'not_file', message: '这不是一个会话文件' };
+    fs.rmSync(file, { force: true });
+    return { ok: true, code: 'deleted', message: `已删除 Codex 记录${id ? ` ${id}` : ''}`, removed: file };
+  }
+  if (engine === 'dsh') {
+    const file = insideRoot(sessionPath, dshRoot());
+    if (!file) {
+      return { ok: false, code: 'outside_root', message: '拒绝删除：文件不在 DSH 会话目录内' };
+    }
+    const dir = path.dirname(file);
+    if (!insideRoot(dir, dshRoot())) {
+      return { ok: false, code: 'outside_root', message: '拒绝删除：目录不在 DSH 会话目录内' };
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    return { ok: true, code: 'deleted', message: `已删除 DSH 记录${id ? ` ${id}` : ''}`, removed: dir };
+  }
+  return {
+    ok: false,
+    code: 'unsupported_engine',
+    message: `这个内核的记录由它自己保管，控制台不直接删：${engine || '未知内核'}`,
+  };
 }

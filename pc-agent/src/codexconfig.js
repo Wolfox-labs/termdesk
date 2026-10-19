@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Codex provider configuration, edited from the phone.
  *
  * Design follows the official DeepSeek Codex integration rather than the
@@ -86,7 +86,7 @@ export async function readCodexConfig() {
   result.reasoningEffort = matchScalar(topLevel, 'model_reasoning_effort');
 
   // Collect [model_providers.<id>] blocks.
-  const providerRe = /^\[model_providers\.([A-Za-z0-9_-]+)\]\s*$([\s\S]*?)(?=^\[|\Z)/gm;
+  const providerRe = /^\[model_providers\.([A-Za-z0-9_-]+)\]\s*$([\s\S]*?)(?=^\[|(?![\s\S]))/gm;
   let m;
   while ((m = providerRe.exec(text)) !== null) {
     const body = m[2];
@@ -101,7 +101,7 @@ export async function readCodexConfig() {
   }
 
   // Reasoning efforts declared for the desktop app.
-  const desktopMatch = /^\[desktop\]\s*$([\s\S]*?)(?=^\[|\Z)/m.exec(text);
+  const desktopMatch = /^\[desktop\]\s*$([\s\S]*?)(?=^\[|(?![\s\S]))/m.exec(text);
   if (desktopMatch) {
     const listMatch = /enabled-reasoning-efforts\s*=\s*\[([^\]]*)\]/.exec(desktopMatch[1]);
     if (listMatch) {
@@ -164,10 +164,10 @@ async function backup() {
   return made;
 }
 
-/** Build the DeepSeek model catalog entries, per the official integration doc. */
-function buildModelEntries(template) {
-  return template.models.map((slug, index) => {
-    const vision = template.visionModels.includes(slug);
+/** Build the model catalog entries for the provider being applied. */
+function buildModelEntries(spec) {
+  return spec.models.map((slug, index) => {
+    const vision = spec.visionModels.includes(slug);
     const entry = {
       slug,
       prefer_websockets: false,
@@ -184,17 +184,17 @@ function buildModelEntries(template) {
       use_responses_lite: false,
       include_skills_usage_instructions: false,
       auto_review_model_override: null,
-      context_window: template.contextWindow,
-      max_context_window: template.contextWindow,
+      context_window: spec.contextWindow,
+      max_context_window: spec.contextWindow,
       effective_context_window_percent: 95,
       auto_compact_token_limit: null,
       comp_hash: '3000',
       reasoning_summary_format: 'experimental',
       default_reasoning_summary: 'none',
       display_name: slug === 'deepseek-flash' ? 'DeepSeek-Flash' : slug,
-      description: `${template.name} - ${slug}`,
-      default_reasoning_level: template.defaultReasoning,
-      supported_reasoning_levels: template.reasoningLevels.map((effort) => ({
+      description: `${spec.name} - ${slug}`,
+      default_reasoning_level: spec.defaultReasoning,
+      supported_reasoning_levels: spec.reasoningLevels.map((effort) => ({
         effort,
         description: reasoningDescription(effort),
       })),
@@ -249,7 +249,7 @@ function setTopLevelScalar(text, key, value) {
 
 /** Replace or insert an entire [table] block. */
 function setTable(text, tableName, body) {
-  const re = new RegExp(`^\\[${tableName.replace(/\./g, '\\.')}\\]\\s*$[\\s\\S]*?(?=^\\[|\\Z)`, 'm');
+  const re = new RegExp(`^\\[${tableName.replace(/\./g, '\\.')}\\]\\s*$[\\s\\S]*?(?=^\\[|(?![\\s\\S]))`, 'm');
   const block = `[${tableName}]\n${body.trim()}\n`;
   if (re.test(text)) return text.replace(re, block);
   return text.trimEnd() + '\n\n' + block;
@@ -258,7 +258,7 @@ function setTable(text, tableName, body) {
 /** Ensure the [desktop] table declares the given reasoning efforts. */
 function setDesktopReasoningEfforts(text, levels) {
   const rendered = `[${levels.map((l) => `"${l}"`).join(', ')}]`;
-  const desktopRe = /^\[desktop\]\s*$([\s\S]*?)(?=^\[|\Z)/m;
+  const desktopRe = /^\[desktop\]\s*$([\s\S]*?)(?=^\[|(?![\s\S]))/m;
   const m = desktopRe.exec(text);
   if (!m) {
     return text.trimEnd() + `\n\n[desktop]\nenabled-reasoning-efforts = ${rendered}\n`;
@@ -296,37 +296,112 @@ function validateToml(text) {
   return problems;
 }
 
+/** Replace a file in one step: a half-written config.toml is not a config.toml. */
+async function writeFileAtomic(file, text) {
+  const tmp = `${file}.termdesk-${process.pid}-${Date.now()}.tmp`;
+  try {
+    await fs.writeFile(tmp, text, 'utf8');
+    await fs.rename(tmp, file);
+  } catch (err) {
+    await fs.rm(tmp, { force: true });
+    throw err;
+  }
+}
+
+/** Put both files back the way they were. Returns whether it worked. */
+async function restoreFiles(configText, catalogText) {
+  try {
+    await writeFileAtomic(configPath(), configText);
+    if (catalogText !== null) await writeFileAtomic(modelsPath(), catalogText);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Apply a provider configuration.
  *
+ * A template is a starting point, not the product boundary: every field can be
+ * supplied, and a provider that is not in the template list is accepted when it
+ * carries its own name and base URL. That is what makes this an editor rather
+ * than a brand switcher.
+ *
  * @param {object} options
- * @param {string} options.providerId   key in PROVIDER_TEMPLATES
- * @param {string} options.model        model slug to select
- * @param {string} [options.apiKey]     written only when provided
+ * @param {string} options.providerId      provider key (template id or custom slug)
+ * @param {string} [options.providerName]  display name written to config.toml
+ * @param {string} [options.baseUrl]       API base URL
+ * @param {string} [options.wireApi]       "responses" | "chat"
+ * @param {string[]} [options.models]      model slugs to declare
+ * @param {string} options.model           selected model slug
+ * @param {string} [options.apiKey]        written only when provided
+ * @param {boolean} [options.clearApiKey]  remove the stored token instead
  * @param {string} [options.reasoningEffort]
+ * @param {string[]} [options.reasoningLevels]
  * @param {number} [options.contextWindow] override for the catalog
  * @returns {Promise<object>} a structured result describing what changed
  */
 export async function applyProviderConfig({
   providerId,
+  providerName,
+  baseUrl,
+  wireApi,
+  models,
   model,
   apiKey,
+  clearApiKey,
   reasoningEffort,
+  reasoningLevels,
   contextWindow,
 }) {
-  const template = PROVIDER_TEMPLATES.find((p) => p.id === providerId);
-  if (!template) {
-    return { ok: false, code: 'bad_provider', message: `未知服务商 "${providerId}"` };
+  const id = String(providerId ?? '').trim();
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+    return {
+      ok: false,
+      code: 'bad_provider',
+      message: `服务商标识不合法 "${id}"（只能包含字母、数字、_ 和 -）`,
+    };
+  }
+  const template = PROVIDER_TEMPLATES.find((p) => p.id === id);
+  if (!template && !baseUrl) {
+    return { ok: false, code: 'bad_provider', message: `未知服务商 "${id}"：自定义服务商需要填写 API 地址` };
+  }
+  const name = String(providerName ?? template?.name ?? id).trim() || id;
+  const effectiveBase = String(baseUrl ?? template?.baseUrl ?? '').trim();
+  if (!/^https?:\/\/\S+$/i.test(effectiveBase)) {
+    return { ok: false, code: 'bad_base_url', message: `API 地址必须是 http(s) 地址："${effectiveBase}"` };
+  }
+  const declared = (Array.isArray(models) && models.length > 0 ? models : template?.models ?? [])
+    .map((s) => String(s).trim())
+    .filter(Boolean);
+  if (declared.length === 0) {
+    return { ok: false, code: 'bad_models', message: '至少需要一个模型标识' };
+  }
+  const badSlug = declared.find((s) => !/^[A-Za-z0-9._:/-]{1,120}$/.test(s));
+  if (badSlug) {
+    return { ok: false, code: 'bad_model', message: `模型标识不合法："${badSlug}"` };
+  }
+  const effectiveWire = String(wireApi ?? template?.wireApi ?? 'responses').trim();
+  if (!['responses', 'chat'].includes(effectiveWire)) {
+    return { ok: false, code: 'bad_wire_api', message: `不支持的接口类型："${effectiveWire}"` };
+  }
+  const levels = (Array.isArray(reasoningLevels) && reasoningLevels.length > 0
+    ? reasoningLevels
+    : template?.reasoningLevels ?? ['low', 'medium', 'high'])
+    .map((s) => String(s).trim())
+    .filter(Boolean);
+  if (levels.length === 0) {
+    return { ok: false, code: 'bad_reasoning', message: '至少需要一个推理强度' };
+  }
+  const defaultReasoning = template?.defaultReasoning
+    ?? (levels.includes('medium') ? 'medium' : levels[0]);
+  // The prefix check belongs to a known provider; a custom endpoint defines its
+  // own key format, so only the presence of a value is checked there.
+  if (apiKey && template?.keyPrefix && !apiKey.startsWith(template.keyPrefix)) {
+    return { ok: false, code: 'bad_key', message: `API Key 应以 ${template.keyPrefix} 开头（自定义服务商不校验前缀）` };
   }
   if (!fsp.existsSync(configPath())) {
     return { ok: false, code: 'no_config', message: `找不到 ${configPath()}，请先运行一次 Codex` };
-  }
-  if (apiKey !== undefined && apiKey !== null && apiKey !== '' && !apiKey.startsWith(template.keyPrefix)) {
-    return {
-      ok: false,
-      code: 'bad_key',
-      message: `API Key 应以 ${template.keyPrefix} 开头`,
-    };
   }
 
   const original = await fs.readFile(configPath(), 'utf8');
@@ -339,46 +414,50 @@ export async function applyProviderConfig({
     }
   }
 
-  const entries = buildModelEntries(template);
-  if (Number.isInteger(contextWindow) && contextWindow > 0) {
-    for (const e of entries) {
-      e.context_window = contextWindow;
-      e.max_context_window = contextWindow;
-    }
-  }
-
-  const chosenModel = model && template.models.includes(model) ? model : template.models[0];
-  const effort = reasoningEffort && template.reasoningLevels.includes(reasoningEffort)
+  const chosenModel = model && declared.includes(model) ? model : declared[0];
+  const effort = reasoningEffort && levels.includes(reasoningEffort)
     ? reasoningEffort
-    : template.defaultReasoning;
+    : defaultReasoning;
+  const window = Number.isInteger(contextWindow) && contextWindow > 0
+    ? contextWindow
+    : (template?.contextWindow ?? 200000);
+
+  const entries = buildModelEntries({
+    name,
+    models: declared,
+    contextWindow: window,
+    reasoningLevels: levels,
+    defaultReasoning,
+    visionModels: template?.visionModels ?? [],
+  });
 
   // --- build the new config text ---
   let next = original;
   next = setTopLevelScalar(next, 'model', chosenModel);
-  next = setTopLevelScalar(next, 'model_provider', template.id);
+  next = setTopLevelScalar(next, 'model_provider', id);
   next = setTopLevelScalar(next, 'model_reasoning_effort', effort);
   next = setTopLevelScalar(next, 'model_catalog_json', modelsPath().replace(/\\/g, '/'));
 
   const providerLines = [
-    `name = "${template.name}"`,
-    `base_url = "${template.baseUrl}"`,
-    `wire_api = "${template.wireApi}"`,
+    `name = "${name}"`,
+    `base_url = "${effectiveBase}"`,
+    `wire_api = "${effectiveWire}"`,
   ];
-  // Only rewrite the token when a new one is supplied, so editing an unrelated
-  // field never wipes an existing key.
+  // Only rewrite the token when a decision was made about it: a new key sets it,
+  // an explicit clear removes it, and otherwise the stored one survives.
   const existingProvider = await readCodexConfig();
-  const current = existingProvider.providers.find((p) => p.id === template.id);
+  const current = existingProvider.providers.find((p) => p.id === id);
   if (apiKey) {
     providerLines.push(`experimental_bearer_token = "${apiKey}"`);
-  } else if (current?.hasToken) {
+  } else if (!clearApiKey && current?.hasToken) {
     const tokenMatch = new RegExp(
-      `^\\[model_providers\\.${template.id}\\][\\s\\S]*?(?=^\\[|\\Z)`, 'm',
+      `^\\[model_providers\\.${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\][\\s\\S]*?(?=^\\[|(?![\\s\\S]))`, 'm',
     ).exec(original);
     const tk = tokenMatch && /^(\s*)(experimental_bearer_token|api_key)\s*=\s*(.+)$/m.exec(tokenMatch[0]);
     if (tk) providerLines.push(`${tk[2]} = ${tk[3]}`);
   }
-  next = setTable(next, `model_providers.${template.id}`, providerLines.join('\n'));
-  next = setDesktopReasoningEfforts(next, template.reasoningLevels);
+  next = setTable(next, `model_providers.${id}`, providerLines.join('\n'));
+  next = setDesktopReasoningEfforts(next, levels);
 
   // --- validate before writing anything ---
   const problems = validateToml(next);
@@ -397,22 +476,63 @@ export async function applyProviderConfig({
     return { ok: false, code: 'invalid_catalog', message: '生成的模型目录不是合法 JSON，未做任何修改' };
   }
 
-  // --- commit ---
+  // --- commit both files, or neither ---
+  const configBefore = original;
+  const catalogBefore = fsp.existsSync(modelsPath()) ? await fs.readFile(modelsPath(), 'utf8') : null;
   const backups = await backup();
-  await fs.writeFile(configPath(), next, 'utf8');
-  await fs.writeFile(modelsPath(), catalogText, 'utf8');
+  try {
+    await writeFileAtomic(configPath(), next);
+    await writeFileAtomic(modelsPath(), catalogText);
+  } catch (err) {
+    const restored = await restoreFiles(configBefore, catalogBefore);
+    return {
+      ok: false,
+      code: 'write_failed',
+      message: `写入失败${restored ? '，已恢复原配置' : '，恢复失败，请用备份恢复'}：${err?.message ?? err}`,
+    };
+  }
+
+  // Read the file back instead of trusting what was sent to disk: the answer to
+  // "did it apply" must come from the file, not from the request.
+  let applied = null;
+  try {
+    applied = await readCodexConfig();
+  } catch {
+    // A read that fails after a good write is still a successful write.
+  }
+  if (applied && (applied.model !== chosenModel
+    || applied.modelProvider !== id
+    || applied.reasoningEffort !== effort)) {
+    const restored = await restoreFiles(configBefore, catalogBefore);
+    return {
+      ok: false,
+      code: 'verify_failed',
+      message: `写入后回读不一致${restored ? '，已恢复原配置' : '，恢复失败，请用备份恢复'}`,
+    };
+  }
 
   return {
     ok: true,
     code: 'applied',
-    message: `已切换到 ${template.name} · ${chosenModel}（推理强度 ${effort}）`,
+    message: `已切换到 ${name} · ${chosenModel}（推理强度 ${effort}）`,
     applied: {
-      provider: template.id,
+      provider: id,
+      providerName: name,
+      baseUrl: effectiveBase,
+      wireApi: effectiveWire,
       model: chosenModel,
+      models: declared,
       reasoningEffort: effort,
-      contextWindow: entries[0].context_window,
+      reasoningLevels: levels,
+      contextWindow: window,
       wroteApiKey: Boolean(apiKey),
+      clearedApiKey: Boolean(clearApiKey) && !apiKey,
     },
+    verified: applied ? {
+      model: applied.model,
+      provider: applied.modelProvider,
+      reasoningEffort: applied.reasoningEffort,
+    } : null,
     backups,
     configPath: configPath(),
     modelsPath: modelsPath(),
@@ -444,13 +564,13 @@ export async function restoreBackup(name) {
   }
 
   await backup();
-  await fs.copyFile(src, configPath());
+  await writeFileAtomic(configPath(), await fs.readFile(src, 'utf8'));
 
   // Restore the matching models.json when the backup includes one.
   const stamp = target.replace(/^config-/, '').replace(/\.toml$/, '');
   const modelsBackup = path.join(backupDir(), `models-${stamp}.json`);
   if (fsp.existsSync(modelsBackup)) {
-    await fs.copyFile(modelsBackup, modelsPath());
+    await writeFileAtomic(modelsPath(), await fs.readFile(modelsBackup, 'utf8'));
   }
 
   return { ok: true, code: 'restored', message: `已恢复备份 ${target}（当前配置也已备份）` };

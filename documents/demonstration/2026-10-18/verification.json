@@ -1,0 +1,74 @@
+{
+  "startedAt": "2026-10-18T06:47:24.822Z",
+  "completedAt": "2026-10-18T06:50:21.475Z",
+  "device": "PDEM30",
+  "android": "13",
+  "sourceVersion": "1.0.1-dev.1",
+  "modelCalls": 0,
+  "protocolEvents": 12,
+  "verifiedFileWrite": true,
+  "scenes": [
+    {
+      "file": "phone-home.png",
+      "description": "OPPO 工作台：已连接隔离电脑与固定回复助手",
+      "at": "2026-10-18T06:49:01.488Z"
+    },
+    {
+      "file": "phone-chat.png",
+      "description": "真实协议流式回复；内容由固定回复助手生成",
+      "at": "2026-10-18T06:49:19.521Z"
+    },
+    {
+      "file": "phone-files.png",
+      "description": "隔离项目目录及文件列表",
+      "at": "2026-10-18T06:49:28.854Z"
+    },
+    {
+      "file": "phone-editor.png",
+      "description": "文本编辑器与保存操作",
+      "at": "2026-10-18T06:49:38.713Z"
+    },
+    {
+      "file": "phone-terminal.png",
+      "description": "实际电脑 shell 输出，与合成助手分开验证",
+      "at": "2026-10-18T06:50:06.501Z"
+    },
+    {
+      "file": "phone-settings.png",
+      "description": "设置页面无底部主导航，旧 Codex 配置入口隐藏",
+      "at": "2026-10-18T06:50:21.475Z"
+    }
+  ],
+  "recording": {
+    "file": "output/report/oppo-walkthrough-01.mp4",
+    "seconds": 119.18958888888889,
+    "bytes": 2178317,
+    "source": "scrcpy 5.0.1; actual OPPO screen; no audio",
+    "edited": false
+  },
+  "preferencesRestored": true,
+  "ownedTestServerStopped": true,
+  "installedApkSha256": "323a3318d7253c1ff6ee604f738417048aa8c58f51f6b6257b07d8bf29f6add8",
+  "installedApkMatchesFinalBuild": true,
+  "apkAgentMatchesSource": true,
+  "unitTests": {
+    "android": {
+      "classes": 13,
+      "tests": 116,
+      "failures": 0
+    },
+    "desktop": {
+      "classes": 2,
+      "tests": 7,
+      "failures": 0
+    }
+  },
+  "desktop": {
+    "nativeWindowLaunched": true,
+    "screenshots": 5,
+    "bundledJvmStarted": true,
+    "agentResourcesPresent": true,
+    "closedAfterVerification": true
+  },
+  "originalDesignPreserved": true
+}

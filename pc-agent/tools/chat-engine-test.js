@@ -9,9 +9,12 @@
  *   node tools/chat-engine-test.js
  */
 import { encodeFrame } from '../src/protocol.js';
+import { EventEmitter } from 'node:events';
+import { PassThrough, Writable } from 'node:stream';
 import { buildCodexExecArgs, killProcessTree, findCodex } from '../src/engines.js';
-import { notificationToChatEvents, turnToChatEvents } from '../src/kernels/codex.js';
+import { CodexAppServer, notificationToChatEvents, turnToChatEvents } from '../src/kernels/codex.js';
 import { ChatManager, CHAT_ENGINES } from '../src/chat.js';
+import { chatEngineIds } from '../src/kernels/registry.js';
 
 let passes = 0;
 let failures = 0;
@@ -27,7 +30,11 @@ function check(name, ok, detail = '') {
 
 // --- engine vocabulary -----------------------------------------------------
 
-check('CHAT_ENGINES is codex+dsh', CHAT_ENGINES.includes('codex') && CHAT_ENGINES.includes('dsh'),
+// CHAT_ENGINES is derived from the kernel table, so which engines are listed is
+// a property of THIS machine (DSH is absent until it is installed). The test
+// therefore pins the derivation, not a hard-coded brand list.
+check('CHAT_ENGINES is the registry\'s selectable list',
+  CHAT_ENGINES.join(',') === chatEngineIds().join(','),
   CHAT_ENGINES.join(','));
 // The task surface that used to be mirrored by ENGINES is gone: the kernel
 // table in kernels/registry.js is the only list now, and CHAT_ENGINES is
@@ -158,14 +165,43 @@ function assertSafeRecord(name, record) {
 
 {
   const mgr = new ChatManager();
+  const hasDsh = chatEngineIds().includes('dsh');
+  const previousProvider = process.env.TERMDESK_CHAT_PROVIDER;
+  const previousModel = process.env.TERMDESK_CHAT_MODEL;
   try {
+    delete process.env.TERMDESK_CHAT_PROVIDER;
+    delete process.env.TERMDESK_CHAT_MODEL;
+    const unconfiguredDsh = mgr.create({ title: 'unconfigured', engine: 'dsh' });
+    if (hasDsh) {
+      check('DSH without an explicit provider and model fails clearly',
+        unconfiguredDsh.ok === false && unconfiguredDsh.code === 'unconfigured'
+          && /TERMDESK_CHAT_PROVIDER/.test(unconfiguredDsh.message), unconfiguredDsh.message);
+    }
+
+    // Fixture for creation only: no runtime is started and no model is called.
+    process.env.TERMDESK_CHAT_PROVIDER = 'deepseek-official';
+    process.env.TERMDESK_CHAT_MODEL = 'fixture-model';
     const dsh = mgr.create({ title: 'default' });
-    check('create defaults to engine=dsh (compat)', dsh.ok === true && dsh.chat?.engine === 'dsh',
-      dsh.chat?.engine);
-    check('dsh chat summary carries engine', dsh.chat?.engine === 'dsh');
-    check('dsh chat still reports provider/model', Boolean(dsh.chat?.provider && dsh.chat?.model),
-      `${dsh.chat?.provider} / ${dsh.chat?.model}`);
-    check('new chat starts idle and not ready', dsh.chat?.status === 'idle' && dsh.chat?.ready === false);
+    if (hasDsh) {
+      check('create defaults to engine=dsh (compat)', dsh.ok === true && dsh.chat?.engine === 'dsh',
+        dsh.chat?.engine);
+      check('dsh chat summary carries engine', dsh.chat?.engine === 'dsh');
+      check('dsh chat still reports provider/model', Boolean(dsh.chat?.provider && dsh.chat?.model),
+        `${dsh.chat?.provider} / ${dsh.chat?.model}`);
+      check('new chat starts idle and not ready', dsh.chat?.status === 'idle' && dsh.chat?.ready === false);
+    } else {
+      // The compatibility default is still dsh, so on a machine without it the
+      // refusal is the honest answer - there is no silent fallback to another
+      // kernel that the caller never asked for.
+      check('without an engine, a machine without dsh refuses instead of guessing',
+        dsh.ok === false && dsh.code === 'bad_engine', dsh.message);
+    }
+
+    const perChat = mgr.create({ title: 'explicit route', engine: 'dsh',
+      provider: 'deepseek-official', model: 'per-chat-fixture' });
+    if (hasDsh) check('an explicit per-chat DSH route is accepted',
+      perChat.ok === true && perChat.chat?.provider === 'deepseek-official'
+        && perChat.chat?.model === 'per-chat-fixture');
 
     const codex = mgr.create({ title: 'cx', engine: 'codex', provider: 'deepseek', model: 'deepseek-flash' });
     check('create accepts engine=codex', codex.ok === true && codex.chat?.engine === 'codex');
@@ -188,11 +224,16 @@ function assertSafeRecord(name, record) {
     check('chat detail reports engine', mgr.get(codex.chat.id)?.detail()?.engine === 'codex');
 
     // Transcript of a fresh chat must not smuggle a `type` field into items.
-    const detail = mgr.get(dsh.chat.id).detail();
+    const sample = (hasDsh ? dsh : codex).chat;
+    const detail = mgr.get(sample.id).detail();
     check('transcript items never carry type',
       detail.events.every((e) => e.type === undefined),
       detail.events.map((e) => e.kind).join(','));
   } finally {
+    if (previousProvider === undefined) delete process.env.TERMDESK_CHAT_PROVIDER;
+    else process.env.TERMDESK_CHAT_PROVIDER = previousProvider;
+    if (previousModel === undefined) delete process.env.TERMDESK_CHAT_MODEL;
+    else process.env.TERMDESK_CHAT_MODEL = previousModel;
     mgr.disposeAll();
   }
 }
@@ -210,6 +251,58 @@ function assertSafeRecord(name, record) {
     // path is covered by tools/chat-codex-appserver-test.js and codex-ws-e2e.js.
   } finally {
     mgr.disposeAll();
+  }
+}
+
+// The production chat path must start the exact registry command, preserving
+// any runtime/script pre-arguments before app-server's protocol arguments.
+// The fake child only answers initialize; no Codex binary or model is started.
+{
+  const cases = [
+    { name: 'PATH command', spec: { bin: 'codex', args: [] }, want: ['app-server', '--listen', 'stdio://'] },
+    { name: 'custom native override', spec: { bin: 'C:\\custom\\codex.exe', args: [] }, want: ['app-server', '--listen', 'stdio://'] },
+    {
+      name: 'Node script entry',
+      spec: { bin: process.execPath, args: ['C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js'] },
+      want: ['C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js', 'app-server', '--listen', 'stdio://'],
+    },
+  ];
+
+  for (const { name, spec, want } of cases) {
+    let spawned = null;
+    const fakeSpawn = (bin, args, options) => {
+      spawned = { bin, args: [...args], options };
+      const child = new EventEmitter();
+      child.pid = 0;
+      child.exitCode = null;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.stdin = new Writable({
+        write(chunk, _encoding, callback) {
+          const request = JSON.parse(chunk.toString());
+          if (request.method === 'initialize') {
+            process.nextTick(() => child.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`));
+          }
+          callback();
+        },
+      });
+      child.kill = () => { child.exitCode = 0; child.emit('exit', 0); return true; };
+      return child;
+    };
+    const manager = new ChatManager({
+      codexSpawnSpec: () => spec,
+      codexServerFactory: (options) => new CodexAppServer({ ...options, spawnProcess: fakeSpawn, log: () => {} }),
+    });
+    try {
+      const server = manager.codexServer();
+      await server.ensureStarted();
+      check(`${name}: chat startup invokes the registry binary and complete argv`,
+        spawned?.bin === spec.bin && JSON.stringify(spawned?.args) === JSON.stringify(want),
+        `${spawned?.bin} ${spawned?.args?.join(' ')}`);
+      check(`${name}: the fake app-server completed initialize`, server.child !== null && server.pending.size === 0);
+    } finally {
+      manager.disposeAll();
+    }
   }
 }
 console.log('');

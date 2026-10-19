@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "host": "127.0.0.1",
+  "port": 7421,
+  "trustedProxies": ["127.0.0.1", "::1", "::ffff:127.0.0.1"],
+  "maxClientsPerNode": 1,
+  "nodes": [],
+  "devices": [],
+  "pairings": []
+}

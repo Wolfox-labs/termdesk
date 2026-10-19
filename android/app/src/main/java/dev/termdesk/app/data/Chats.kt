@@ -1,5 +1,24 @@
 package dev.termdesk.app.data
 
+/** The server-authoritative device that controls writes to a conversation. */
+data class ChatOwner(
+    val deviceId: String,
+    val deviceName: String,
+    val clientKind: String,
+    val acquiredAt: Long,
+    val lastSeenAt: Long,
+    val leaseExpiresAt: Long,
+)
+
+data class ChatOwnership(
+    val owner: ChatOwner? = null,
+    val mode: String = "available",
+    val queued: Boolean = false,
+    val leaseMs: Long = 0,
+) {
+    val canWrite: Boolean get() = mode == "owner"
+    val isBusy: Boolean get() = owner != null && !canWrite
+}
 /**
  * A live conversation held by the PC agent.
  *
@@ -35,6 +54,8 @@ data class ChatInfo(
     val lastUsedAt: Long,
     val eventCount: Int,
     val lastError: String?,
+    /** Server-authoritative cross-device write ownership. */
+    val ownership: ChatOwnership = ChatOwnership(),
 ) {
     val isRunning: Boolean get() = status == "running"
     val isFailed: Boolean get() = status == "failed"
@@ -199,3 +220,27 @@ data class ChatModels(
  * to the next message without asking them to type a path.
  */
 data class UploadedFile(val name: String, val path: String, val at: Long)
+
+/**
+ * One slash command the PC says this conversation can run.
+ *
+ * The desktop app registers commands like `/compact` and `/export` on the host;
+ * the phone's own `/` panel used to be a fixed four-row list, so these existed
+ * everywhere except here. The list arrives on demand ([AgentClient.requestChatCommands])
+ * and tapping a row inserts the command into the draft - the user still presses
+ * send, because executing a command is not something a stray tap should do.
+ */
+data class ChatCommand(
+    val name: String,
+    val description: String = "",
+    /** Argument shape the host declared, e.g. "<preset>" or null for no arguments. */
+    val hint: String? = null,
+)
+
+/** The slash commands one conversation offers, or the reason it offers none. */
+data class ChatCommands(
+    val chatId: String,
+    val supported: Boolean,
+    val commands: List<ChatCommand> = emptyList(),
+    val note: String? = null,
+)

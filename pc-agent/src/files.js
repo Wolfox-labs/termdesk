@@ -194,7 +194,7 @@ export async function writeTextFile(filePath, text) {
   const target = await resolveSafePath(filePath);
   await fs.writeFile(target, String(text ?? ''), 'utf8');
   const st = await fs.stat(target);
-  return { path: target, sizeBytes: st.size, mtime: st.mtime.toISOString() };
+  return { path: target, text: String(text ?? ''), sizeBytes: st.size, mtime: st.mtime.toISOString() };
 }
 
 /** Create an empty file or a new directory. */

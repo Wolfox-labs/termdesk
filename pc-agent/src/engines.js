@@ -14,7 +14,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
-import { findDshEntry } from './kernels/dsh.js';
+import { resolveDshRuntime } from './kernels/dsh-runtime.js';
 
 /** Resolve the Codex binary: env override, then the known install location. */
 export function findCodex() {
@@ -32,9 +32,16 @@ export function findCodex() {
   return 'codex';
 }
 
-/** Resolve the DSH launcher entry script. One discovery point: kernels/dsh.js. */
+/**
+ * Resolve the DSH entry, through the same discovery the kernel table uses.
+ *
+ * Kept as a path (rather than the full launch descriptor) because this is the
+ * helper other call sites and tests ask "where is it?" of; starting it is the
+ * chat pipeline's job, and that one needs the command *and* its environment.
+ */
 export function findDsh() {
-  return findDshEntry();
+  const runtime = resolveDshRuntime();
+  return runtime ? (runtime.script ?? runtime.command) : '';
 }
 
 /**

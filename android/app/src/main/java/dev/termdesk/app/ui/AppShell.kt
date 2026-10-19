@@ -20,6 +20,10 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.activity.compose.BackHandler
@@ -31,13 +35,15 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Memory
-import androidx.compose.material.icons.outlined.PowerSettingsNew
+import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
@@ -59,12 +65,16 @@ import android.net.Uri
 import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
 import dev.termdesk.app.data.ChatInfo
+import dev.termdesk.app.data.ChatCommands
 import dev.termdesk.app.data.ChatModels
 import dev.termdesk.app.data.ChatTerminal
 import dev.termdesk.app.data.TerminalView
 import dev.termdesk.app.data.UploadedFile
+import dev.termdesk.app.data.CodexApplyRequest
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
+import dev.termdesk.app.data.CodexTargetState
+import dev.termdesk.app.data.PairedComputer
 import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.KernelRun
@@ -87,7 +97,7 @@ import dev.termdesk.app.ui.theme.ThemeMode
 
 /** Sections of the app. */
 enum class Section(val label: String, val icon: ImageVector) {
-    Home("主页", Icons.Outlined.Home),
+    Home("工作台", Icons.Outlined.Home),
     Sessions("会话", Icons.Outlined.ChatBubbleOutline),
     Files("文件", Icons.Outlined.FolderOpen),
     Terminal("终端", Icons.Outlined.Terminal),
@@ -96,13 +106,34 @@ enum class Section(val label: String, val icon: ImageVector) {
 }
 
 /**
+ * Shared by navigation and transient feedback, so messages never cover tabs.
+ *
+ * Settings is a focused, nested surface: its root and every sub-page hide the
+ * four destinations, and leaving Settings restores them on the normal rule.
+ * Kept free of composition state so the rule can be tested directly.
+ */
+internal fun navigationVisible(
+    section: Section,
+    conversationOpen: Boolean,
+    keyboardVisible: Boolean,
+): Boolean {
+    if (keyboardVisible) return false
+    if (section == Section.Settings) return false
+    return !(section == Section.Sessions && conversationOpen)
+}
+
+@Composable
+internal fun primaryNavigationVisible(section: Section, conversationOpen: Boolean): Boolean {
+    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    return navigationVisible(section, conversationOpen, keyboardVisible)
+}
+
+/**
  * Phone-sized workstation shell.
  *
- * There is no permanent navigation rail: a 400dp phone cannot spare 56dp of
- * every screen for it, so sections live in a drawer opened from the leading
- * button. The bar is never stacked either — the sessions area supplies its own
- * single row, so a conversation title and the section name never fight for the
- * same strip.
+ * Frequent destinations use bottom navigation. The drawer also exposes system
+ * and settings. Navigation hides for focused conversations and keyboard input;
+ * the sessions area supplies its own top row so titles are never stacked.
  */
 @Composable
 fun AppShell(
@@ -110,6 +141,7 @@ fun AppShell(
     hostname: String,
     processes: List<ProcessInfo>,
     services: List<ServiceInfo>,
+    inventoryError: String?,
     listing: DirectoryListing?,
     loading: Boolean,
     transfer: TransferState?,
@@ -145,13 +177,22 @@ fun AppShell(
     onTermClose: () -> Unit,
     codexConfig: CodexConfig?,
     chatModels: Map<String, ChatModels>,
+    chatCommands: Map<String, ChatCommands>,
     lastUpload: UploadedFile?,
+    draftScope: String,
+    onClaimChat: (String, Boolean) -> Unit,
     onUploadFile: (android.net.Uri, String) -> Unit,
     onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
+    onRequestChatCommands: (String) -> Unit,
     codexTemplates: List<CodexProviderTemplate>,
+    codexTarget: CodexTargetState,
+    codexTargets: List<PairedComputer>,
+    onOpenCodex: () -> Unit,
+    onCloseCodex: () -> Unit,
+    onSelectCodexTarget: (String) -> Unit,
     onCodexLoad: () -> Unit,
-    onCodexApply: (String, String, String?, String?, Long?) -> Unit,
+    onCodexApply: (CodexApplyRequest) -> Unit,
     onCodexRestore: (String?) -> Unit,
     defaultCwd: String,
     chats: List<ChatInfo>,
@@ -185,6 +226,7 @@ fun AppShell(
     kernelRunsNote: String?,
     onLoadKernelRuns: () -> Unit,
     sessionSort: SessionSort,
+    canCreateChat: Boolean,
     onSetSessionSort: (SessionSort) -> Unit,
     /** Open the file section at a directory (from a conversation). */
     onOpenFilesAt: (String) -> Unit,
@@ -232,6 +274,7 @@ fun AppShell(
     // Sections live in a drawer rather than a permanent rail: a phone is about
     // 400dp wide and the rail charged every screen 56dp for it.
     var sectionDrawerOpen by remember { mutableStateOf(false) }
+    val showNavigation = primaryNavigationVisible(section, activeChat != null || recordedSession != null)
 
     // System back walks up the app before it leaves it: the drawer first, then
     // the slide-over panel, then back to the home page. The conversation
@@ -266,7 +309,7 @@ fun AppShell(
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .clickable { onDisconnect() }
                         .padding(10.dp),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -290,6 +333,7 @@ fun AppShell(
                     onRemoveLocalKernel = onRemoveLocalKernel,
                     processes = processes,
                     services = services,
+                    inventoryError = inventoryError,
                     listing = listing,
                     loading = loading,
                     transfer = transfer,
@@ -323,11 +367,20 @@ fun AppShell(
                     onTermClose = onTermClose,
                     codexConfig = codexConfig,
                     chatModels = chatModels,
+                    chatCommands = chatCommands,
                     lastUpload = lastUpload,
+                    draftScope = draftScope,
+                    onClaimChat = onClaimChat,
                     onUploadFile = onUploadFile,
                     onClearUpload = onClearUpload,
                     onRequestChatModels = onRequestChatModels,
+                    onRequestChatCommands = onRequestChatCommands,
                     codexTemplates = codexTemplates,
+                    codexTarget = codexTarget,
+                    codexTargets = codexTargets,
+                    onOpenCodex = onOpenCodex,
+                    onCloseCodex = onCloseCodex,
+                    onSelectCodexTarget = onSelectCodexTarget,
                     onCodexLoad = onCodexLoad,
                     onCodexApply = onCodexApply,
                     onCodexRestore = onCodexRestore,
@@ -378,6 +431,7 @@ fun AppShell(
                     onSetWorkingDirectory = onSetWorkingDirectory,
                     roots = roots,
                     onNewChatNow = onNewChatNow,
+                    canCreateChat = canCreateChat,
                     onGoto = onSectionChange,
                     chatTerminals = chatTerminals,
                     terminalView = terminalView,
@@ -387,6 +441,18 @@ fun AppShell(
                     onStopTerminal = onStopTerminal,
                     onCloseTerminalView = onCloseTerminalView,
                 )
+            }
+            if (showNavigation) {
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface, windowInsets = WindowInsets(0, 0, 0, 0)) {
+                    listOf(Section.Home, Section.Sessions, Section.Files, Section.Terminal).forEach { destination ->
+                        NavigationBarItem(
+                            selected = section == destination,
+                            onClick = { onSectionChange(destination) },
+                            icon = { Icon(destination.icon, contentDescription = null) },
+                            label = { Text(destination.label) },
+                        )
+                    }
+                }
             }
         }
 
@@ -458,7 +524,7 @@ private fun TopBar(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(48.dp)
+            .heightIn(min = 56.dp)
             .background(MaterialTheme.colorScheme.surface)
             .padding(start = 2.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -478,6 +544,13 @@ private fun TopBar(
             maxLines = 1,
             modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
         )
+        IconButton(onClick = onDisconnect) {
+            Icon(
+                imageVector = Icons.Outlined.Devices,
+                contentDescription = "设备管理",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         IconButton(onClick = onOpenSections) {
             Icon(
                 imageVector = Icons.Outlined.Menu,
@@ -624,6 +697,7 @@ private fun SectionBody(
     status: HostStatus?,
     processes: List<ProcessInfo>,
     services: List<ServiceInfo>,
+    inventoryError: String?,
     listing: DirectoryListing?,
     loading: Boolean,
     transfer: TransferState?,
@@ -659,13 +733,22 @@ private fun SectionBody(
     onTermClose: () -> Unit,
     codexConfig: CodexConfig?,
     chatModels: Map<String, ChatModels>,
+    chatCommands: Map<String, ChatCommands>,
     lastUpload: UploadedFile?,
+    draftScope: String,
+    onClaimChat: (String, Boolean) -> Unit,
     onUploadFile: (android.net.Uri, String) -> Unit,
     onClearUpload: () -> Unit,
     onRequestChatModels: (String) -> Unit,
+    onRequestChatCommands: (String) -> Unit,
     codexTemplates: List<CodexProviderTemplate>,
+    codexTarget: CodexTargetState,
+    codexTargets: List<PairedComputer>,
+    onOpenCodex: () -> Unit,
+    onCloseCodex: () -> Unit,
+    onSelectCodexTarget: (String) -> Unit,
     onCodexLoad: () -> Unit,
-    onCodexApply: (String, String, String?, String?, Long?) -> Unit,
+    onCodexApply: (CodexApplyRequest) -> Unit,
     onCodexRestore: (String?) -> Unit,
     // P4
     defaultCwd: String,
@@ -732,6 +815,7 @@ private fun SectionBody(
     onSetWorkingDirectory: (String) -> Unit,
     roots: List<String>,
     onNewChatNow: () -> Unit,
+    canCreateChat: Boolean,
     onGoto: (Section) -> Unit,
     /** 首页那一行"电脑型号 + 已连接"最右侧的断开按钮（用户点名搬过来的）。 */
     onDisconnect: () -> Unit,
@@ -764,6 +848,7 @@ private fun SectionBody(
             chats = chats,
             sessions = sessions,
             onNewChat = onNewChatNow,
+            canCreateChat = canCreateChat,
             onOpenChat = onOpenChat,
             onOpenSession = { session ->
                 onOpenSession(session)
@@ -779,6 +864,7 @@ private fun SectionBody(
             status = status,
             processes = processes,
             services = services,
+            inventoryError = inventoryError,
             loading = loading,
             onRefreshProcesses = onRefreshProcesses,
             onRefreshServices = onRefreshServices,
@@ -820,9 +906,9 @@ private fun SectionBody(
             onClose = onTermClose,
         )
         Section.Sessions -> if (sessionsShowLocalGate(section, kernelTarget, engines)) LocalKernelNotice(
-            title = "本地内核",
-            reason = "沙盒里还没有可用的 agent 内核：装上 opencode / dsh 之类任何一个，会话就能在这里跑起来",
-            actionLabel = "切回这台电脑",
+            title = "手机上暂无可用助手",
+            reason = "需先在手机上安装兼容的助手并配置账号和模型。也可切换到远程电脑。",
+            actionLabel = "切换到远程电脑",
             onAction = { onSetKernelTarget("remote") },
         ) else ChatSection(
             chats = chats,
@@ -838,10 +924,14 @@ private fun SectionBody(
             engines = engines,
             codexConfig = codexConfig,
             chatModels = chatModels,
+            chatCommands = chatCommands,
             lastUpload = lastUpload,
+            draftScope = draftScope,
+            onClaimChat = onClaimChat,
             onUploadFile = onUploadFile,
             onClearUpload = onClearUpload,
             onRequestChatModels = onRequestChatModels,
+            onRequestChatCommands = onRequestChatCommands,
             onOpenSections = onOpenSections,
             onConfigureChat = onConfigureChat,
             onSetChatMode = onSetChatMode,
@@ -882,8 +972,8 @@ private fun SectionBody(
         Section.Settings -> SettingsSection(
             kernelTarget = kernelTarget,
             onSetKernelTarget = onSetKernelTarget,
-            config = codexConfig,
-            templates = codexTemplates,
+            codex = codexTarget,
+            targets = codexTargets,
             themeMode = themeMode,
             onThemeModeChange = onThemeModeChange,
             engines = engines,
@@ -900,6 +990,9 @@ private fun SectionBody(
             onLoad = onCodexLoad,
             onApply = onCodexApply,
             onRestore = onCodexRestore,
+            onOpen = onOpenCodex,
+            onClose = onCloseCodex,
+            onSelectTarget = onSelectCodexTarget,
         )
     }
 }

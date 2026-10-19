@@ -2,6 +2,7 @@ package dev.termdesk.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
@@ -40,6 +42,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -54,10 +57,14 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import dev.termdesk.app.data.CodexApplyRequest
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
+import dev.termdesk.app.data.CodexTargetState
+import dev.termdesk.app.data.PairedComputer
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.LocalKernelState
 import dev.termdesk.app.data.LocalKernelStage
@@ -76,8 +83,8 @@ import dev.termdesk.app.ui.theme.ThemeMode
  */
 @Composable
 fun SettingsSection(
-    config: CodexConfig?,
-    templates: List<CodexProviderTemplate>,
+    codex: CodexTargetState,
+    targets: List<PairedComputer>,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     engines: List<KernelInfo>,
@@ -94,11 +101,16 @@ fun SettingsSection(
     onInstallLocalKernel: () -> Unit,
     onRemoveLocalKernel: () -> Unit,
     onLoad: () -> Unit,
-    onApply: (String, String, String?, String?, Long?) -> Unit,
+    onOpen: () -> Unit,
+    onClose: () -> Unit,
+    onSelectTarget: (String) -> Unit,
+    onApply: (CodexApplyRequest) -> Unit,
     onRestore: (String?) -> Unit,
 ) {
+    val config = codex.config
+    val templates = codex.templates
+
     LaunchedEffect(Unit) {
-        onLoad()
         onLoadStorage()
         onLoadLocalKernel()
     }
@@ -106,11 +118,18 @@ fun SettingsSection(
     var kernelOpen by remember { mutableStateOf(false) }
     var modelsOpen by remember { mutableStateOf(false) }
     var providerId by remember { mutableStateOf("") }
+    var providerKey by remember { mutableStateOf("") }
+    var providerName by remember { mutableStateOf("") }
+    var baseUrl by remember { mutableStateOf("") }
+    var wireApi by remember { mutableStateOf("responses") }
+    var modelSlugs by remember { mutableStateOf("") }
+    var effortLevels by remember { mutableStateOf("low, high, max") }
     var model by remember { mutableStateOf("") }
     var apiKey by remember { mutableStateOf("") }
     var effort by remember { mutableStateOf("") }
     var contextWindow by remember { mutableStateOf("") }
     var showKey by remember { mutableStateOf(false) }
+    var clearKey by remember { mutableStateOf(false) }
     var confirmApply by remember { mutableStateOf(false) }
     var confirmRestore by remember { mutableStateOf<String?>(null) }
 
@@ -120,53 +139,99 @@ fun SettingsSection(
      * Settings) instead of leaving the whole section from wherever you stand.
      */
     var page by remember { mutableStateOf<String?>(null) }
+    val pageScroll = remember(page) { ScrollState(0) }
     BackHandler(enabled = page != null) { page = null }
 
-    LaunchedEffect(templates, config) {
-        if (providerId.isEmpty() && templates.isNotEmpty()) {
-            val t = templates.first()
-            providerId = t.id
-            model = config?.model?.takeIf { it in t.models } ?: t.models.firstOrNull().orEmpty()
-            effort = config?.reasoningEffort?.takeIf { it in t.reasoningLevels } ?: t.defaultReasoning
-            contextWindow = (config?.models?.firstOrNull()?.contextWindow ?: t.contextWindow).toString()
+    // The Codex page owns a short-lived connection to the computer it edits, so
+    // this can be opened without moving the app's working target.
+    LaunchedEffect(page) {
+        if (page == "codex") onOpen() else onClose()
+    }
+    DisposableEffect(Unit) {
+        onDispose { onClose() }
+    }
+
+    var lastTarget by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(templates, config, codex.targetId) {
+        val changed = lastTarget != codex.targetId
+        lastTarget = codex.targetId
+
+        // What is on disk wins over a template when it is a provider this build
+        // does not know: that is the "edit the real current value" case.
+        val c = config
+        val onDisk = c?.modelProvider
+        if (c != null && onDisk != null && templates.none { it.id == onDisk }) {
+            val provider = c.providers.find { it.id == onDisk }
+            providerId = "custom"
+            providerKey = onDisk
+            providerName = provider?.name ?: onDisk
+            baseUrl = provider?.baseUrl.orEmpty()
+            wireApi = provider?.wireApi ?: "responses"
+            val models = c.models
+            modelSlugs = models.joinToString(", ") { it.slug }.ifBlank { c.model.orEmpty() }
+            model = c.model ?: models.firstOrNull()?.slug.orEmpty()
+            val levels = models.firstOrNull { it.slug == model }?.reasoningLevels.orEmpty()
+                .ifEmpty { listOf("low", "medium", "high") }
+            effortLevels = levels.joinToString(", ")
+            effort = c.reasoningEffort ?: levels.first()
+            contextWindow = (models.firstOrNull { it.slug == model }?.contextWindow ?: 200000).toString()
+            return@LaunchedEffect
         }
+
+        if (!changed && providerId.isNotBlank()) return@LaunchedEffect
+        val t = templates.firstOrNull() ?: return@LaunchedEffect
+        providerId = t.id
+        providerKey = t.id
+        providerName = t.name
+        baseUrl = t.baseUrl
+        wireApi = t.wireApi
+        modelSlugs = t.models.joinToString(", ")
+        effortLevels = t.reasoningLevels.joinToString(", ")
+        model = config?.model?.takeIf { it in t.models } ?: t.models.firstOrNull().orEmpty()
+        effort = config?.reasoningEffort?.takeIf { it in t.reasoningLevels } ?: t.defaultReasoning
+        contextWindow = (config?.models?.firstOrNull { it.slug == model }?.contextWindow ?: t.contextWindow).toString()
     }
 
     val template = templates.find { it.id == providerId }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .imePadding()
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        val kernelSummary = if (kernelTarget == "local") "本机"
-        else "这台电脑 · " + (defaultEngine?.let { id -> engines.find { it.id == id }?.displayName ?: id } ?: "未指定")
+    Column(Modifier.fillMaxSize().imePadding()) {
+        if (page != null) {
+            SubPageHeader(
+                title = when (page) {
+                    "kernel" -> "运行设备与助手"
+                    "appearance" -> "外观"
+                    "storage" -> "存储"
+                    else -> "电脑 Agent 配置"
+                },
+                onBack = { page = null },
+            )
+        }
+        Column(
+            Modifier.weight(1f).verticalScroll(pageScroll).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+        val kernelSummary = if (kernelTarget == "local") "这台手机"
+        else "远程电脑 · " + (defaultEngine?.let { id -> engines.find { it.id == id }?.displayName ?: id } ?: "未选择助手")
         val themeLabel = when (themeMode) {
             ThemeMode.Dark -> "深色"
             ThemeMode.Light -> "浅色"
             ThemeMode.System -> "跟随系统"
         }
         val storageLabel = storage?.let { (if (it.truncated) "≥ " else "") + Storage.format(it.totalBytes) } ?: "—"
-        val codexLabel = config?.model?.takeIf { it.isNotBlank() } ?: "未配置"
-
         if (page == null) {
-            SettingsRootRow("内核", kernelSummary) { page = "kernel" }
+            SettingsRootRow("运行设备与助手", kernelSummary) { page = "kernel" }
             SettingsRootRow("外观", themeLabel) { page = "appearance" }
             SettingsRootRow("存储", storageLabel) { page = "storage" }
-            SettingsRootRow("Codex 配置", codexLabel) { page = "codex" }
-        } else {
-            SubPageHeader(
-                title = when (page) {
-                    "kernel" -> "内核"
-                    "appearance" -> "外观"
-                    "storage" -> "存储"
-                    else -> "Codex 配置"
-                },
-                onBack = { page = null },
-            )
+            // Hidden until phone Agent settings have their own contract. The
+            // existing Codex editor writes a computer's config and is not that feature.
+            Spacer(Modifier.height(12.dp))
+            Card {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val version = remember { context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty() }
+                Text("TermDesk", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Text("$version · 演示版", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
 
         when (page) {
@@ -179,7 +244,7 @@ fun SettingsSection(
         // --- kernel / target -------------------------------------------------
         Card {
             SettingRow(
-                label = "内核",
+                label = "助手",
                 value = when {
                     !kernelOpen && defaultEngine != null ->
                         "远程 · ${engines.find { it.id == defaultEngine }?.displayName ?: defaultEngine}"
@@ -227,6 +292,7 @@ fun SettingsSection(
             }
         }
                 }
+                if (kernelTarget != "local") LocalKernelCard(localKernel, onInstallLocalKernel, onRemoveLocalKernel)
             }
             "appearance" -> {
         // --- appearance ------------------------------------------------------
@@ -287,7 +353,7 @@ fun SettingsSection(
             val entries = storage?.entries.orEmpty()
             if (storage?.truncated == true) {
                 Text(
-                    "文件太多，统计在时限内没走完，这里显示的是下限",
+                    "统计超时，实际占用可能更大",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -333,12 +399,98 @@ fun SettingsSection(
         }
             }
             else -> {
-        if (config == null) {
+        Card {
+            Text("目标电脑", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            InfoRow("电脑", codex.targetName.ifBlank { "未选择" })
+            InfoRow("绑定 ID", codex.targetId?.take(8)?.let { "$it…" } ?: "—")
+            if (codex.targetUrl.isNotBlank()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "地址",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        codex.targetUrl,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+            InfoRow(
+                "状态",
+                when {
+                    codex.loading -> "读取中…"
+                    codex.online == true -> "已连接"
+                    codex.error != null -> "未连接"
+                    else -> "未连接"
+                },
+            )
+            InfoRow("配置作用域", "这台电脑的 Codex 配置")
+            InfoRow("助手", "Codex")
             Text(
-                "正在读取 Codex 配置…",
-                style = MaterialTheme.typography.bodySmall,
+                "保存后对新会话生效；正在运行的会话不受影响。",
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (targets.size > 1) {
+                Spacer(Modifier.height(8.dp))
+                FieldLabel("选择电脑")
+                ChipStrip(
+                    items = targets.map { it.id to it.name },
+                    selectedId = codex.targetId ?: "",
+                    onSelect = onSelectTarget,
+                )
+            }
+            if (kernelTarget == "local") {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "当前工作位置是本机手机；这里配置的仍是所选电脑，不会写入手机沙盒。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            codex.error?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+            }
+            codex.result?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        if (targets.isEmpty()) {
+            Card {
+                Text("还没有配对的电脑", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "先在“设备管理”里配对一台电脑，再回来配置它的 Codex。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            return@Column
+        }
+
+        if (config == null) {
+            Card {
+                Text(
+                    if (codex.loading) "正在读取 ${codex.targetName} 的 Codex 配置…"
+                    else "还没有读到 ${codex.targetName} 的 Codex 配置。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (!codex.loading) {
+                    TextButton(onClick = onLoad) { Text("重试", style = MaterialTheme.typography.labelMedium) }
+                }
+            }
             return@Column
         }
 
@@ -422,32 +574,137 @@ fun SettingsSection(
 
             FieldLabel("服务商")
             ChipStrip(
-                items = templates.map { it.id to it.name },
-                selectedId = providerId,
-                onSelect = {
-                    providerId = it
-                    val t = templates.find { t2 -> t2.id == it }
-                    model = t?.models?.firstOrNull().orEmpty()
-                    effort = t?.defaultReasoning.orEmpty()
-                    contextWindow = t?.contextWindow?.toString().orEmpty()
+                items = templates.map { it.id to it.name } + ("custom" to "自定义"),
+                selectedId = if (template != null) providerId else "custom",
+                onSelect = { picked ->
+                    clearKey = false
+                    if (picked == "custom") {
+                        providerId = "custom"
+                        providerKey = "custom"
+                        providerName = ""
+                        baseUrl = ""
+                        wireApi = "responses"
+                        modelSlugs = ""
+                        model = ""
+                        effortLevels = "low, high, max"
+                        effort = "high"
+                        contextWindow = "200000"
+                    } else {
+                        val t = templates.find { it.id == picked }
+                        providerId = picked
+                        providerKey = picked
+                        providerName = t?.name.orEmpty()
+                        baseUrl = t?.baseUrl.orEmpty()
+                        wireApi = t?.wireApi ?: "responses"
+                        modelSlugs = t?.models?.joinToString(", ").orEmpty()
+                        effortLevels = t?.reasoningLevels?.joinToString(", ").orEmpty()
+                        model = t?.models?.firstOrNull().orEmpty()
+                        effort = t?.defaultReasoning.orEmpty()
+                        contextWindow = t?.contextWindow?.toString().orEmpty()
+                    }
                 },
             )
 
-            Spacer(Modifier.height(10.dp))
-            FieldLabel("模型")
-            ChipStrip(
-                items = (template?.models ?: emptyList()).map { it to it },
-                selectedId = model,
-                onSelect = { model = it },
+            if (template == null) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = providerKey,
+                    onValueChange = { providerKey = it.filter { c -> c.isLetterOrDigit() || c == '_' || c == '-' } },
+                    label = { Text("服务商标识（写进配置）", style = MaterialTheme.typography.labelSmall) },
+                    singleLine = true,
+                    supportingText = {
+                        Text(
+                            "字母、数字、_ 或 -，同一台电脑上唯一",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    },
+                    textStyle = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = providerName,
+                onValueChange = { providerName = it },
+                label = { Text("名称", style = MaterialTheme.typography.labelSmall) },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = baseUrl,
+                onValueChange = { baseUrl = it },
+                label = { Text("API 地址", style = MaterialTheme.typography.labelSmall) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Uri,
+                    imeAction = ImeAction.Next,
+                ),
+                supportingText = {
+                    Text(
+                        if (baseUrl.startsWith("http")) "写入 config.toml 的 base_url"
+                        else "需要以 http:// 或 https:// 开头",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                },
+                textStyle = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth(),
             )
 
             Spacer(Modifier.height(10.dp))
-            FieldLabel("推理强度")
+            FieldLabel("接口类型")
             ChipStrip(
-                items = (template?.reasoningLevels ?: emptyList()).map { it to it },
-                selectedId = effort,
-                onSelect = { effort = it },
+                items = listOf("responses" to "Responses", "chat" to "Chat Completions"),
+                selectedId = wireApi,
+                onSelect = { wireApi = it },
             )
+
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = modelSlugs,
+                onValueChange = { text ->
+                    modelSlugs = text
+                    val first = text.split(",").map { it.trim() }.firstOrNull { it.isNotEmpty() }
+                    if (model.isBlank() || text.split(",").map { it.trim() }.none { it == model }) {
+                        model = first.orEmpty()
+                    }
+                },
+                label = { Text("模型标识（逗号分隔）", style = MaterialTheme.typography.labelSmall) },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            val slugs = modelSlugs.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            if (slugs.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                FieldLabel("当前模型")
+                ChipStrip(slugs.map { it to it }, selectedId = model, onSelect = { model = it })
+            }
+
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = effortLevels,
+                onValueChange = { text ->
+                    effortLevels = text
+                    val first = text.split(",").map { it.trim() }.firstOrNull { it.isNotEmpty() }
+                    if (effort.isBlank() || text.split(",").map { it.trim() }.none { it == effort }) {
+                        effort = first.orEmpty()
+                    }
+                },
+                label = { Text("推理强度（逗号分隔）", style = MaterialTheme.typography.labelSmall) },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            val levels = effortLevels.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            if (levels.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                FieldLabel("当前推理强度")
+                ChipStrip(levels.map { it to it }, selectedId = effort, onSelect = { effort = it })
+            }
 
             Spacer(Modifier.height(10.dp))
             OutlinedTextField(
@@ -473,7 +730,10 @@ fun SettingsSection(
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = apiKey,
-                onValueChange = { apiKey = it },
+                onValueChange = {
+                    apiKey = it
+                    if (it.isNotBlank()) clearKey = false
+                },
                 label = { Text("API Key", style = MaterialTheme.typography.labelSmall) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
@@ -493,9 +753,13 @@ fun SettingsSection(
                     }
                 },
                 supportingText = {
-                    val existing = config.providers.find { it.id == providerId }?.hasToken == true
+                    val existing = config.providers.find { it.id == providerKey }?.hasToken == true
                     Text(
-                        if (existing && apiKey.isBlank()) "已保存，留空保持不变" else "仅写入这台电脑",
+                        when {
+                            clearKey -> "保存后会删除这台电脑上已保存的密钥"
+                            existing && apiKey.isBlank() -> "已保存，留空保持不变"
+                            else -> "只写入这台电脑"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                     )
                 },
@@ -503,10 +767,29 @@ fun SettingsSection(
                 modifier = Modifier.fillMaxWidth(),
             )
 
+            val existingToken = config.providers.find { it.id == providerKey }?.hasToken == true
+            if (existingToken) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = clearKey,
+                        onCheckedChange = { checked ->
+                            clearKey = checked
+                            if (checked) apiKey = ""
+                        },
+                    )
+                    Text(
+                        "删除这台电脑上已保存的密钥",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+
             Spacer(Modifier.height(12.dp))
             Button(
                 onClick = { confirmApply = true },
-                enabled = providerId.isNotBlank() && model.isNotBlank(),
+                enabled = providerKey.isNotBlank() && providerName.isNotBlank() &&
+                    baseUrl.startsWith("http") && slugs.isNotEmpty() &&
+                    model.isNotBlank() && levels.isNotEmpty(),
                 shape = RoundedCornerShape(6.dp),
                 modifier = Modifier.fillMaxWidth().height(46.dp),
             ) {
@@ -548,14 +831,39 @@ fun SettingsSection(
         }
     }
 
+    }
+
     if (confirmApply) {
         ConfirmDialog(
-            title = "应用到 Codex",
-            body = "将把 $model 写入 ${config?.configPath}。\n\n写入前自动备份，其余设置保持不变。",
+            title = "应用到 ${codex.targetName.ifBlank { "这台电脑" }}",
+            body = buildString {
+                append("将写入 ${config?.configPath}：\n\n")
+                append("$providerName · $model\n$baseUrl\n")
+                append("推理强度 $effort")
+                contextWindow.toLongOrNull()?.let { append(" · 上下文 ${formatTokens(it)}") }
+                if (clearKey) append("\n\n会删除这台电脑上已保存的 API Key。")
+                if (apiKey.isNotBlank()) append("\n\n会写入新的 API Key。")
+                append("\n\n写入前自动备份，其余设置保持不变。")
+            },
             confirmLabel = "确认写入",
             onConfirm = {
-                onApply(providerId, model, apiKey.ifBlank { null }, effort, contextWindow.toLongOrNull())
+                onApply(
+                    CodexApplyRequest(
+                        providerId = providerKey,
+                        providerName = providerName.trim(),
+                        baseUrl = baseUrl.trim(),
+                        wireApi = wireApi,
+                        models = modelSlugs.split(",").map { it.trim() }.filter { it.isNotEmpty() },
+                        model = model,
+                        apiKey = apiKey.ifBlank { null },
+                        clearApiKey = clearKey,
+                        reasoningEffort = effort,
+                        reasoningLevels = effortLevels.split(",").map { it.trim() }.filter { it.isNotEmpty() },
+                        contextWindow = contextWindow.toLongOrNull(),
+                    ),
+                )
                 apiKey = ""
+                clearKey = false
                 confirmApply = false
             },
             onDismiss = { confirmApply = false },
@@ -580,8 +888,8 @@ fun SettingsSection(
 @Composable
 private fun KernelTargetRow(target: String, onSet: (String) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        TargetChip("这台电脑", target == "remote") { onSet("remote") }
-        TargetChip("本机", target == "local") { onSet("local") }
+        TargetChip("远程电脑", target == "remote") { onSet("remote") }
+        TargetChip("这台手机", target == "local") { onSet("local") }
     }
 }
 
@@ -610,7 +918,7 @@ private fun LocalKernelCard(state: LocalKernelState, onInstall: () -> Unit, onRe
     Card {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "本机内核",
+                "手机运行环境",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
@@ -622,6 +930,19 @@ private fun LocalKernelCard(state: LocalKernelState, onInstall: () -> Unit, onRe
                 else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (state.stage == LocalKernelStage.UNKNOWN) "正在检查手机上的运行环境…"
+            else if (state.installed) "用于手机上的文件和终端。AI 助手需另行安装。"
+            else "从已连接的电脑下载安装，用于手机上的文件和终端。AI 助手需另行安装。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(state.note, style = MaterialTheme.typography.bodySmall,
+            color = if (state.stage == LocalKernelStage.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+        state.manifestError?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         if (state.busy) {
             Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -631,7 +952,7 @@ private fun LocalKernelCard(state: LocalKernelState, onInstall: () -> Unit, onRe
             if (state.installed) {
                 TextButton(onClick = onRemove, enabled = !state.busy) { Text("删除", style = MaterialTheme.typography.labelMedium) }
             } else {
-                TextButton(onClick = onInstall, enabled = !state.busy) { Text("安装", style = MaterialTheme.typography.labelMedium) }
+                TextButton(onClick = onInstall, enabled = !state.busy && state.stage != LocalKernelStage.UNKNOWN) { Text("下载并安装", style = MaterialTheme.typography.labelMedium) }
             }
         }
     }
@@ -648,19 +969,13 @@ private fun SettingsRootRow(label: String, value: String, onClick: () -> Unit) {
                 .padding(vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                label,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                value,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
+                Text(label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(4.dp))
+                Text(value, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
             Spacer(Modifier.width(6.dp))
             Icon(
                 Icons.Outlined.ChevronRight,
@@ -730,10 +1045,9 @@ private fun EngineRow(
     onSelect: () -> Unit,
 ) {
     val status = when {
-        !engine.available -> "未安装"
-        engine.tier == "acp" -> "ACP·未接入"
-        engine.tier == "shim" -> "CLI·需 shim"
-        else -> "可用"
+        engine.selectable -> "可用"
+        !engine.available -> "暂不可用"
+        else -> "尚未接入"
     }
     Row(
         modifier = Modifier
@@ -850,19 +1164,23 @@ private fun ChipStrip(
 private fun InfoRow(label: String, value: String) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             label,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
         )
+        Spacer(Modifier.width(12.dp))
         Text(
             value,
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f),
         )
     }
 }
@@ -876,6 +1194,7 @@ private fun formatTokens(n: Long): String = when {
 /** One word for where the local kernel install is. */
 /** The local kernel's state, as one word. */
 private fun localKernelStateLabel(state: LocalKernelState): String = when {
+    state.stage == LocalKernelStage.UNKNOWN -> "检查中…"
     state.installed -> "已安装"
     state.stage == LocalKernelStage.FAILED -> "安装失败"
     state.busy -> "处理中…"

@@ -14,12 +14,13 @@ android/local.properties
 # Node
 node_modules/
 npm-debug.log*
+.ui-demo-sessions.json
 pc-agent/tools/agent-out.log
 pc-agent/tools/agent-err.log
 pc-agent/tools/sdk-dump-out.txt
 
 # Large third-party binaries are downloaded, not committed.
-# cloudflared is fetched per machine; see README for the download step.
+# Keep any legacy, locally downloaded tunnel binary out of source control.
 tools/cloudflared-windows-amd64.exe
 
 # Scratch / local-only
@@ -41,6 +42,9 @@ pc-agent/tools/*-out.txt
 DEPLOYMENT.local.md
 *.local.md
 .local-notes/
+/output/
+# PowerShell may create this cache when tests isolate HOME.
+**/Microsoft/Windows/PowerShell/ModuleAnalysisCache
 
 # Local scratch artifacts (Termux bootstrap tarball, etc.)
 $d/

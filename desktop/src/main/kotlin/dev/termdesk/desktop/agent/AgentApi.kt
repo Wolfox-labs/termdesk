@@ -20,21 +20,14 @@ import java.time.Duration
  */
 
 @Serializable
-data class TunnelState(
-    val running: Boolean = false,
+data class RelayConnection(
+    val configured: Boolean = false,
+    val connected: Boolean = false,
     val url: String? = null,
-    val mode: String? = null,
-    val stable: Boolean = false,
-    val error: String? = null,
-) {
-    /** The same wording the phone's pairing page uses for the same states. */
-    val label: String
-        get() = when {
-            !running -> "未启动"
-            stable -> "固定域名"
-            else -> "临时地址"
-        }
-}
+)
+
+@Serializable
+data class AgentConnections(val relay: RelayConnection = RelayConnection())
 
 @Serializable
 data class AgentStatus(
@@ -48,7 +41,7 @@ data class AgentStatus(
     val roots: List<String> = emptyList(),
     val lanUrls: List<String> = emptyList(),
     val uptimeMs: Long = 0,
-    val tunnel: TunnelState = TunnelState(),
+    val connections: AgentConnections = AgentConnections(),
     val apk: Boolean = false,
     val relay: Boolean = false,
 )
@@ -80,6 +73,10 @@ data class PairInfo(
     val hostname: String? = null,
     val port: Int? = null,
     val qr: QrGrid? = null,
+    /** Local pairing mints one phone; these say which one and until when. */
+    val token: String? = null,
+    val deviceId: String? = null,
+    val expiresAt: Long? = null,
 )
 
 /**

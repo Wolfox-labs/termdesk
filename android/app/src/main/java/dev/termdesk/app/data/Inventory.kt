@@ -1,5 +1,9 @@
 package dev.termdesk.app.data
 
+import java.util.concurrent.atomic.AtomicLong
+
+private val actionEventSequence = AtomicLong()
+
 /** A process on the remote host. cpuSeconds/startTime are null when the OS denies access. */
 data class ProcessInfo(
     val pid: Int,
@@ -27,4 +31,6 @@ data class ActionResult(
     val ok: Boolean,
     val code: String,
     val message: String,
+    /** Delivery identity: two identical acknowledgements are still two events. */
+    val eventId: Long = actionEventSequence.incrementAndGet(),
 )

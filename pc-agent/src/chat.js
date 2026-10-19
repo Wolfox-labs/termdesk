@@ -74,7 +74,9 @@ import { discardPreviews as discardStreamedPreviews, handleAssistantChunk as han
 import { Chat } from './chat/chat.js';
 import { decisionFor } from './kernels/codex.js';
 import { CliKernel } from './kernels/cli.js';
-import { ensureOverlay, routeConfig, runtimeArgs, findDshEntry, dshWhyMissing } from './kernels/dsh.js';
+import { ensureOverlay, routeConfig, routeConfigError } from './kernels/dsh.js';
+import { launchArgs, launchEnv, resolveDshRuntime } from './kernels/dsh-runtime.js';
+import { discoverLiveHost, followSession, liveCall, liveExecuteCommand, liveListCommands, livePrompt } from './kernels/dsh-live.js';
 import { chatEngineIds, getKernel, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
 import {
   canResume,
@@ -85,7 +87,7 @@ import {
   unknownKernelMessage,
 } from './kernels/contract.js';
 import { ApprovalBroker, OPTIONS } from './approvals.js';
-import { dshEventToChatEvent, lastWriteOf } from './sessions.js';
+import { dshEventToChatEvent, lastWriteOf, readSession } from './sessions.js';
 
 /** The only option ids an engine's answer may be translated into. */
 
@@ -136,14 +138,21 @@ const MAX_QUEUED_MESSAGES = 5;
 export const CHAT_ENGINES = chatEngineIds();
 
 /**
- * Resolve the DSH launcher entry script.
+ * The DSH runtime this machine would start.
  *
- * 这里从前和 `kernels/registry.js`、`engines.js` 各写一份**同样的硬编码路径**，
- * 于是同一个事实被抄了三遍、也就会各自过期三遍（旧安装器的布局在本机早就没有了）。
- * 现在只有 `kernels/dsh.js` 知道这件事，三处都问它。
+ * Discovery lives in kernels/dsh-runtime.js because it is the same question the
+ * kernel table answers: which entry, launched how, with which environment. The
+ * installed desktop app keeps its CLI inside `app.asar`, so "the file exists" is
+ * not a plain `fs.statSync` question — see kernels/asar.js.
  */
+function dshRuntime() {
+  return resolveDshRuntime();
+}
+
+/** Where the DSH entry is, as a path a person can read; '' when not found. */
 function findDsh() {
-  return findDshEntry();
+  const runtime = dshRuntime();
+  return runtime ? (runtime.script ?? runtime.command) : '';
 }
 
 /**
@@ -217,10 +226,16 @@ export class ChatManager {
    *   about this" goes. Optional, because tests and probes run without one — and a
    *   notification must never be the reason a turn fails.
    */
-  constructor({ notifier = null } = {}) {
+  constructor({
+    notifier = null,
+    codexSpawnSpec = spawnSpec,
+    codexServerFactory = (options) => new CodexAppServer(options),
+  } = {}) {
     this.chats = new Map();
     this.onEvent = null;
     this.notifier = notifier;
+    this.codexSpawnSpec = codexSpawnSpec;
+    this.codexServerFactory = codexServerFactory;
     // The reaper belongs to the manager, not to a socket: a chat runtime must
     // keep its idle clock running while the phone is disconnected, exactly as a
     // terminal session keeps its scrollback.
@@ -399,14 +414,23 @@ export class ChatManager {
     // Where the default model comes from is a property of the KERNEL, declared in
     // the table, not something the manager infers from its name.
     const route = routeForChain(modelRoute(eng, lookupKernel));
+    let dshRoute = null;
+    if (eng === 'dsh') {
+      dshRoute = routeConfig(process.env, {
+        provider: provider || route.provider,
+        model: model || route.model,
+      });
+      const routeError = routeConfigError(dshRoute);
+      if (routeError) return { ok: false, code: 'unconfigured', message: routeError };
+    }
     const workdir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
     const chat = new Chat({
       id,
       title: (title && String(title).trim()) || '新对话',
       cwd: workdir,
       engine: eng,
-      provider: provider || route.provider,
-      model: model || route.model,
+      provider: provider || dshRoute?.provider || route.provider,
+      model: model || dshRoute?.model || route.model,
       effort: effort || null,
     });
     this.chats.set(id, chat);
@@ -469,9 +493,17 @@ export class ChatManager {
       ? await this.resumeAcp(engine, id)
       : driver === 'app-server'
         ? await this.resumeCodex(id)
-        : { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
+        : driver === 'sdk'
+          ? await this.resumeDsh(engine, id)
+          : { ok: false, code: 'resume_unsupported', message: `${engine} 内核未提供经过验证的恢复接口` };
     if (result?.ok) {
-      const note = this.takeoverNote({ joined: false, write: writeBefore });
+      // A live-attached chat writes nothing here: the desktop app owns the journal,
+      // so the "two writers" warning would be false and is not repeated.
+      const note = this.takeoverNote({
+        joined: false,
+        write: writeBefore,
+        live: Boolean(result.chat?.liveAttached),
+      });
       if (note) result.note = note;
     }
     return result;
@@ -496,14 +528,16 @@ export class ChatManager {
    * something reassuring. The sentence itself says what was measured — a file changed —
    * and not who changed it, because a write time cannot tell us that.
    */
-  takeoverNote({ joined, write = undefined, engine, id, sessionPath }) {
+  takeoverNote({ joined, write = undefined, engine, id, sessionPath, live = false }) {
     const parts = [];
     if (joined) {
       parts.push('这条会话已经在另一台设备上打开：双方看到的是同一个运行进程，发消息会进同一段对话');
     }
-    const evidence = write === undefined ? lastWriteOf({ engine, id, sessionPath }) : write;
-    if (evidence && evidence.agoSeconds <= RECENT_WRITE_SECONDS) {
-      parts.push(`这台电脑上这条会话的文件 ${evidence.agoSeconds} 秒前被写过（可能是桌面端应用）：两边同时写会让内容分叉`);
+    if (!live) {
+      const evidence = write === undefined ? lastWriteOf({ engine, id, sessionPath }) : write;
+      if (evidence && evidence.agoSeconds <= RECENT_WRITE_SECONDS) {
+        parts.push(`这台电脑上这条会话的文件 ${evidence.agoSeconds} 秒前被写过（可能是桌面端应用）：两边同时写会让内容分叉`);
+      }
     }
     return parts.length > 0 ? parts.join('；') : null;
   }
@@ -570,6 +604,14 @@ export class ChatManager {
     if (message.length === 0) return { ok: false, code: 'empty_prompt', message: '消息不能为空' };
     if (message.length > MAX_PROMPT_CHARS) {
       return { ok: false, code: 'prompt_too_long', message: `消息过长（上限 ${MAX_PROMPT_CHARS} 字符）` };
+    }
+    // A slash line the desktop app would execute itself (/compact, /export, /goal,
+    // /permission, ...) must not be sent to the model as text. The commands belong
+    // to the host that owns the session, so only a live-attached DSH conversation
+    // can run them - and they run WITHOUT a model turn.
+    if (message.startsWith('/')) {
+      const handled = await this.runLiveCommand(chat, message);
+      if (handled) return handled;
     }
     // Waiting is the PC's job, not the person's. A kernel takes one prompt at a time, so a
     // message typed while the answer is still coming waits here and starts when the turn
@@ -706,6 +748,11 @@ export class ChatManager {
 
   /** One turn on the resident DSH SDK runtime. */
   async sendDsh(chat, message, userSeq) {
+    // A conversation opened from history while the desktop app is running belongs
+    // to that app's live agent. Sending here (a second runtime) would be refused
+    // by the single-writer rule, so the message goes through the app's own API
+    // instead and the answer is read back from the journal it appends to.
+    if (chat.liveHost) return this.sendDshLive(chat, message, userSeq);
     try {
       await this.ensureRuntime(chat);
     } catch (err) {
@@ -737,6 +784,370 @@ export class ChatManager {
 
     chat.runtimeStarted = true;
     return { ok: true, userSeq, messageId: receipt?.messageId ?? null, sessionId: chat.sessionId };
+  }
+
+  /**
+   * Run one slash command in the live session, or return null when the line is
+   * ordinary text that merely starts with `/`.
+   *
+   * The phone's own `/` panel is a fixed short list, so the commands the desktop
+   * app exposes (compact, export, goal, permission, feedback) were unreachable
+   * there. They are executed by the host and do not consume a model turn, so this
+   * is the same operation the desktop composer performs - not a fabricated one.
+   */
+  async runLiveCommand(chat, line) {
+    if (chat.engine !== 'dsh') return null;
+    const match = /^\/([^\s]+)\s*([\s\S]*)$/.exec(line);
+    if (!match) return null;
+    const name = match[1];
+    const rest = match[2] ?? '';
+
+    if (name === '命令' || name === 'help' || name === 'commands') {
+      const catalog = chat.liveHost
+        ? await liveListCommands(chat.liveHost, chat.sessionId)
+        : { ok: false, commands: [], message: '桌面版 DeepSeek Harness 没有在运行，命令列表不可用' };
+      const body = catalog.ok && catalog.commands.length > 0
+        ? catalog.commands.map((c) => `/${c.name}${c.hint ? ' ' + c.hint : ''} — ${c.description}`).join('\n')
+        : catalog.message ?? '没有可用命令';
+      const userLine = chat.push({ kind: 'message', role: 'user', text: line, command: true });
+      this.emitEvent(chat, userLine);
+      this.pushAndEmit(chat, { kind: 'local', role: 'engine', text: body });
+      return { ok: true, userSeq: userLine, messageId: null, sessionId: chat.sessionId };
+    }
+
+    // Without the live host there is no command registry to ask, so the honest
+    // move is to say which commands need it rather than to guess at a catalog.
+    if (!chat.liveHost) {
+      if (['compact', 'export', 'goal', 'permission', 'feedback', 'plan'].includes(name)) {
+        const userLine = chat.push({ kind: 'message', role: 'user', text: line, command: true });
+        this.emitEvent(chat, userLine);
+        this.pushAndEmit(chat, {
+          kind: 'error',
+          role: 'engine',
+          text: `/${name} 由桌面版 DeepSeek Harness 执行；现在桌面版没有运行，这个命令不可用`,
+        });
+        return { ok: true, userSeq: userLine, messageId: null, sessionId: chat.sessionId };
+      }
+      return null;
+    }
+
+    // Ask the host which commands exist, then only intercept names it really has:
+    // an unknown `/word` is ordinary text and must reach the model unchanged.
+    if (!Array.isArray(chat.liveCommands) || Date.now() - (chat.liveCommandsAt ?? 0) > 60_000) {
+      const catalog = await liveListCommands(chat.liveHost, chat.sessionId);
+      chat.liveCommands = catalog.ok ? catalog.commands : [];
+      chat.liveCommandsAt = Date.now();
+    }
+    if (!chat.liveCommands.some((c) => c.name === name)) return null;
+
+    const userLine = chat.push({ kind: 'message', role: 'user', text: line, command: true });
+    this.emitEvent(chat, userLine);
+    const result = await liveExecuteCommand(chat.liveHost, chat.sessionId, line);
+    if (result.unknown) {
+      this.pushAndEmit(chat, { kind: 'error', role: 'engine', text: `/${name} 没有执行：桌面端不认识这条命令` });
+      return { ok: true, userSeq: userLine, messageId: null, sessionId: chat.sessionId };
+    }
+    if (!result.ok) {
+      this.pushAndEmit(chat, { kind: 'error', role: 'engine', text: `/${name} 失败：${result.message}` });
+      return { ok: true, userSeq: userLine, messageId: null, sessionId: chat.sessionId };
+    }
+    this.pushAndEmit(chat, {
+      kind: result.kind === 'error' ? 'error' : 'local',
+      role: 'engine',
+      text: `/${name}：${result.text || (result.kind === 'error' ? '没有执行' : '已完成')}`,
+    });
+    return { ok: true, userSeq: userLine, messageId: null, sessionId: chat.sessionId };
+  }
+
+
+  /**
+   * One turn through the desktop app's live agent.
+   *
+   * TermDesk does not own the runtime here and must not touch the journal: it
+   * queues the message over the app's own `/api/session/prompt`, then follows the
+   * events the app appends. The user's line is shown immediately and reconciled
+   * with the runtime's echo, exactly like the resident-runtime path.
+   */
+  async sendDshLive(chat, message, userSeq) {
+    const write = lastWriteOf({ engine: 'dsh', id: chat.sessionId });
+    const file = write?.path ?? null;
+    if (!file) {
+      const messageText = '找不到这条会话的日志，无法跟随桌面端的回复';
+      chat.status = 'failed';
+      chat.lastError = messageText;
+      chat.push({ kind: 'error', role: 'engine', text: messageText });
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+      return { ok: false, code: 'no_journal', message: messageText, userSeq };
+    }
+
+    // The stream is watched for the whole attachment, not just this turn: the
+    // desktop user may type there too, and both ends must show one conversation.
+    this.startLiveWatch(chat, chat.sessionId);
+
+    chat.status = 'running';
+    chat.ready = true;
+    chat.livePendingText = message;
+    chat.livePendingLine = userSeq ?? chat.pendingUserEcho ?? null;
+    chat.liveQueued = false;
+    chat.liveQueuedNoted = false;
+    chat.liveEchoSeen = false;
+    chat.liveTurnStarted = false;
+    this.emit({ event: 'chat.status', chatId: chat.id, status: 'running' });
+    if (chat.livePendingLine) this.emitEvent(chat, chat.livePendingLine);
+
+    const result = await livePrompt(chat.liveHost, {
+      sessionId: chat.sessionId,
+      text: message,
+      clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
+
+    if (!result.ok) {
+      this.clearLivePending(chat);
+      chat.status = 'failed';
+      chat.lastError = result.message;
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'failed' });
+      const hint = result.code === 'transport'
+        ? '（桌面端的窗口可能已关闭：重新打开后再发，或改用本机运行时）'
+        : '';
+      chat.push({ kind: 'error', role: 'engine', text: `桌面端没有接受这条消息：${result.message}${hint}` });
+      return { ok: false, code: 'live_prompt_failed', message: result.message, userSeq };
+    }
+    this.armLiveDeadline(chat);
+    return { ok: true, userSeq, messageId: null, sessionId: chat.sessionId };
+  }
+
+  /**
+   * Follow the desktop app's journal for as long as this chat is attached.
+   *
+   * One watcher for the whole conversation (not one per turn): the desktop user can
+   * type there at any time, and the phone is meant to show the same conversation.
+   * It starts at the current end so history is not replayed twice.
+   */
+  /**
+   * Follow the live conversation through the desktop app's own event stream.
+   *
+   * The stream carries the durable events AND the model's live chunk frames, which
+   * is the only way to show an answer while it is being written: the v4 journal
+   * keeps finished messages only. It reconnects on its own, and a fresh snapshot
+   * after a reconnect fills the gap; durable events are deduped by seq.
+   */
+  startLiveWatch(chat, sessionId) {
+    if (chat.liveStream) return;
+    chat.liveClosed = false;
+    chat.liveSeenSnapshot = false;
+    if (typeof chat.liveLastSeq !== 'number') chat.liveLastSeq = -1;
+    const open = () => {
+      if (chat.liveClosed) return;
+      chat.liveStream = followSession(chat.liveHost, {
+        sessionId,
+        onSnapshot: (snapshot) => this.handleLiveSnapshot(chat, snapshot),
+        onEvent: (event) => this.handleLiveEvent(chat, event),
+        onChunk: (frame) => this.handleLiveChunk(chat, frame),
+        onError: () => {},
+        onClose: () => {
+          chat.liveStream = null;
+          if (chat.liveClosed) return;
+          chat.liveReconnect = setTimeout(open, 1200);
+          chat.liveReconnect.unref?.();
+        },
+      });
+    };
+    open();
+  }
+
+  stopLiveTail(chat) {
+    chat.liveClosed = true;
+    if (chat.liveReconnect) {
+      clearTimeout(chat.liveReconnect);
+      chat.liveReconnect = null;
+    }
+    if (chat.liveDeadline) {
+      clearTimeout(chat.liveDeadline);
+      chat.liveDeadline = null;
+    }
+    if (chat.liveStream) {
+      try { chat.liveStream.close(); } catch { /* already closed */ }
+      chat.liveStream = null;
+    }
+  }
+
+  /**
+   * The opening snapshot.
+   *
+   * On the first open it is history this side already seeded from the journal, so
+   * it only sets the seq floor (the stream continues from cursor+1). After a
+   * reconnect the same page is the gap filler: records above the floor are handed
+   * to the normal event path.
+   */
+  handleLiveSnapshot(chat, snapshot) {
+    const records = Array.isArray(snapshot?.records) ? snapshot.records : [];
+    const cursor = typeof snapshot?.cursor === 'number' ? snapshot.cursor : null;
+    if (!chat.liveSeenSnapshot) {
+      chat.liveSeenSnapshot = true;
+      if (cursor !== null) chat.liveLastSeq = Math.max(chat.liveLastSeq, cursor);
+      return;
+    }
+    for (const record of records) {
+      const event = record?.event;
+      if (!event || typeof event.seq !== 'number' || event.seq <= chat.liveLastSeq) continue;
+      chat.liveLastSeq = event.seq;
+      this.handleLiveJournalEvent(chat, event);
+    }
+    if (cursor !== null) chat.liveLastSeq = Math.max(chat.liveLastSeq, cursor);
+  }
+
+  handleLiveEvent(chat, event) {
+    if (!event) return;
+    if (typeof event.seq === 'number') {
+      if (event.seq <= chat.liveLastSeq) return;
+      chat.liveLastSeq = event.seq;
+    }
+    this.handleLiveJournalEvent(chat, event);
+  }
+
+  /**
+   * One live chunk frame from the app's `agent/assistant-stream`.
+   *
+   * `frame.chunk` is the same shape the resident runtime sends as `assistant/chunk`,
+   * so the preview rules in chat/stream.js are reused rather than copied: deltas
+   * grow one record that is re-emitted, and the finished `assistant/message` later
+   * replaces it.
+   */
+  handleLiveChunk(chat, frame) {
+    if (!frame || frame.type !== 'chunk' || !frame.chunk) return;
+    this.handleSessionEvent(chat, {
+      event: { type: 'assistant/chunk', data: { chunk: frame.chunk } },
+    });
+  }
+
+  /** The state a pending live message owns; cleared on every exit path. */
+  clearLivePending(chat) {
+    chat.livePendingText = null;
+    chat.livePendingLine = null;
+    chat.liveQueued = false;
+    chat.liveQueuedNoted = false;
+    chat.liveEchoSeen = false;
+    chat.liveTurnStarted = false;
+    chat.pendingUserEcho = null;
+    if (chat.liveDeadline) {
+      clearTimeout(chat.liveDeadline);
+      chat.liveDeadline = null;
+    }
+  }
+
+  armLiveDeadline(chat) {
+    if (chat.liveDeadline) clearTimeout(chat.liveDeadline);
+    chat.liveDeadline = setTimeout(() => {
+      if (chat.status !== 'running') return;
+      chat.status = 'failed';
+      chat.lastError = '等待桌面端回复超时';
+      this.clearLivePending(chat);
+      chat.push({ kind: 'error', role: 'engine', text: '等待桌面端回复超时（45 分钟）：可以重新发送，或到电脑上继续' });
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'failed' });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'failed' });
+    }, 45 * 60 * 1000);
+    chat.liveDeadline.unref?.();
+  }
+
+  /** The text of one inbox item the runtime recorded. */
+  handleLiveJournalEvent(chat, event) {
+    const type = event?.type;
+
+    // Queue bookkeeping: this is how the desktop says "your message is waiting"
+    // and later "it was deleted", and without it the phone kept showing a
+    // cancelled message as still queued (and stayed "running" for ever).
+    if (type === 'agent/inbox/spliced') {
+      this.handleLiveInbox(chat, event);
+      return;
+    }
+
+    if (type === 'user/message') {
+      const normalized = dshEventToChatEvent(event);
+      if (normalized?.role === 'user' && this.isLiveEcho(chat, normalized.text)) {
+        chat.liveEchoSeen = true;
+        if (chat.liveQueued) {
+          chat.liveQueued = false;
+          chat.liveQueuedNoted = false;
+          this.pushAndEmit(chat, { kind: 'local', role: 'engine', text: '桌面端开始处理这条消息' });
+        }
+      }
+    }
+    // A turn that starts only after OUR echoed message is the turn we queued.
+    // Until then, `turn/end` belongs to a turn that was already running there.
+    if (type === 'turn/start' && chat.liveEchoSeen) chat.liveTurnStarted = true;
+
+    this.handleSessionEvent(chat, { event });
+
+    if (type === 'turn/end' && chat.liveEchoSeen && chat.liveTurnStarted) {
+      this.finishLiveTurn(chat);
+    }
+  }
+
+  isLiveEcho(chat, text) {
+    const pending = (chat.livePendingText ?? '').trim();
+    return pending.length > 0 && String(text ?? '').trim() === pending;
+  }
+
+  /**
+   * Reconcile TermDesk's view with the desktop's inbox.
+   *
+   * The desktop records `agent/inbox/spliced`: an insertion when the message waits
+   * behind a running turn, and a removal with `outcome: "canceled"` when the
+   * person deletes it from the queue there. Both must reach the phone, otherwise a
+   * deleted message still looks queued and the chat never leaves "running".
+   */
+  handleLiveInbox(chat, event) {
+    const data = event?.data ?? {};
+    if (data.target !== 'next-turn') return;
+    const textOf = (item) => (Array.isArray(item?.content) ? item.content : [])
+      .map((block) => (typeof block?.text === 'string' ? block.text : ''))
+      .join('')
+      .trim();
+    const pending = (chat.livePendingText ?? '').trim();
+    const inserted = Array.isArray(data.inserted) ? data.inserted : [];
+    const ours = pending.length > 0 && inserted.some((item) => textOf(item) === pending);
+
+    if (ours && !chat.liveEchoSeen) {
+      chat.liveQueued = true;
+      if (!chat.liveQueuedNoted) {
+        chat.liveQueuedNoted = true;
+        this.pushAndEmit(chat, {
+          kind: 'local',
+          role: 'engine',
+          text: '已交给桌面端：这条消息排在电脑端当前回合之后，还没开始处理',
+        });
+      }
+      return;
+    }
+
+    if (data.outcome === 'canceled' && chat.liveQueued && !chat.liveEchoSeen) {
+      const line = chat.livePendingLine;
+      this.clearLivePending(chat);
+      chat.status = 'idle';
+      if (line) {
+        line.canceled = true;
+        this.emitEvent(chat, line);
+      }
+      this.pushAndEmit(chat, {
+        kind: 'error',
+        role: 'engine',
+        text: '这条消息没有执行：电脑端把排队中的它删除了。手机端现在和电脑一致——它不会再发出去',
+      });
+      this.emit({ event: 'chat.turn', chatId: chat.id, state: 'cancelled' });
+      this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
+      this.drainQueue(chat).catch(() => {});
+    }
+  }
+
+  /** The live turn is over: only the status changes, the watcher keeps mirroring. */
+  finishLiveTurn(chat) {
+    if (chat.status !== 'running') return;
+    this.clearLivePending(chat);
+    chat.status = 'idle';
+    this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
+    this.notify(this.turnNotification(chat, 'ended'));
+    this.drainQueue(chat).catch(() => {});
   }
 
   /**
@@ -795,7 +1206,13 @@ export class ChatManager {
   /** Lazily start the shared app-server and wire notification routing. */
   codexServer() {
     if (!this.codex) {
-      const server = new CodexAppServer({ log: (line) => console.log(line) });
+      const resolved = this.codexSpawnSpec('codex');
+      if (!resolved?.bin) throw new Error('Codex app-server 启动入口不可用');
+      const server = this.codexServerFactory({
+        bin: resolved.bin,
+        args: [...(resolved.args ?? []), 'app-server', '--listen', 'stdio://'],
+        log: (line) => console.log(line),
+      });
       server.on('notification', (method, params) => this.handleCodexNotification(method, params));
       // Codex's own approval requests become questions on the phone.
       server.approvalHandler = (method, params) => this.answerCodexApproval(method, params);
@@ -1273,6 +1690,34 @@ export class ChatManager {
    * A kernel with no model list (a CLI shim, DSH) says so instead of answering
    * with an empty list that would look like "no models available".
    */
+  /**
+   * The slash commands this conversation can run.
+   *
+   * Only a live-attached DSH conversation has a real registry: the commands belong
+   * to the desktop host that owns the session. Everything else says so instead of
+   * returning an empty list that looks like "no commands exist".
+   */
+  async commandsFor(id) {
+    const chat = this.chats.get(id);
+    if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
+    if (chat.engine === 'dsh' && chat.liveHost) {
+      const listed = await liveListCommands(chat.liveHost, chat.sessionId);
+      if (!listed.ok) {
+        return { ok: true, chatId: id, supported: false, commands: [], note: listed.message ?? '桌面端没有返回命令目录' };
+      }
+      return { ok: true, chatId: id, supported: true, commands: listed.commands, note: null };
+    }
+    return {
+      ok: true,
+      chatId: id,
+      supported: false,
+      commands: [],
+      note: chat.engine === 'dsh'
+        ? '桌面版 DeepSeek Harness 没有在运行：/compact 等命令由它执行'
+        : '这个助手没有提供斜杠命令',
+    };
+  }
+
   async modelsFor(id) {
     const chat = this.chats.get(id);
     if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
@@ -1348,8 +1793,6 @@ export class ChatManager {
 
     chat.status = 'running';
     chat.kernelLive = true;
-    // 本轮起点：回合结束时用它判断"哪些文件是本轮写出来的"（见 announceArtifacts）。
-    chat.turnStartedAt = Date.now();
     this.emit({ event: 'chat.status', chatId: chat.id, status: 'running' });
     this.emitEvent(chat, userSeq);
 
@@ -1487,6 +1930,115 @@ export class ChatManager {
     return { ok: true, chat: chat.detail() };
   }
 
+  /**
+   * Open a recorded DSH session on its own runtime.
+   *
+   * The SDK runtime loads the persisted history itself (`session/resume`), so the
+   * next prompt continues the same conversation: nothing is reconstructed from the
+   * display transcript, and no text is ever re-fed as a prompt.
+   *
+   * Two facts are stated rather than guessed:
+   *   - the working directory comes from the stored session header, because
+   *     resuming a conversation in a different tree would silently change what its
+   *     relative paths mean;
+   *   - the model route comes from this machine's explicit DSH configuration, and
+   *     the runtime applies it to the resumed agent (the protocol says so); the
+   *     session's own last route is not reversible from the log.
+   *
+   * The desktop application may be holding the same session at the same time. The
+   * persistence lock is per process, so this cannot be prevented from here — the
+   * caller has already been told via `takeoverNote` that two writers can diverge.
+   */
+  async resumeDsh(engine, id) {
+    let detail = null;
+    try {
+      detail = await readSession({ engine: 'dsh', id });
+    } catch {
+      detail = null;
+    }
+    const cwd = detail?.meta?.cwd || null;
+    if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+      return {
+        ok: false,
+        code: 'missing_workspace',
+        message: '原会话的工作目录不存在或无法读取，不能静默切换到其他目录',
+      };
+    }
+
+    let route;
+    try {
+      route = routeConfig(process.env, {});
+      const routeError = routeConfigError(route);
+      if (routeError) return { ok: false, code: 'unconfigured', message: routeError };
+    } catch (err) {
+      return { ok: false, code: 'unconfigured', message: String(err?.message ?? err) };
+    }
+
+    this.dropIdleChat();
+    if (this.chats.size >= MAX_CHATS) return { ok: false, code: 'capacity', message: '运行中的会话已达上限' };
+
+    const chat = new Chat({
+      id: `c-${crypto.randomUUID()}`,
+      title: detail?.meta?.title || path.basename(cwd),
+      cwd,
+      engine,
+      provider: route.provider,
+      model: route.model,
+      nativeSessionId: id,
+    });
+    chat.titleSource = 'recorded';
+    // Opening a recorded session must not TAKE the session. DSH's `session/resume`
+    // opens a write handle, and it is refused while any other process (the desktop
+    // app, most of the time) holds one — so attaching here would make "just look at
+    // the history" fail, and, worse, would take ownership away from the app that is
+    // showing the conversation right now. The handle is therefore taken when the
+    // first message is actually sent (see ensureRuntime).
+    chat.pendingResume = true;
+    this.chats.set(chat.id, chat);
+
+    // The recorded conversation is shown so the phone opens a conversation rather
+    // than an empty page. It is display state only: the runtime owns the prompt
+    // history, and this transcript is never sent to a model.
+    for (const event of detail?.events ?? []) {
+      const at = event.at ? Date.parse(event.at) : NaN;
+      chat.push({
+        kind: event.kind,
+        role: event.role ?? null,
+        text: event.text ?? '',
+        at: Number.isNaN(at) ? undefined : at,
+        name: event.name ?? null,
+        meta: event.meta ?? null,
+      });
+    }
+
+    // If the desktop app is running, this conversation is ITS to continue: it
+    // already holds the write handle, and a second runtime would fork the journal.
+    // Messages then go to the live agent through its own API (see sendDshLive),
+    // which is the only way to continue the conversation without stealing it.
+    const liveHost = discoverLiveHost({ fresh: true });
+    if (liveHost) {
+      chat.liveHost = liveHost;
+      chat.kernelLive = true;
+      chat.ready = true;
+      // Mirror the conversation from the moment of attaching: messages typed on
+      // the desktop must arrive here too, and the phone must never be the reason a
+      // second writer exists.
+      this.startLiveWatch(chat, id);
+      chat.push({
+        kind: 'local',
+        role: 'engine',
+        text: '已接入桌面版 DeepSeek Harness 的实时会话：消息直接进入桌面端的对话，回复也从那里读回',
+      });
+    } else {
+      chat.push({
+        kind: 'local',
+        role: 'engine',
+        text: '已打开本机保存的 DSH 会话记录 · 发送下一条消息时接管这次会话',
+      });
+    }
+    return { ok: true, chat: chat.detail() };
+  }
+
   /** Route one session/update notification into the right transcript. */
   handleAcpUpdate(engineId, sessionId, update) {
     // Session-id routing, with one honest fallback: a CLI kernel usually names
@@ -1538,57 +2090,6 @@ export class ChatManager {
     }
   }
 
-  /**
-   * 本轮在工作目录里写出来的文件，做成一张「产出文件」卡片发给手机。
-   *
-   * 为什么要它：OpenCode（ACP）从不发 `deliverables/presented`——那是 DSH 的词汇。
-   * 结果真机上东西明明生成了，手机里**一张文件卡片都没有**，用户只能在聊天里看一行
-   * 路径干瞪眼。这里在回合结束时扫一遍工作目录，把本轮改动过的普通文件报上去，
-   * 手机端就能直接点开或下载（见 App 的 DeliverableLine）。
-   */
-  announceArtifacts(chat) {
-    try {
-      const cwd = chat?.cwd;
-      const since = chat?.turnStartedAt ?? 0;
-      if (!cwd || !since) return;
-      // 内核自己的构建脚本、日志、备份不算产物。
-      const skip = /\.(py|ps1|sh|bat|cmd|log|tmp|bak)$/i;
-      // 写文件的工具调用已经由 ACP 适配器报过一张卡了（kernels/acp.js 的 deliverable），
-      // 这里再报一次就是重复卡片。按小写路径去重。
-      const already = new Set();
-      for (const ev of chat.events ?? []) {
-        if (ev.kind !== 'deliverable') continue;
-        for (const f of ev.meta?.files ?? []) {
-          if (f?.path) already.add(String(f.path).toLowerCase());
-        }
-      }
-      const files = fs.readdirSync(cwd, { withFileTypes: true })
-        .filter((e) => e.isFile() && !e.name.startsWith('.') && !e.name.startsWith('~$'))
-        .map((e) => e.name)
-        .filter((name) => !skip.test(name))
-        .map((name) => {
-          const full = path.join(cwd, name);
-          try {
-            const st = fs.statSync(full);
-            return { path: full, name, size: st.size, mtimeMs: st.mtimeMs };
-          } catch {
-            return null;
-          }
-        })
-        .filter((f) => f && f.size > 0 && f.mtimeMs >= since - 1000)
-        .filter((f) => !already.has(f.path.toLowerCase()))
-        .sort((a, b) => b.mtimeMs - a.mtimeMs)
-        .slice(0, 8)
-        .map((f) => ({ path: f.path, name: f.name, size: f.size }));
-      if (files.length === 0) return;
-      // 必须 push **并且** emit：只 push 的话这条事件只活在服务端的会话里，
-      // 手机那边永远收不到（上一版就是漏了 emit，探针里一张卡都没出现）。
-      this.pushAndEmit(chat, { kind: 'deliverable', role: 'engine', text: '', meta: { files } });
-    } catch (err) {
-      this.log(`[termdesk] 产物扫描失败：${err?.message ?? err}`);
-    }
-  }
-
   /** Close out an ACP turn exactly once, mirroring the Codex lifecycle. */
   finishAcpTurn(chat, stopReason) {
     if (chat.status === 'stopped') return;
@@ -1603,8 +2104,6 @@ export class ChatManager {
     }
     chat.status = failed ? 'failed' : 'idle';
     chat.lastError = failed ? '内核拒绝了本轮请求' : null;
-    // 产物卡片排在回合标记之前：读起来是「产出了这些 → 本轮结束」。
-    this.announceArtifacts(chat);
     chat.push({
       kind: 'turn', role: 'engine', text: '',
       meta: { state: failed ? 'failed' : 'ended', reason: cancelled ? 'interrupted' : (stopReason ?? null) },
@@ -1711,6 +2210,14 @@ export class ChatManager {
     if (!chat) return { ok: false, code: 'no_chat', message: '会话不存在' };
     if (chat.status !== 'running') return { ok: false, code: 'not_running', message: '当前没有进行中的回复' };
 
+    // A conversation that belongs to the desktop app is cancelled THERE: this side
+    // has no runtime to kill, and killing nothing would leave the app answering.
+    if (chat.liveHost) {
+      this.stopLiveTail(chat);
+      liveCall(chat.liveHost, 'session/cancel', { request: { sessionId: chat.sessionId } }).catch(() => {});
+      return this.stopTurn(chat, '已请求桌面端取消本轮回复');
+    }
+
     // Anything the conversation was still asking for is settled as denied, for every
     // driver: the kernel is waiting on those answers, and a turn that is over must not
     // leave a permission prompt on the phone that nothing can resolve.
@@ -1808,28 +2315,31 @@ export class ChatManager {
   async ensureRuntime(chat) {
     if (chat.child && chat.child.exitCode === null && chat.ready) return;
 
-    const bin = findDsh();
-    if (!bin || !fs.existsSync(bin)) {
+    const runtime = dshRuntime();
+    if (!runtime) {
       throw new Error(
-        `找不到 DSH 入口：${bin ?? dshWhyMissing() ?? '本机没有可运行的 DSH（可用 TERMDESK_DSH 指定入口）'}`,
+        '找不到 DSH 入口：本机没有可用的 dsh 启动器，也没有检测到已安装的 DeepSeek Harness 桌面版',
       );
     }
 
-    // The sdk profile knows no providers by itself: the shared settings file
-    // that used to supply them is absent, and the desktop profile's patch is not
-    // read here. Without this overlay the handshake is refused outright
-    // ("no adapter registered for provider") and the turn never even starts.
+    // The sdk profile's inherited provider configuration is not known to this
+    // runtime, so require the DSH route to be explicit before writing an overlay.
     let patch = null;
     try {
-      const route = routeConfig();
-      patch = ensureOverlay({ ...route, model: chat.model || route.model });
+      const route = routeConfig(process.env, { provider: chat.provider, model: chat.model });
+      const routeError = routeConfigError(route);
+      if (routeError) throw new Error(routeError);
+      patch = ensureOverlay(route);
     } catch (err) {
-      chat.push({ kind: 'local', role: 'engine', text: `DSH 覆盖配置没写成：${err.message}` });
+      throw new Error(`DSH 配置无效：${err.message}`);
     }
-    const child = spawn(process.execPath, runtimeArgs(bin, { patch }), {
+    const child = spawn(runtime.command, launchArgs(runtime, { patch }), {
       cwd: chat.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      // The Electron host needs ELECTRON_RUN_AS_NODE; a plain Node entry adds
+      // nothing. Inherit everything else (PATH, credentials, DSH_HOME).
+      env: launchEnv(runtime, process.env),
     });
     chat.child = child;
     chat.ready = false;
@@ -1872,10 +2382,29 @@ export class ChatManager {
       if (!patch && /no adapter registered for provider/.test(message)) {
         throw new Error(
           `${message}｜这个 provider 不在 TermDesk 写的覆盖配置里；` +
-          'TERMDESK_CHAT_PROVIDER / TERMDESK_DSH_BASE_URL / TERMDESK_DSH_API_KEY_ENV 可以指定它',
+          'TERMDESK_CHAT_PROVIDER / TERMDESK_CHAT_MODEL / TERMDESK_DSH_BASE_URL / ' +
+          'TERMDESK_DSH_API / TERMDESK_DSH_API_KEY_ENV 可以指定它',
         );
       }
       throw err;
+    }
+    // A chat opened from history takes ownership HERE, at the first real turn,
+    // not when the transcript was shown. DSH refuses `session/resume` while another
+    // process holds the write handle, and that refusal is the honest answer: the
+    // desktop application is still in that conversation.
+    if (chat.pendingResume) {
+      try {
+        await chat.request('session/resume', { sessionId: chat.sessionId }, INIT_TIMEOUT_MS);
+        chat.pendingResume = false;
+      } catch (err) {
+        const message = String(err?.message ?? err);
+        this.dispose(chat, 'resume-refused');
+        throw new Error(
+          `无法接管这次会话：${message}。它很可能正由桌面端 DeepSeek Harness 打开，`
+          + '那里的对话框关掉后再试，或直接在那里继续。',
+        );
+      }
+      chat.push({ kind: 'local', role: 'engine', text: '已接管本机 DSH 会话 · 后续消息延续原上下文' });
     }
     chat.ready = true;
     chat.lastError = null;
@@ -2090,6 +2619,7 @@ export class ChatManager {
 
   /** Terminate a chat's runtime/turn and cancel its in-flight request. */
   dispose(chat, _reason) {
+    this.stopLiveTail(chat);
     this.failPending(chat, new Error('会话已结束'));
     // A kernel that owns its session store is stopped by asking it to stop, and the
     // conversation stays resumable: nothing of ours is running to kill.

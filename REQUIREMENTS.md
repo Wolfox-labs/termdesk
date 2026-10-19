@@ -54,8 +54,6 @@ Windows 电脑办公。要求不是"远程桌面"（手机屏幕小、流量贵�
 | `engines-test.js` | **31/31** | Codex / DSH 一次性任务（`ai.*`，deprecated 兼容面） |
 | `chat-e2e.js` | **38/38** | 原生对话：流式、去重、会话延续（dsh 内核；含 engine=codex 建会话） |
 | `tunnel-e2e.js` | **10/10** | 公网隧道全链路 |
-| `dsh-web-check.js` | **4/4** | DSH Web 过隧道可用性 |
-| `mux-probe.js` | **3/3** | DSH Remote mux 协议 |
 
 ### 2.3 已跑通的公网通道
 
@@ -204,15 +202,12 @@ button[aria-label="收起侧边栏"], button[aria-label="Collapse sidebar"]   [r
     display: none !important; display: none !important
 ```
 
-配套诊断脚本（都在 `tools/`，均为只读）：
+保留的侧栏复验脚本（位于 `pc-agent/tools/`，其余历史探针已清理；旧结果见 v1.0.0）：
 
 | 脚本 | 作用 |
 |---|---|
-| `sidebar-inspect.js` | 手机宽度下测量侧栏与按钮的真实 DOM 布局 |
 | `sidebar-open-check.js` | 先展开侧栏，再检查有无可点的收起入口 |
-| `sidebar-why.js` | 打印按钮及其祖先链的 computed style |
 | `sidebar-find-rule.js` | 用 CDP 的 CSS 域解析级联，找出隐藏它的确切规则 |
-| `sidebar-css.js` | 导出所有样式表原文 |
 
 ### 两个关键澄清
 
@@ -240,7 +235,7 @@ button[aria-label="Collapse sidebar"] {
 Tauri 检测：`window.__TAURI__` / `__TAURI_INTERNALS__` / `__TAURI_IPC__` 任一存在，
 或 `window.parent !== window`（被外壳 iframe 包着）时**不注入**，避免和桌面壳抢按钮。
 
-**插件源码在本仓库 [`plugins/sidebar-unhide/`](plugins/sidebar-unhide/)**，含
+**插件源码在本仓库 [`plugins/sidebar-unhide/`](plugins/sidebar-unhide)**，含
 `package.json` / `cordis.patch.yml` / `lib/client.js` / 静态自检 `test-unhide.mjs`
 （26 项，已通过）。安装步骤见该目录 README；装到 `~/.dsh/local-plugins` 并重启
 DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
@@ -281,15 +276,19 @@ DSH 后，用 `tools/sidebar-open-check.js` 做真机宽度复验。
 | 约定 | 请求可带 `callId`（任意字符串，手机生成）；代理在**对应的应答或 `error`** 上原样回显。手机凭它判断"这个答案是不是我问的那个问题"——`fs.list A` 之后 `fs.list B`，慢网下响应可能乱序，没有这个字段就会把 A 的内容画在 B 的标题下。不带 `callId` 的旧客户端行为完全不变（应答里也不会多出这个字段） |
 | 约定 | `chat.send` 可带 `requestId`；代理在 `chat.sent` 与拒绝的 `action.result` 上原样回显。手机凭它把离线队列里的那条消息标记为"已送达"——回显而非去重：同一条消息发两次就是两条，队列的职责是**不**替人产生第二次发送 |
 | C→S | `term.open` · `term.run` · `term.interrupt` · `term.close` · `term.list` · `ping` |
-| C→S | `kernels.list`（内核表：唯一事实来源是 pc-agent 的 `kernels/registry.js`） |
+| C→S | `kernels.list`（内核表：唯一事实来源是 pc-agent 的 `kernels/registry.js`；每次请求都重新读取本机，不缓存安装状态） |
 | C→S | `kernels.runs`（这台电脑上**本代理没有启动**的 agent 进程，即用户在终端里自己跑的） |
+| C→S | `kernels.manage`（`enable` / `disable` / `register` / `remove` / `setPath` / `clearPath` / `probe`：改的是本机偏好、路径覆盖与自定义清单，不安装或卸载内核本体） |
+| C→S | `devices.list` · `devices.rename` · `devices.revoke` · `devices.remove`（这台电脑登记的手机；每台独立凭据，可单独吊销） |
 | C→S | `codex.get` · `codex.apply` · `codex.restore` |
-| C→S | `sessions.list` · `sessions.read`（磁盘上的历史会话，只读） |
-| C→S | `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` · `chat.config` · `chat.models` · `chat.approve` · `chat.terminals` · `chat.terminal.read` · `chat.terminal.input` · `chat.terminal.stop` |
+| C→S | `sessions.list` · `sessions.read` · `sessions.delete`（磁盘上的历史会话；删除受会话根目录约束） |
+| C→S | `path.reveal`（在资源管理器中定位控制台正在说的那个文件；本机控制台才有意义） |
+| C→S | `chat.claim` · `chat.release` · `chat.sync` · `chat.list` · `chat.create` · `chat.resume` · `chat.send` · `chat.read` · `chat.cancel` · `chat.close` · `chat.config` · `chat.models` · `chat.approve` · `chat.terminals` · `chat.terminal.read` · `chat.terminal.input` · `chat.terminal.stop` |
 | S→C | `auth.ok` · `auth.fail` · `hello` · `status` · `procs` · `services` |
 | S→C | `fs.listing` · `fs.file` · `fs.written` · `fs.roots` |
 | S→C | `term.opened` · `term.output` · `term.exit` · `term.list` |
-| S→C | `kernels`（内核表，含 tier / 是否可用 / 是否能续聊 / 真实原因） |
+| S→C | `kernels`（内核表，含 tier / 是否可用 / 是否能续聊 / 真实原因；另有 `enabled`、`override`、`autoPath`、`command`，供控制台启停、改路径与复制启动命令） |
+| S→C | `devices`（手机列表：名称、来源 `local`/`relay`、最后在线、吊销状态、是否仍用旧版令牌） |
 | S→C | `kernels.runs`（外部运行项：内核 id / pid / 内存 / `attachable:false`——本代理对这些进程没有句柄，只能显示不能接管） |
 | S→C | `codex.config` · `sessions` · `session` |
 | S→C | `chats` · `chat` · `chat.event` · `chat.status` · `chat.turn` · `chat.sent` · `chat.closed` · `chat.approval` · `chat.terminals` · `chat.terminal` · `chat.terminal.output` · `chat.terminal.input` |

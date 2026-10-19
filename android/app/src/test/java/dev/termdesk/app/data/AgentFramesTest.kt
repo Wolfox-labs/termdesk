@@ -230,6 +230,41 @@ class AgentFramesTest {
         assertFalse("a fresh conversation is not running", chat.isRunning)
     }
 
+    @Test
+    fun `kernel manifest preserves truthful configuration support`() {
+        val frame = JSONObject()
+            .put("version", 1)
+            .put("known", true)
+            .put("driver", "app-server")
+            .put("session", JSONObject().put("resume", true).put("nativeTranscript", true))
+            .put("model", JSONObject().put("dynamic", false).put("switch", true))
+            .put(
+                "config",
+                JSONObject().put(
+                    "schema",
+                    JSONArray()
+                        .put(JSONObject().put("id", "contextWindow").put("type", "number").put("support", "supported"))
+                        .put(JSONObject().put("id", "maxOutput").put("type", "number").put("support", "planned")),
+                ),
+            )
+
+        val manifest = parseKernelManifest(frame)
+
+        assertNotNull(manifest)
+        assertTrue(manifest!!.session.resume)
+        assertTrue(manifest.session.nativeTranscript)
+        assertEquals("supported", manifest.config.schema.first { it.id == "contextWindow" }.support)
+        assertEquals("planned", manifest.config.schema.first { it.id == "maxOutput" }.support)
+    }
+
+    @Test
+    fun `unused legacy cursor metadata does not affect a chat`() {
+        val chat = parseChatInfo(JSONObject().put("id", "c").put("eventCursor", 19)
+            .put("continuity", JSONObject().put("durable", true)))
+        assertEquals("c", chat!!.id)
+        assertFalse(chat.ownership.canWrite)
+    }
+
     // ---- file search results ------------------------------------------------
 
     @Test
@@ -408,4 +443,57 @@ class AgentFramesTest {
         assertTrue("a newer agent still works", newerAgent.ok)
         assertEquals("but this app is the one to update", ProtocolVersion.Upgrade.APP, newerAgent.upgrade)
     }
-}
+
+    @Test
+    fun `chat commands carry the kernels own names and hints`() {
+        val frame = JSONObject()
+            .put("chatId", "c-1")
+            .put("supported", true)
+            .put(
+                "commands",
+                JSONArray()
+                    .put(JSONObject().put("name", "compact").put("description", "Compact older conversation history"))
+                    .put(
+                        JSONObject()
+                            .put("name", "permission")
+                            .put("description", "Switch the permission preset")
+                            .put("hint", "<preset>"),
+                    ),
+            )
+        val parsed = parseChatCommands(frame)
+        assertNotNull(parsed)
+        assertTrue(parsed!!.supported)
+        assertEquals(2, parsed.commands.size)
+        assertEquals("compact", parsed.commands[0].name)
+        assertNull(parsed.commands[0].hint)
+        assertEquals("<preset>", parsed.commands[1].hint)
+        assertNull(parsed.note)
+    }
+
+    @Test
+    fun `a frame without a chat id is not a command list`() {
+        assertNull(parseChatCommands(JSONObject().put("supported", true)))
+    }
+
+    @Test
+    fun `nameless commands are dropped rather than drawn as null`() {
+        val frame = JSONObject()
+            .put("chatId", "c-2")
+            .put("commands", JSONArray().put(JSONObject().put("description", "no name")))
+        val parsed = parseChatCommands(frame)
+        assertNotNull(parsed)
+        assertTrue(parsed!!.commands.isEmpty())
+    }
+
+    @Test
+    fun `an unsupported list keeps the pcs reason`() {
+        val frame = JSONObject()
+            .put("chatId", "c-3")
+            .put("supported", false)
+            .put("commands", JSONArray())
+            .put("note", "桌面版 DeepSeek Harness 没有在运行")
+        val parsed = parseChatCommands(frame)
+        assertNotNull(parsed)
+        assertFalse(parsed!!.supported)
+        assertEquals("桌面版 DeepSeek Harness 没有在运行", parsed.note)
+    }}

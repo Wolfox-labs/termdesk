@@ -205,9 +205,13 @@ export function unknownKernelMessage(entryOrId, lookup) {
  * accepted and the lookup is injected - which is what lets the tests ask about
  * invented kernels without touching the real table.
  */
-function resolve(entryOrId, lookup) {
+export function resolveKernelEntry(entryOrId, lookup) {
   if (entryOrId && typeof entryOrId === 'object') return entryOrId;
   if (typeof entryOrId !== 'string' || entryOrId.length === 0) return null;
   if (typeof lookup !== 'function') return null;
   return lookup(entryOrId) ?? null;
 }
+
+
+
+const resolve = resolveKernelEntry;
