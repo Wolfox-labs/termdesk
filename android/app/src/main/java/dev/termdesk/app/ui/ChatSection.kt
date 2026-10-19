@@ -2233,12 +2233,9 @@ private fun Conversation(
     // Fresh state per chat: opening or switching a conversation always lands at
     // its end, never at a leftover scroll offset from the previous one.
     val listState = key(chat.id) { rememberLazyListState() }
-    // 文本和光标是一对，必须一起存：只存文本的话，输入框在外面换掉文本时会保留
-    // 原来的光标偏移，插入「@标记」之后光标还停在 @ 后面（见 ChatMentions.insertion）。
     // ── 「@网页生成」这条路的界面状态 ──────────────────────────────────
     // 骨架资源包内嵌在 APK 里（assets/templates/web/），发消息时把选中的那一份
-    // 整份装配进指令。读它要 Context，所以在这里取一次、记住，别在每次重组时重读。
-    val context = LocalContext.current
+    // 整份装配进指令。读它要 Context（上面已取过一次），所以在这里记住，别在每次重组时重读。
     val skeletonOf: (PageTemplate) -> String = remember(context) {
         { template -> WebTemplates.readSkeleton(context.assets, template) }
     }
