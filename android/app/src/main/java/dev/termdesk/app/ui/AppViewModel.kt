@@ -322,8 +322,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---- theme ----
 
     private val _themeMode = MutableStateFlow(
-        runCatching { ThemeMode.valueOf(prefs.getString(KEY_THEME, ThemeMode.Dark.name)!!) }
-            .getOrDefault(ThemeMode.Dark),
+        // 默认给亮色：这个 App 是给人在手机上干活用的，白天在教室、办公室、走廊里看，
+        // 暗色底在强光下几乎看不清。想用暗色的人可以在设置里自己切，切了会被记住。
+        runCatching { ThemeMode.valueOf(prefs.getString(KEY_THEME, ThemeMode.Light.name)!!) }
+            .getOrDefault(ThemeMode.Light),
     )
     val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
 
@@ -424,6 +426,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteEntry(path: String) = client.deleteEntry(path)
     fun renameEntry(path: String, newName: String) = client.renameEntry(path, newName)
     fun downloadFile(path: String, name: String) = client.downloadFile(path, name)
+
+    /** 手机本地做完一件事（比如批量处理图片）之后，往当前对话里写一行系统提示。 */
+    fun note(text: String) = client.note(text)
+
+    /** 海报画好之后，把那张卡片放进当前对话（同一张就地更新，不刷屏）。 */
+    fun postPoster(text: String, file: String) = client.poster(text, file)
+
     fun uploadFile(uri: android.net.Uri, remoteDir: String) = client.uploadFile(uri, remoteDir)
 
     val savedUrl: String get() = computers.active()?.url ?: DEFAULT_URL

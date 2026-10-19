@@ -9,6 +9,7 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.util.LruCache
+import android.webkit.WebView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -61,6 +62,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import dev.termdesk.app.data.FilePreview
 import kotlinx.coroutines.Dispatchers
@@ -147,6 +149,7 @@ fun FilePreviewScreen(
                 preview.kind == "docx" -> DocxView(preview.text.orEmpty())
                 preview.kind == "image" && file != null -> ImageView(file)
                 preview.kind == "pdf" && file != null -> PdfView(file)
+                preview.kind == "html" -> HtmlView(preview.text.orEmpty())
                 else -> Message("这个格式在手机上没有内建查看器，可以保存到手机后用其他应用打开。")
             }
         }
@@ -173,6 +176,40 @@ private fun Message(text: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+/**
+ * 生成的网页：在手机上看「样子」。
+ *
+ * 页面文本由 PC 送来，这里用系统 WebView 渲染。脚本开着（小游戏 demo 需要），
+ * 但关掉本地文件与 content:// 访问：这只是把一段文本画出来，不该能碰手机上的东西。
+ */
+@Composable
+private fun HtmlView(html: String) {
+    if (html.isBlank()) {
+        Message("这个网页是空的。")
+        return
+    }
+    var loaded by remember { mutableStateOf<String?>(null) }
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { ctx ->
+            WebView(ctx).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.allowFileAccess = false
+                settings.allowContentAccess = false
+                setBackgroundColor(AndroidColor.parseColor("#0B0E14"))
+            }
+        },
+        update = { view ->
+            // 换一个文件预览时，同一个 WebView 实例会被复用，所以要按内容重新载入。
+            if (loaded != html) {
+                view.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                loaded = html
+            }
+        },
+    )
 }
 
 /** Word text as extracted by the PC: paragraphs, no invented styling. */
@@ -373,6 +410,7 @@ private fun kindLabel(kind: String): String = when (kind) {
     "image" -> "图片"
     "pdf" -> "PDF"
     "docx" -> "Word"
+    "html" -> "网页"
     else -> "文件"
 }
 

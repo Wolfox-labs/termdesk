@@ -66,14 +66,33 @@ class AgentClient(
         .readTimeout(0, TimeUnit.MILLISECONDS) // long-lived socket
         .build()
 
-    init {
-        // A queue that did not survive the process would be a queue only for the
-        // length of a train tunnel.
-        runCatching {
-            val saved = pendingSendsFile()?.takeIf { it.exists() }?.readText()
-            if (saved != null) pendingSends.restore(PendingSends.fromJson(saved))
-        }
-    }
+    // ── 断线待发队列 ─────────────────────────────────────────────────────
+    // 声明顺序是契约，而且整块必须待在类的这一头：`pendingSends` 在**构造时**就把
+    // 上一次进程留下的队列读回来（见 PendingSends.load），那一读会触发 onChanged →
+    // 写 _pendingCount，所以计数器必须先存在。
+    //
+    // 这里原来是一个 init 块，写在属性前面。那一刻 `pendingSends` 还是 null，
+    // 抛出的异常又被 runCatching 吞掉——队列因此只写不读：断线时发的消息在重启后
+    // 不是晚到而是消失，文件里的旧项也永远不清（30 分钟 TTL 形同虚设）。
+
+    /** How many messages are waiting for a link, for the composer to show. */
+    private val _pendingCount = MutableStateFlow(0)
+    val pendingCount: StateFlow<Int> = _pendingCount.asStateFlow()
+
+    /** What was dropped for being too old, so the screen can say so once. */
+    private val _pendingDropped = MutableStateFlow(0)
+    val pendingDropped: StateFlow<Int> = _pendingDropped.asStateFlow()
+
+    private val pendingSends = PendingSends(
+        // 读盘本身仍然兜住：一个坏掉的存档不该让整个客户端起不来。这里兜的只是 I/O，
+        // 里面不再引用任何"尚未初始化"的东西，所以吞掉的不会再是一个真问题。
+        load = {
+            runCatching {
+                pendingSendsFile()?.takeIf { it.exists() }?.readText()?.let { PendingSends.fromJson(it) }
+            }.getOrNull()
+        },
+        onChanged = { items -> onPendingSendsChanged(items) },
+    )
 
     private val _link = MutableStateFlow<LinkState>(LinkState.Idle)
     val link: StateFlow<LinkState> = _link.asStateFlow()
@@ -298,18 +317,6 @@ class AgentClient(
      */
     private val calls = PendingCalls()
 
-    private val pendingSends = PendingSends(
-        onChanged = { items -> persistPendingSends(items) },
-    )
-
-    /** How many messages are waiting for a link, for the composer to show. */
-    private val _pendingCount = MutableStateFlow(0)
-    val pendingCount: StateFlow<Int> = _pendingCount.asStateFlow()
-
-    /** What was dropped for being too old, so the screen can say so once. */
-    private val _pendingDropped = MutableStateFlow(0)
-    val pendingDropped: StateFlow<Int> = _pendingDropped.asStateFlow()
-
     private val _sessionDetail = MutableStateFlow<SessionDetail?>(null)
     val sessionDetail: StateFlow<SessionDetail?> = _sessionDetail.asStateFlow()
 
@@ -386,6 +393,75 @@ class AgentClient(
     private var chatEventIndex = LinkedHashMap<Int, ChatEvent>()
 
     /**
+     * Seq numbers for lines the **phone itself** writes into the conversation.
+     *
+     * Starting far above anything the kernel will ever send keeps two things true:
+     * these lines never overwrite a real event (the map is keyed by seq), and they
+     * always sort after the kernel's — which is what you want for a line that says
+     * "I just finished something on this device".
+     */
+    private var localSeq: Int = 0
+    private val localSeqBase: Int = 1_000_000_000
+
+    /**
+     * Append a line the phone produced on its own (image processing, for example).
+     *
+     * Kept in the same event list as the kernel's output on purpose: the transcript is
+     * the conversation's history, and a batch of pictures that was processed locally is
+     * part of that history. [ChatEvent.isLocal] is what makes the transcript draw it as
+     * a system line rather than as something the model said.
+     */
+    fun note(text: String) {
+        if (text.isBlank()) return
+        localSeq += 1
+        val seq = localSeqBase + localSeq
+        chatEventIndex[seq] = ChatEvent(
+            seq = seq,
+            at = System.currentTimeMillis(),
+            kind = "local",
+            role = null,
+            text = text,
+            name = null,
+            state = null,
+            exitCode = null,
+            sourceKind = "phone",
+            streaming = false,
+        )
+        _chatEvents.value = chatEventIndex.values.sortedBy { it.seq }
+    }
+
+    /**
+     * 海报画好了：往对话里放一张海报卡片。
+     *
+     * **同一张卡片就地更新**，而不是每画一张插一条：用户点「对比 +」「换底」会连着画好几张，
+     * 一条条堆下来会把整段对话刷屏，而且他会分不清哪张才算数。所以这里找"这条对话里最后一张
+     * 海报"，有就换掉它的图，没有才新建——界面上永远只有一张当前的海报。
+     */
+    fun poster(text: String, file: String) {
+        val existing = chatEventIndex.values.lastOrNull { it.kind == "poster" }
+        if (existing != null) {
+            chatEventIndex[existing.seq] = existing.copy(text = text, poster = file)
+        } else {
+            localSeq += 1
+            val seq = localSeqBase + localSeq
+            chatEventIndex[seq] = ChatEvent(
+                seq = seq,
+                at = System.currentTimeMillis(),
+                kind = "poster",
+                role = null,
+                text = text,
+                name = null,
+                state = null,
+                exitCode = null,
+                sourceKind = "phone",
+                streaming = false,
+                poster = file,
+            )
+        }
+        _chatEvents.value = chatEventIndex.values.sortedBy { it.seq }
+    }
+
+    /**
      * Engine questions waiting for an answer on this phone.
      *
      * Kept with the connection state rather than inside a screen: a question that
@@ -426,7 +502,14 @@ class AgentClient(
         File(dir, "queue.json")
     }
 
-    private fun persistPendingSends(items: List<PendingSends.Item>) {
+    /**
+     * The queue changed: publish the count and write it down.
+     *
+     * 名字说明它是队列的**唯一**变更钩子（入队、确认、清理、以及构造时读回来都会走这里），
+     * 而不是"只是把文件写一下"——它同时是 `_pendingCount` 的写入点，这正是那三样状态
+     * 必须按声明顺序排在一起的原因（见类开头那段说明）。
+     */
+    private fun onPendingSendsChanged(items: List<PendingSends.Item>) {
         _pendingCount.value = items.size
         val file = pendingSendsFile() ?: return
         runCatching { file.writeText(PendingSends.toJson(items)) }
@@ -1395,10 +1478,12 @@ class AgentClient(
                 _preview.value = null
                 readFile(entry.path)
             }
-            "docx" -> {
+            // docx 与 html 都由 PC 抽出文本再送到手机：docx 用文档查看器排版显示，
+            // html 交给内置 WebView 渲染——生成的网页要看到的是「样子」，不是源码。
+            "docx", "html" -> {
                 _openFile.value = null
                 _preview.value = FilePreview(
-                    kind = "docx",
+                    kind = entry.kind,
                     name = entry.name,
                     path = entry.path,
                     loading = true,

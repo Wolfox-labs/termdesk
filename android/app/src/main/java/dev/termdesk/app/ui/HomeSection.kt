@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.AlertDialog
@@ -84,6 +85,8 @@ fun HomeSection(
     onBrowseFiles: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenSystem: () -> Unit,
+    /** 断开连接：用户点名要把它放到"显示电脑型号"那一行的最右侧。 */
+    onDisconnect: () -> Unit = {},
 ) {
     var pickerOpen by remember { mutableStateOf(false) }
     val selectable = engines.filter { it.selectable }
@@ -152,6 +155,16 @@ fun HomeSection(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+            Spacer(Modifier.width(6.dp))
+            // 断开连接：用户点名搬到"显示电脑型号这一行"的最右侧，还是那个开关样的标志。
+            IconButton(onClick = onDisconnect, enabled = connected) {
+                Icon(
+                    imageVector = Icons.Outlined.PowerSettingsNew,
+                    contentDescription = "断开连接",
+                    tint = if (connected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outline,
+                )
             }
         }
 

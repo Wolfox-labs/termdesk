@@ -27,6 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { AcpKernel } from './acp.js';
+import { findDshEntry, dshWhyMissing } from './dsh.js';
 
 const NPM_ROOT = path.join(os.homedir(), 'AppData', 'Roaming', 'npm');
 const LOCAL_PROGRAMS = path.join(os.homedir(), 'AppData', 'Local', 'Programs');
@@ -105,7 +106,10 @@ function table() {
             if (found) return found;
           }
         } catch { /* fall through */ }
-        return 'codex';
+        // 找到才算可用。原本这里直接返回裸名字 'codex'，于是 available 恒为真，
+        // 手机上就会出现一个「选中即 app-server exited (1)」的内核，且没有任何解释。
+        // 没装就是没装，交给下面的 detail 说「未在本机找到」。
+        return firstOnPath(['codex.exe', 'codex.cmd', 'codex']);
       },
     },
     {
@@ -119,18 +123,12 @@ function table() {
       // fails. The sentence below says the same thing a second time on purpose.
       resume: false,
       detail: 'SDK 运行时：可连续对话；历史恢复尚未开放',
-      resolve: () => {
-        if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
-        // In a sandbox, "dsh" is whatever is on PATH; the Windows path below
-        // only exists inside the desktop app install.
-        if (process.platform !== "win32") return firstOnPath(["dsh"]);
-        // Must be the JS entry: the chat pipeline launches it as
-        // `node <entry> --profile sdk`, and `bin/dsh.ps1` is only a launcher shim.
-        return firstFile([
-          path.join(os.homedir(), 'AppData', 'Roaming', 'io.github.hairyf.deepseek-harness-desktop',
-            'dependencies', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
-        ]);
-      },
+      // 入口怎么找由 kernels/dsh.js 一处负责（PATH / npm 全局 / 旧安装器布局 /
+      // 注册表登记的安装目录）。这里和启动器问的是同一个函数，所以"选择器说没装、
+      // 启动器却去开另一个路径"这种事不会再发生。
+      resolve: () => findDshEntry(),
+      // "没装"和"装了但引擎在 app.asar 里"是两回事，后者是可行动的。
+      whyMissing: dshWhyMissing,
     },
     {
       id: 'opencode',
@@ -375,7 +373,9 @@ export function listKernels() {
       ),
       path: command ? (command.script ?? command.bin) : null,
       args: command?.args ?? null,
-      detail: available ? entry.detail : (entry.tier === 'unsupported' ? '未安装' : '未在本机找到'),
+      detail: available
+        ? entry.detail
+        : (entry.tier === 'unsupported' ? '未安装' : (entry.whyMissing?.() ?? '未在本机找到')),
       shim: entry.shim ?? null,
       multiTurn: entry.tier === 'native' || entry.tier === 'acp' || (entry.tier === 'shim' && shimVerified(entry)),
       progress: entry.tier === 'native' || entry.tier === 'acp' || entry.tier === 'shim',

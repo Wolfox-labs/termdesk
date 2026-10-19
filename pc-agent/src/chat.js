@@ -74,7 +74,7 @@ import { discardPreviews as discardStreamedPreviews, handleAssistantChunk as han
 import { Chat } from './chat/chat.js';
 import { decisionFor } from './kernels/codex.js';
 import { CliKernel } from './kernels/cli.js';
-import { ensureOverlay, routeConfig, runtimeArgs } from './kernels/dsh.js';
+import { ensureOverlay, routeConfig, runtimeArgs, findDshEntry, dshWhyMissing } from './kernels/dsh.js';
 import { chatEngineIds, getKernel, isAcpKernel, isCliKernel, kernelTier, shimSpec, spawnSpec } from './kernels/registry.js';
 import {
   canResume,
@@ -135,22 +135,15 @@ const MAX_QUEUED_MESSAGES = 5;
  */
 export const CHAT_ENGINES = chatEngineIds();
 
-/** Resolve the DSH launcher entry script. Mirrors engines.js so tests can override both. */
+/**
+ * Resolve the DSH launcher entry script.
+ *
+ * 这里从前和 `kernels/registry.js`、`engines.js` 各写一份**同样的硬编码路径**，
+ * 于是同一个事实被抄了三遍、也就会各自过期三遍（旧安装器的布局在本机早就没有了）。
+ * 现在只有 `kernels/dsh.js` 知道这件事，三处都问它。
+ */
 function findDsh() {
-  if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
-  return path.join(
-    os.homedir(),
-    'AppData',
-    'Roaming',
-    'io.github.hairyf.deepseek-harness-desktop',
-    'dependencies',
-    'dsh',
-    'node_modules',
-    '@deepseek-ai',
-    'dsh',
-    'lib',
-    'bin.js',
-  );
+  return findDshEntry();
 }
 
 /**
@@ -1355,6 +1348,8 @@ export class ChatManager {
 
     chat.status = 'running';
     chat.kernelLive = true;
+    // 本轮起点：回合结束时用它判断"哪些文件是本轮写出来的"（见 announceArtifacts）。
+    chat.turnStartedAt = Date.now();
     this.emit({ event: 'chat.status', chatId: chat.id, status: 'running' });
     this.emitEvent(chat, userSeq);
 
@@ -1543,6 +1538,57 @@ export class ChatManager {
     }
   }
 
+  /**
+   * 本轮在工作目录里写出来的文件，做成一张「产出文件」卡片发给手机。
+   *
+   * 为什么要它：OpenCode（ACP）从不发 `deliverables/presented`——那是 DSH 的词汇。
+   * 结果真机上东西明明生成了，手机里**一张文件卡片都没有**，用户只能在聊天里看一行
+   * 路径干瞪眼。这里在回合结束时扫一遍工作目录，把本轮改动过的普通文件报上去，
+   * 手机端就能直接点开或下载（见 App 的 DeliverableLine）。
+   */
+  announceArtifacts(chat) {
+    try {
+      const cwd = chat?.cwd;
+      const since = chat?.turnStartedAt ?? 0;
+      if (!cwd || !since) return;
+      // 内核自己的构建脚本、日志、备份不算产物。
+      const skip = /\.(py|ps1|sh|bat|cmd|log|tmp|bak)$/i;
+      // 写文件的工具调用已经由 ACP 适配器报过一张卡了（kernels/acp.js 的 deliverable），
+      // 这里再报一次就是重复卡片。按小写路径去重。
+      const already = new Set();
+      for (const ev of chat.events ?? []) {
+        if (ev.kind !== 'deliverable') continue;
+        for (const f of ev.meta?.files ?? []) {
+          if (f?.path) already.add(String(f.path).toLowerCase());
+        }
+      }
+      const files = fs.readdirSync(cwd, { withFileTypes: true })
+        .filter((e) => e.isFile() && !e.name.startsWith('.') && !e.name.startsWith('~$'))
+        .map((e) => e.name)
+        .filter((name) => !skip.test(name))
+        .map((name) => {
+          const full = path.join(cwd, name);
+          try {
+            const st = fs.statSync(full);
+            return { path: full, name, size: st.size, mtimeMs: st.mtimeMs };
+          } catch {
+            return null;
+          }
+        })
+        .filter((f) => f && f.size > 0 && f.mtimeMs >= since - 1000)
+        .filter((f) => !already.has(f.path.toLowerCase()))
+        .sort((a, b) => b.mtimeMs - a.mtimeMs)
+        .slice(0, 8)
+        .map((f) => ({ path: f.path, name: f.name, size: f.size }));
+      if (files.length === 0) return;
+      // 必须 push **并且** emit：只 push 的话这条事件只活在服务端的会话里，
+      // 手机那边永远收不到（上一版就是漏了 emit，探针里一张卡都没出现）。
+      this.pushAndEmit(chat, { kind: 'deliverable', role: 'engine', text: '', meta: { files } });
+    } catch (err) {
+      this.log(`[termdesk] 产物扫描失败：${err?.message ?? err}`);
+    }
+  }
+
   /** Close out an ACP turn exactly once, mirroring the Codex lifecycle. */
   finishAcpTurn(chat, stopReason) {
     if (chat.status === 'stopped') return;
@@ -1557,6 +1603,8 @@ export class ChatManager {
     }
     chat.status = failed ? 'failed' : 'idle';
     chat.lastError = failed ? '内核拒绝了本轮请求' : null;
+    // 产物卡片排在回合标记之前：读起来是「产出了这些 → 本轮结束」。
+    this.announceArtifacts(chat);
     chat.push({
       kind: 'turn', role: 'engine', text: '',
       meta: { state: failed ? 'failed' : 'ended', reason: cancelled ? 'interrupted' : (stopReason ?? null) },
@@ -1761,8 +1809,10 @@ export class ChatManager {
     if (chat.child && chat.child.exitCode === null && chat.ready) return;
 
     const bin = findDsh();
-    if (!fs.existsSync(bin)) {
-      throw new Error(`找不到 DSH 入口：${bin}`);
+    if (!bin || !fs.existsSync(bin)) {
+      throw new Error(
+        `找不到 DSH 入口：${bin ?? dshWhyMissing() ?? '本机没有可运行的 DSH（可用 TERMDESK_DSH 指定入口）'}`,
+      );
     }
 
     // The sdk profile knows no providers by itself: the shared settings file

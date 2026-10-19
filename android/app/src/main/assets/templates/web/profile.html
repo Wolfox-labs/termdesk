@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<!-- 网页骨架 · 个人主页 / 电子名片（姓名 + 一句话 + 简介 + 经历 + 联系方式）
+     用法：整份照抄，只替换双花括号占位符里的文字与 :root 里的色值，不要改结构、不要重写 CSS。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{页面标题}}</title>
+<style>
+:root{
+{{配色变量}}
+  --wrap:720px;--radius:16px;
+  --f:"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--f);font-size:16px;
+  line-height:1.75;overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:var(--wrap);margin:0 auto;padding:0 20px}
+
+.head{padding:56px 0 36px;text-align:center;position:relative;overflow:hidden}
+.head:before{content:"";position:absolute;inset:-50% -30% auto -30%;height:380px;
+  background:radial-gradient(closest-side,color-mix(in srgb,var(--primary) 22%,transparent),transparent)}
+.head .wrap{position:relative}
+.avatar{width:88px;height:88px;border-radius:26px;margin:0 auto 20px;
+  background:color-mix(in srgb,var(--primary) 20%,var(--card));color:var(--primary);
+  display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:700;
+  border:1px solid color-mix(in srgb,var(--primary) 34%,transparent)}
+.head h1{font-size:29px;font-weight:700;letter-spacing:-.4px}
+.head .role{margin-top:8px;color:var(--primary);font-size:15px}
+.head .bio{margin-top:16px;color:var(--muted);font-size:15px;max-width:520px;
+  margin-left:auto;margin-right:auto}
+.links{margin-top:24px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.links a{padding:9px 20px;border-radius:999px;font-size:14px;background:var(--card);
+  border:1px solid color-mix(in srgb,var(--text) 10%,transparent)}
+.links a.on{background:var(--primary);color:var(--bg);border-color:transparent;font-weight:600}
+
+section{padding:34px 0}
+h2{font-size:19px;font-weight:700;margin-bottom:18px;letter-spacing:-.2px}
+h2:before{content:"";display:inline-block;width:4px;height:16px;border-radius:2px;
+  background:var(--primary);margin-right:10px;vertical-align:-2px}
+
+.tags{display:flex;flex-wrap:wrap;gap:9px}
+.tags span{font-size:13px;padding:6px 14px;border-radius:999px;background:var(--card);
+  color:var(--muted);border:1px solid color-mix(in srgb,var(--text) 8%,transparent)}
+
+.item{background:var(--card);border-radius:var(--radius);padding:18px 20px;margin-bottom:12px;
+  border:1px solid color-mix(in srgb,var(--text) 8%,transparent)}
+.item .t{font-size:12px;color:var(--primary);letter-spacing:.5px}
+.item h3{font-size:16px;font-weight:600;margin:6px 0 5px}
+.item p{font-size:14px;color:var(--muted)}
+
+.contact{background:var(--card);border-radius:var(--radius);padding:8px 20px}
+.contact div{display:flex;gap:14px;padding:13px 0;font-size:14px;
+  border-bottom:1px solid color-mix(in srgb,var(--text) 8%,transparent)}
+.contact div:last-child{border-bottom:0}
+.contact b{flex:0 0 68px;color:var(--muted);font-weight:500}
+
+footer{border-top:1px solid color-mix(in srgb,var(--text) 10%,transparent);
+  padding:26px 0 38px;margin-top:24px;font-size:12px;color:var(--muted);text-align:center}
+
+@media (max-width:640px){
+  .head{padding:40px 0 26px}
+  .head h1{font-size:24px}
+  section{padding:26px 0}
+}
+</style>
+</head>
+<body>
+
+<div class="head">
+  <div class="wrap">
+    <div class="avatar">{{头像文字}}</div>
+    <h1>{{姓名}}</h1>
+    <div class="role">{{身份}}</div>
+    <p class="bio">{{一句话简介}}</p>
+    <div class="links">
+      <a href="#about" class="on">{{按钮1}}</a>
+      <a href="#exp">{{按钮2}}</a>
+      <a href="#contact">{{按钮3}}</a>
+    </div>
+  </div>
+</div>
+
+<section id="about">
+  <div class="wrap">
+    <h2>{{简介区标题}}</h2>
+    <div class="tags">
+      <span>{{标签1}}</span>
+      <span>{{标签2}}</span>
+      <span>{{标签3}}</span>
+      <span>{{标签4}}</span>
+      <span>{{标签5}}</span>
+    </div>
+  </div>
+</section>
+
+<section id="exp">
+  <div class="wrap">
+    <h2>{{经历区标题}}</h2>
+    <div class="item">
+      <div class="t">{{经历1时间}}</div>
+      <h3>{{经历1标题}}</h3>
+      <p>{{经历1说明}}</p>
+    </div>
+    <div class="item">
+      <div class="t">{{经历2时间}}</div>
+      <h3>{{经历2标题}}</h3>
+      <p>{{经历2说明}}</p>
+    </div>
+    <div class="item">
+      <div class="t">{{经历3时间}}</div>
+      <h3>{{经历3标题}}</h3>
+      <p>{{经历3说明}}</p>
+    </div>
+  </div>
+</section>
+
+<section id="contact">
+  <div class="wrap">
+    <h2>联系方式</h2>
+    <!--可选-->
+    <div class="contact">
+      <div><b>电话</b><span>{{联系电话}}</span></div>
+      <div><b>邮箱</b><span>{{邮箱}}</span></div>
+      <div><b>地址</b><span>{{地址}}</span></div>
+    </div>
+    <!--/可选-->
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">{{页脚版权}}</div>
+</footer>
+
+</body>
+</html>

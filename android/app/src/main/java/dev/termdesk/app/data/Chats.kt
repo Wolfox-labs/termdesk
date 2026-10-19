@@ -110,6 +110,13 @@ data class ChatEvent(
      * "report.md" and cannot open it is decoration. Empty for every other kind of event.
      */
     val files: List<ChatFile> = emptyList(),
+    /**
+     * 海报成品在本机上的路径（只有 `kind == "poster"` 的事件有）。
+     *
+     * 单独一个字段而不是塞进 [files]：它不是"这一轮交付的文件"，而是一张要在聊天里
+     * **画出来**的图——转写层靠它决定这条渲染成海报卡片，而不是一行文件名。
+     */
+    val poster: String? = null,
 ) {
     val isUser: Boolean get() = kind == "message" && role == "user"
     val isAssistant: Boolean get() = kind == "message" && role == "assistant"

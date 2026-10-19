@@ -14,6 +14,8 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
+import { findDshEntry } from './kernels/dsh.js';
+
 /** Resolve the Codex binary: env override, then the known install location. */
 export function findCodex() {
   if (process.env.TERMDESK_CODEX) return process.env.TERMDESK_CODEX;
@@ -30,22 +32,9 @@ export function findCodex() {
   return 'codex';
 }
 
-/** Resolve the DSH launcher entry script. */
+/** Resolve the DSH launcher entry script. One discovery point: kernels/dsh.js. */
 export function findDsh() {
-  if (process.env.TERMDESK_DSH) return process.env.TERMDESK_DSH;
-  return path.join(
-    os.homedir(),
-    'AppData',
-    'Roaming',
-    'io.github.hairyf.deepseek-harness-desktop',
-    'dependencies',
-    'dsh',
-    'node_modules',
-    '@deepseek-ai',
-    'dsh',
-    'lib',
-    'bin.js',
-  );
+  return findDshEntry();
 }
 
 /**

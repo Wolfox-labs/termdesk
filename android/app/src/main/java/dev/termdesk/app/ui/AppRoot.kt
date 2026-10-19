@@ -355,14 +355,6 @@ fun AppRoot(
                 onForget = { vm.forgetDevice(); connectionOpen = true },
             )
 
-            // An open file takes over the work area: viewing and editing are
-            // both focused modes, never a panel beside the browser.
-            preview != null -> FilePreviewScreen(
-                preview = preview!!,
-                onClose = vm::closePreview,
-                onSave = vm::savePreviewToDownloads,
-            )
-
             openFile != null -> FileEditor(
                 file = openFile!!,
                 onSave = vm::writeFile,
@@ -385,6 +377,8 @@ fun AppRoot(
                 onNavigate = vm::listDirectory,
                 onOpenFile = { entry -> vm.openPreview(entry) },
                 onDownload = { entry -> vm.downloadFile(entry.path, entry.name) },
+                // 聊天里「产出文件」卡片上的「下载」：同一个下载器，按路径取。
+                onDownloadPath = { path, name -> vm.downloadFile(path, name) },
                 onUpload = vm::uploadFile,
                 onCreateEntry = vm::createEntry,
                 onDeleteEntry = vm::deleteEntry,
@@ -437,6 +431,8 @@ fun AppRoot(
                     section = Section.Sessions
                 },
                 onSendChat = vm::sendChatMessage,
+                onNote = vm::note,
+                onPoster = vm::postPoster,
                 onCancelChat = vm::cancelChat,
                 onCloseChat = vm::closeChat,
                 onLeaveChat = vm::leaveChat,
@@ -515,6 +511,23 @@ fun AppRoot(
                 },
                 onCloseTerminalView = vm::closeTerminalView,
             )
+        }
+
+        // 预览是盖在当前页上的浮层，不是一个目的地：关掉它，回到的就是刚才那一页
+        // —— 同一个对话、同一份草稿、同一个滚动位置。把整页替换掉会把这些全丢掉，
+        // 那正好和「看一眼它刚做出来的东西」相反。
+        preview?.let { open ->
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background),
+            ) {
+                FilePreviewScreen(
+                    preview = open,
+                    onClose = vm::closePreview,
+                    onSave = vm::savePreviewToDownloads,
+                )
+            }
         }
 
         SnackbarHost(
