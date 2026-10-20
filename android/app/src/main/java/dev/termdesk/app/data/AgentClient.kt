@@ -72,8 +72,9 @@ class AgentClient(
         .readTimeout(0, TimeUnit.MILLISECONDS) // long-lived socket
         .build()
 
-    /** Uploads talk HTTP; the socket client keeps ownership of progress state. */
+    /** Uploads and downloads talk HTTP; the socket client owns their flow state. */
     private val uploader = AgentUploader(client)
+    private val fileTransfer = AgentFileTransfer(client, appContext)
 
     private val _link = MutableStateFlow<LinkState>(LinkState.Idle)
     val link: StateFlow<LinkState> = _link.asStateFlow()
@@ -421,7 +422,6 @@ class AgentClient(
 
     private val _chatSending = MutableStateFlow(false)
     val chatSending: StateFlow<Boolean> = _chatSending.asStateFlow()
-
 
 
     private var generation = 0
@@ -1234,34 +1234,8 @@ class AgentClient(
         _transfer.value = TransferState(fileName, 0f, "准备下载…")
         scope.launch {
             runCatching {
-                val encoded = URLEncoder.encode(remotePath, "UTF-8")
-                val request = Request.Builder()
-                    .url("$base/download?path=$encoded")
-                    .header("Authorization", "Bearer $tok")
-                    .build()
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) error("HTTP ${response.code}")
-                    val body = response.body ?: error("empty response body")
-                    val total = body.contentLength()
-                    val dir = downloadDir()
-                    val outFile = File(dir, fileName)
-                    body.byteStream().use { input ->
-                        outFile.outputStream().use { output ->
-                            val buffer = ByteArray(64 * 1024)
-                            var read = input.read(buffer)
-                            var done = 0L
-                            while (read >= 0) {
-                                output.write(buffer, 0, read)
-                                done += read
-                                // Report progress only when the length is known.
-                                if (total > 0) {
-                                    _transfer.value = TransferState(fileName, done.toFloat() / total, "下载中…")
-                                }
-                                read = input.read(buffer)
-                            }
-                        }
-                    }
-                    outFile
+                fileTransfer.download(base, tok, remotePath, fileName) { fraction ->
+                    _transfer.value = TransferState(fileName, fraction, "下载中…")
                 }
             }.onSuccess { file ->
                 _transfer.value = null
@@ -1329,8 +1303,6 @@ class AgentClient(
         }
     }
 
-
-    /** App-private external directory: no storage permission required. */
     // ---- file preview ------------------------------------------------------
 
     /**
@@ -1443,44 +1415,13 @@ class AgentClient(
         }
         scope.launch {
             runCatching {
-                val encoded = URLEncoder.encode(entry.path, "UTF-8")
-                val request = Request.Builder()
-                    .url("$base/download?path=$encoded")
-                    .header("Authorization", "Bearer $tok")
-                    .build()
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) error("HTTP ${response.code}")
-                    val body = response.body ?: error("响应为空")
-                    val dir = previewDir()
-                    val out = File(dir, safeFileName(entry.name))
-                    body.byteStream().use { input ->
-                        out.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    out
-                }
+                fileTransfer.fetchPreview(base, tok, entry)
             }.onSuccess { file ->
                 _preview.value = _preview.value?.copy(loading = false, localFile = file)
             }.onFailure { err ->
                 _preview.value = _preview.value?.copy(loading = false, message = "无法读取：${err.message}")
             }
         }
-    }
-
-    private fun previewDir(): File {
-        val ctx = appContext ?: return File("/data/local/tmp")
-        val dir = File(ctx.cacheDir, "preview")
-        if (!dir.exists()) dir.mkdirs()
-        return dir
-    }
-
-    private fun safeFileName(name: String): String =
-        name.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "preview.bin" }
-
-    private fun downloadDir(): File {
-        val ctx = appContext ?: return File("/sdcard/Download")
-        val dir = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "downloads")
-        if (!dir.exists()) dir.mkdirs()
-        return dir
     }
 
     private fun sendFrame(obj: JSONObject): Boolean {
@@ -2050,7 +1991,6 @@ class AgentClient(
     // ---- live chat parsing and reduction ----
 
 
-
     /**
      * Fold one approval frame into the pending list.
      *
@@ -2081,8 +2021,6 @@ class AgentClient(
             JSONObject().put("type", "chat.resume").put("engine", chat.engine).put("sessionId", native),
         )
     }
-
-
 
 
     /**
@@ -2268,15 +2206,10 @@ class AgentClient(
     }
 
 
-
-
-
     // ---- kernel parser ----
 
 
     // ---- existing-session parsers ----
-
-
 
 
 }
