@@ -912,6 +912,9 @@ export function createFrameHandler(ctx) {
         const chat = chats.get(frame.chatId);
         if (!chat) { send(S2C.ERROR, { code: 'no_chat', message: '会话不存在' }); break; }
         continuity.touch(frame.chatId, identity);
+        // A chat whose mirror was reaped must not answer a reconnect with the frozen
+        // copy; refreshing first is a no-op unless the journal has moved.
+        await chats.refreshStaleDsh(chat);
         // Events can be revised or removed without advancing their sequence.
         // Reconnect therefore uses a full snapshot, including those revisions.
         send(S2C.CHAT, decorateChat(chat.detail()));
@@ -1160,6 +1163,9 @@ export function createFrameHandler(ctx) {
         if (!chat) {
           send(S2C.ERROR, { code: 'no_chat', message: '会话不存在' });
         } else {
+          // Opening an existing conversation is exactly when a frozen transcript is
+          // noticed. Re-read it first when its journal moved since the last seed.
+          await chats.refreshStaleDsh(chat);
           send(S2C.CHAT, decorateChat(chat.detail()));
         }
         break;

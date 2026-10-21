@@ -1,6 +1,5 @@
 package dev.termdesk.app.ui
 
-import dev.termdesk.app.BuildConfig
 import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
@@ -363,11 +362,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- theme ----
 
-    private val defaultThemeMode = if (BuildConfig.UI_LAYOUT == "classic") {
-        ThemeMode.Dark
-    } else {
-        ThemeMode.Light
-    }
+    private val defaultThemeMode = ThemeMode.Light
     private val _themeMode = MutableStateFlow(
         runCatching { ThemeMode.valueOf(prefs.getString(KEY_THEME, defaultThemeMode.name)!!) }
             .getOrDefault(defaultThemeMode),

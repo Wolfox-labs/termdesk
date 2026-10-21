@@ -1,6 +1,5 @@
 package dev.termdesk.app.ui
 
-import dev.termdesk.app.BuildConfig
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -206,7 +205,8 @@ fun AppShell(
     sessions: List<SessionInfo>,
     recordedSession: SessionDetail?,
     onLoadChats: () -> Unit,
-    onCreateChat: (String?) -> Unit,
+    /** (working directory, kernel): both chosen in the new-conversation dialog. */
+    onCreateChat: (String?, String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSendChat: (String, String) -> Unit,
     /** 手机本地做完一件事之后，往当前对话里写一行系统提示（见 AgentClient.note）。 */
@@ -272,7 +272,9 @@ fun AppShell(
     onCloseTerminalView: () -> Unit,
 ) {
     var panelOpen by remember { mutableStateOf(false) }
-    val classicLayout = BuildConfig.UI_LAYOUT == "classic"
+    // The classic layout is parked: the flavor that switched it on is not part of this
+    // branch, so the modern one is the only layout built here.
+    val classicLayout = false
     // Sections live in a drawer rather than a permanent rail: a phone is about
     // 400dp wide and the rail charged every screen 56dp for it.
     var sectionDrawerOpen by remember { mutableStateOf(false) }
@@ -780,7 +782,7 @@ private fun SectionBody(
     recordedSession: SessionDetail?,
     onLoadChats: () -> Unit,
     // Starts a conversation right away on the kernel the home page shows.
-    onCreateChat: (String?) -> Unit,
+    onCreateChat: (String?, String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSendChat: (String, String) -> Unit,
     /** 手机本地做完一件事之后写一行系统提示，见 AgentClient.note。 */
@@ -936,6 +938,8 @@ private fun SectionBody(
             workspaces = workspaces,
             sessions = sessions,
             defaultCwd = defaultCwd,
+            defaultEngine = defaultEngine,
+            roots = roots,
             recordedSession = recordedSession,
             engines = engines,
             codexConfig = codexConfig,

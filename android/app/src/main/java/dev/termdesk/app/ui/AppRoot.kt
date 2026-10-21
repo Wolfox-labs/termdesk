@@ -476,11 +476,15 @@ fun AppRoot(
                 sessions = sessions,
                 recordedSession = sessionDetail,
                 onLoadChats = vm::loadChats,
-                // A new conversation starts immediately, on the kernel and in the
-                // directory the home page is already showing.
-                onCreateChat = { cwd ->
-                    if (canCreateChat) {
-                        vm.createChat(cwd = cwd ?: vm.defaultCwd, engine = engineForNewChat)
+                // A new conversation starts on the kernel and in the directory the
+                // dialog chose; the home page's standing choice is only the fallback.
+                onCreateChat = { cwd, engine ->
+                    // The chosen engine is enough on its own: the standing choice can
+                    // be momentarily null right after a cold start, and that must not
+                    // swallow the tap.
+                    val chosen = engine ?: engineForNewChat
+                    if (link is LinkState.Connected && chosen != null) {
+                        vm.createChat(cwd = cwd ?: vm.defaultCwd, engine = chosen)
                         section = Section.Sessions
                     }
                 },

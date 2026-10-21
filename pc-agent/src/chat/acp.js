@@ -8,7 +8,7 @@ import { CliKernel } from '../kernels/cli.js';
 import { routeConfig, routeConfigError } from '../kernels/dsh.js';
 import { discoverLiveHost, liveListCommands } from '../kernels/dsh-live.js';
 import { isAcpKernel, isCliKernel, shimSpec, spawnSpec } from '../kernels/registry.js';
-import { readSession } from '../sessions.js';
+import { lastWriteOf, readSession } from '../sessions.js';
 import { unknownKernelMessage } from '../kernels/contract.js';
 import { Chat } from './chat.js';
 import { MAX_CHATS, lookupKernel } from './shared.js';
@@ -429,6 +429,10 @@ export const acpMethods = {
         meta: event.meta ?? null,
       });
     }
+    // How far this transcript is known to be current. `refreshStaleDsh` compares the
+    // journal's write time against it, so an unchanged file is never decompressed a
+    // second time just because somebody reopened the screen.
+    chat.historySeededAt = lastWriteOf({ engine: 'dsh', id })?.at ?? new Date().toISOString();
 
     // If the desktop app is running, this conversation is ITS to continue: it
     // already holds the write handle, and a second runtime would fork the journal.
@@ -456,9 +460,116 @@ export const acpMethods = {
       });
     }
     return { ok: true, chat: chat.detail() };
-  }
+  },
 
-  /** Route one session/update notification into the right transcript. */,
+  /**
+   * Re-read one conversation from its journal and re-attach the mirror.
+   *
+   * Why this exists: a live-attached chat is not idle — the desktop app keeps writing
+   * into the same session while the phone only watches — but the idle reaper only
+   * knows `lastUsedAt`, which used to move only when the phone sent something. After
+   * 45 minutes of watching, the chat was disposed: the follow stream stopped and the
+   * transcript froze at whatever had been mirrored so far, while the chat stayed in
+   * the list. The answer that was being written at that moment (and every turn after
+   * it) never arrived, and reopening joined the same frozen handle.
+   *
+   * `refreshStaleDsh` decides WHEN a re-read is worth it (only when the journal has
+   * moved); this method performs it. Display state only: the runtime owns the prompt
+   * history, and none of this is ever fed back as a prompt.
+   */
+  async refreshDshChat(chat, { read = readSession, discover = discoverLiveHost } = {}) {
+    if (chat.engine !== 'dsh' || !chat.nativeResume) return false;
+    // A running turn owns the transcript; replacing it would delete the live answer.
+    if (chat.status === 'running') return false;
+    let detail = null;
+    try { detail = await read({ engine: 'dsh', id: chat.sessionId }); } catch { detail = null; }
+    if (!detail) return false;
+
+    this.stopLiveTail(chat);
+    // The transcript is replaced, not merged: it is a snapshot of the journal, and a
+    // merge would keep rows the engine no longer shows as current.
+    chat.events = [];
+    chat.seq = 0;
+    chat.previews = [];
+    chat.streaming = null;
+    chat.status = 'idle';
+    chat.lastError = null;
+    for (const event of detail.events ?? []) {
+      const at = event.at ? Date.parse(event.at) : NaN;
+      chat.push({
+        kind: event.kind,
+        role: event.role ?? null,
+        text: event.text ?? '',
+        at: Number.isNaN(at) ? undefined : at,
+        name: event.name ?? null,
+        meta: event.meta ?? null,
+      });
+    }
+    if (detail.meta?.title && chat.titleSource !== 'user') {
+      chat.title = detail.meta.title;
+      chat.titleSource = 'recorded';
+    }
+    chat.historySeededAt = lastWriteOf({ engine: 'dsh', id: chat.sessionId })?.at
+      ?? new Date().toISOString();
+    chat.lastUsedAt = Date.now();
+
+    let liveHost = null;
+    try { liveHost = discover(); } catch { liveHost = null; }
+    if (liveHost) {
+      chat.liveHost = liveHost;
+      chat.kernelLive = true;
+      chat.pendingResume = false;
+      chat.ready = true;
+      // Start the mirror from a clean cursor: the numbers from the previous stream
+      // describe a stream that no longer exists, and keeping them would dedupe away
+      // the first events of the new one.
+      chat.liveLastSeq = -1;
+      chat.liveSeenSnapshot = false;
+      this.startLiveWatch(chat, chat.sessionId);
+      chat.push({
+        kind: 'local',
+        role: 'engine',
+        text: '已重新读取这段会话的最新记录，并接上桌面端的实时会话',
+      });
+    } else {
+      chat.liveHost = null;
+      chat.kernelLive = false;
+      chat.ready = false;
+      // The desktop app owned the write handle; with it gone the next message has to
+      // take the handle over, which `ensureRuntime` only does when this is set.
+      chat.pendingResume = true;
+      chat.push({
+        kind: 'local',
+        role: 'engine',
+        text: '已重新读取这段会话的最新记录；桌面端不在运行，发送消息时会接管这次会话',
+      });
+    }
+    return true;
+  },
+
+  /**
+   * Re-read a chat whose mirror was reaped, but only when there is something new.
+   *
+   * Called from `resume` (the phone opening the conversation) and from `chat.read` /
+   * `chat.sync` (a screen that was already open asking again). The journal's write
+   * time is the evidence: an unchanged file means the frozen transcript is still the
+   * truth, and decompressing a large session on every reconnect would be pure cost.
+   */
+  async refreshStaleDsh(chat, deps) {
+    if (chat.engine !== 'dsh' || !chat.nativeResume) return false;
+    if (chat.ready || chat.status === 'running') return false;
+    const write = lastWriteOf({ engine: 'dsh', id: chat.sessionId });
+    if (!write) return false;
+    // `historySeededAt` is absent on chats seeded by older builds: they cannot prove
+    // they are current, so they get one re-read rather than a permanent freeze.
+    if (chat.historySeededAt) {
+      const seeded = Date.parse(chat.historySeededAt);
+      if (Number.isFinite(seeded) && Date.parse(write.at) <= seeded) return false;
+    }
+    return this.refreshDshChat(chat, deps);
+  },
+
+  /** Route one session/update notification into the right transcript. */
 
   handleAcpUpdate(engineId, sessionId, update) {
     // Session-id routing, with one honest fallback: a CLI kernel usually names

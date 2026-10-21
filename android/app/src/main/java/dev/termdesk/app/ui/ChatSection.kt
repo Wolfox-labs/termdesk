@@ -85,6 +85,10 @@ fun ChatSection(
     workspaces: List<WorkspaceInfo>,
     sessions: List<SessionInfo>,
     defaultCwd: String,
+    /** The assistant a new conversation starts on when the person does not pick one. */
+    defaultEngine: String? = null,
+    /** Directories the PC offers as places to start in. */
+    roots: List<String> = emptyList(),
     recordedSession: SessionDetail?,
     engines: List<KernelInfo>,
     codexConfig: CodexConfig?,
@@ -99,7 +103,7 @@ fun ChatSection(
     onRequestChatCommands: (String) -> Unit,
     onOpenSections: () -> Unit,
     onLoadChats: () -> Unit,
-    onCreateChat: (String?) -> Unit,
+    onCreateChat: (String?, String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSend: (String, String) -> Unit,
     /** 手机本地做完一件事（如图片处理）之后，往当前对话里写一行系统提示。 */
@@ -177,6 +181,8 @@ fun ChatSection(
     // The command lines of this conversation, shown over the conversation rather
     // than beside it: output wants the whole 400dp.
     var terminalsOpen by remember { mutableStateOf(false) }
+    // 会话页的「+」先问一句再建：落到错的目录里，是用户在手机上没法自己修的那类错误。
+    var newChatOpen by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         onLoadChats()
@@ -292,7 +298,7 @@ fun ChatSection(
                 }
             },
             onToggleDetail = { detailOpen = !detailOpen },
-            onNew = { onCreateChat(defaultCwd) },
+            onNew = { newChatOpen = true },
             canResume = connected && recordedSession?.canResume == true && !sending,
             onResume = { recordedSession?.let(onResumeSession) },
             onOpenTerminals = {
@@ -466,7 +472,7 @@ fun ChatSection(
                                 onOpenChat = onOpenChat,
                                 onCloseChat = onCloseChat,
                                 onOpenSession = onOpenSession,
-                                onCreateChat = { onCreateChat(defaultCwd) },
+                                onCreateChat = { newChatOpen = true },
                                 externalRuns = kernelRuns,
                                 externalRunsNote = kernelRunsNote,
                                 sort = sessionSort,
@@ -480,7 +486,7 @@ fun ChatSection(
                                 onOpenChat = onOpenChat,
                                 onCloseChat = onCloseChat,
                                 onOpenSession = onOpenSession,
-                                onCreateChat = { onCreateChat(defaultCwd) },
+                                onCreateChat = { newChatOpen = true },
                                 onScanSessions = onLoadSessions,
                                 allowClose = false,
                                 sort = sessionSort,
@@ -536,5 +542,20 @@ fun ChatSection(
                 }
             }
         }
+    }
+
+    if (newChatOpen) {
+        NewChatDialog(
+            engines = engines,
+            selectedEngine = defaultEngine,
+            workspaces = workspaces,
+            roots = roots,
+            currentCwd = defaultCwd,
+            onDismiss = { newChatOpen = false },
+            onCreate = { cwd, engine ->
+                newChatOpen = false
+                onCreateChat(cwd, engine)
+            },
+        )
     }
 }
