@@ -93,8 +93,22 @@ export const liveMethods = {
     // an unknown `/word` is ordinary text and must reach the model unchanged.
     if (!Array.isArray(chat.liveCommands) || Date.now() - (chat.liveCommandsAt ?? 0) > 60_000) {
       const catalog = await liveListCommands(chat.liveHost, chat.sessionId);
-      chat.liveCommands = catalog.ok ? catalog.commands : [];
-      chat.liveCommandsAt = Date.now();
+      // A failed read is not an empty catalog. Storing [] made every name look
+      // unknown, and the caller then sent the line as a prompt — how a `/compact`
+      // became a paid model turn on a busy desktop. Null means "unknown", and the
+      // branch below refuses instead of guessing.
+      chat.liveCommands = catalog.ok ? catalog.commands : null;
+      chat.liveCommandsAt = catalog.ok ? Date.now() : 0;
+    }
+    if (chat.liveCommands === null) {
+      const userLine = chat.push({ kind: 'message', role: 'user', text: line, command: true });
+      this.emitEvent(chat, userLine);
+      this.pushAndEmit(chat, {
+        kind: 'error',
+        role: 'engine',
+        text: `桌面端正在忙，暂时读不到命令列表；这条 /${name} 没有执行。稍后重试，或去掉开头的 / 作为普通消息发送`,
+      });
+      return { ok: true, userSeq: userLine, messageId: null, sessionId: chat.sessionId };
     }
     if (!chat.liveCommands.some((c) => c.name === name)) return null;
 
@@ -278,6 +292,8 @@ export const liveMethods = {
 
   handleLiveChunk(chat, frame) {
     if (!frame || frame.type !== 'chunk' || !frame.chunk) return;
+    // A single long generation can outlive the idle window on its own.
+    chat.lastUsedAt = Date.now();
     this.handleSessionEvent(chat, {
       event: { type: 'assistant/chunk', data: { chunk: frame.chunk } },
     });
@@ -317,6 +333,12 @@ export const liveMethods = {
 
   handleLiveJournalEvent(chat, event) {
     const type = event?.type;
+
+    // Following a live conversation is activity, even though the phone sends
+    // nothing. Without this the idle reaper freed the chat 45 minutes after the
+    // phone's last message — mid-conversation, because the desktop's own turns were
+    // not counted — and the phone was left with a frozen transcript.
+    chat.lastUsedAt = Date.now();
 
     // Queue bookkeeping: this is how the desktop says "your message is waiting"
     // and later "it was deleted", and without it the phone kept showing a

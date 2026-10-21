@@ -421,11 +421,20 @@ export class ChatManager {
     // runtimes that then disagree about what was said. That is takeover working, so the
     // answer says so rather than looking like a fresh open.
     if (existing) {
+      // The same session can be reopened after its mirror was reaped. Returning the
+      // stored handle unchanged is what made that look like lost content: the chat
+      // stayed in the list with the transcript frozen where the reap happened, so
+      // reopening showed the same old tail for ever. Re-read the journal first when
+      // it has moved (a no-op for a healthy chat).
+      const refreshed = await this.refreshStaleDsh(existing);
       return {
         ok: true,
         chat: existing.detail(),
         joined: true,
-        note: this.takeoverNote({ joined: true, write: writeBefore }),
+        refreshed,
+        // A refresh re-reads the file this side wrote nothing to, and its own line in
+        // the transcript already says so; the takeover warning would contradict it.
+        note: refreshed ? null : this.takeoverNote({ joined: true, write: writeBefore }),
       };
     }
     // Resumability is the table's answer, and when the table says no it also carries
