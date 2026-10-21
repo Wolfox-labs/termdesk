@@ -1183,8 +1183,11 @@ internal object PosterRenderer {
     private fun infoCells(request: Request): List<String> {
         val scene = request.scene.trim()
         if (scene.isEmpty()) {
-            val day = 12 + ((request.adjust.variant % 9 + 9) % 9)
-            return listOf("2026.10.$day", "地点待定", "主办方待定")
+            // 日期用**今天**，不是写死的某个月：这一条是给不认识的人看的信息，写错年月
+            // 比留空更糟。换底图时仍然让它在几天内走动，看得出这一行是活的。
+            val day = java.time.LocalDate.now().plusDays(((request.adjust.variant % 9) + 9) % 9L)
+            val stamp = "%04d.%02d.%02d".format(day.year, day.monthValue, day.dayOfMonth)
+            return listOf(stamp, "地点待定", "主办方待定")
         }
         // 场景里已经有" / "分好的三段就直接用，否则整句进第二格。
         val parts = scene.split('/', '·', '|')
