@@ -114,6 +114,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
@@ -632,6 +633,16 @@ fun ChatSection(
  * Dismissing the dialog leaves the question pending, so it comes back instead of
  * silently deciding anything.
  */
+/// 作品表单里的输入框统一走 ASCII 键盘。
+///
+/// 真机实测：手机上三个输入法默认都是中文，input text 敲进去的 "Digital Media Art Week"
+/// 会被当成拼音转成"滴啊A让他…"——用户手打英文标题同样中招。设成 Ascii 键盘后
+/// 输入法不再做候选转换，敲什么就是什么（想打中文仍可自己切回中文输入法）。
+private val MentionFieldKeyboard = androidx.compose.foundation.text.KeyboardOptions(
+    keyboardType = KeyboardType.Ascii,
+    imeAction = ImeAction.Next,
+)
+
 @Composable
 private fun ApprovalDialog(
     approval: ChatApproval,
@@ -1306,6 +1317,7 @@ private fun PosterFormDialog(
             placeholder = {
                 Text("例如：新媒体创意大赛", style = MaterialTheme.typography.bodySmall)
             },
+            keyboardOptions = MentionFieldKeyboard,
             textStyle = MaterialTheme.typography.bodySmall,
             shape = RoundedCornerShape(9.dp),
             modifier = Modifier.fillMaxWidth(),
@@ -1317,6 +1329,7 @@ private fun PosterFormDialog(
             enabled = !busy,
             singleLine = true,
             label = { Text("副标题（可留空）", style = MaterialTheme.typography.bodySmall) },
+            keyboardOptions = MentionFieldKeyboard,
             textStyle = MaterialTheme.typography.bodySmall,
             shape = RoundedCornerShape(9.dp),
             modifier = Modifier.fillMaxWidth(),
@@ -1331,6 +1344,7 @@ private fun PosterFormDialog(
             placeholder = {
                 Text("例如：面向全院学生，扫码报名", style = MaterialTheme.typography.bodySmall)
             },
+            keyboardOptions = MentionFieldKeyboard,
             textStyle = MaterialTheme.typography.bodySmall,
             shape = RoundedCornerShape(9.dp),
             modifier = Modifier.fillMaxWidth(),
@@ -1572,6 +1586,7 @@ private fun ImageFormDialog(
             placeholder = {
                 Text("例如：© 数智融媒", style = MaterialTheme.typography.bodySmall)
             },
+            keyboardOptions = MentionFieldKeyboard,
             textStyle = MaterialTheme.typography.bodySmall,
             shape = RoundedCornerShape(9.dp),
             modifier = Modifier
@@ -1696,6 +1711,7 @@ private fun CopyFormDialog(
                     style = MaterialTheme.typography.bodySmall,
                 )
             },
+            keyboardOptions = MentionFieldKeyboard,
             textStyle = MaterialTheme.typography.bodySmall,
             maxLines = 2,
             shape = RoundedCornerShape(9.dp),
@@ -2613,25 +2629,21 @@ private fun Conversation(
     val lastSeq = events.lastOrNull()?.seq ?: 0
     val lastLen = events.lastOrNull()?.text?.length ?: 0
 
+    // 作品任务（由 @ 模板发起的对话，首条用户消息是【任务：…】）。
+    // 用户要的是：没做完就"作品生成中…"，做完了就"作品已完成"+产物；模型自己的大段思考
+    // **收成一行**，想看点开再看——所以这里不删事件，只是把它们折进一个可展开的行。
+    val deliverableTask = remember(events) {
+        events.firstOrNull { it.role == "user" }?.text?.contains("【任务：") == true
+    }
+    // 作品任务的那条指令是我们替用户拼的，动辄几百字。上屏只留标题，点开才看全文。
+    val taskPromptSeq = remember(events, deliverableTask) {
+        if (deliverableTask) events.firstOrNull { it.role == "user" }?.seq else null
+    }
     // Folded once per event list: a turn's plumbing (tool calls, results, reasoning) becomes one
     // line per run instead of a screenful, and it is folded here rather than inside the list
     // because a `LazyListScope` is not a place where state can be remembered.
-    val rows = remember(events) { foldTranscript(events) }
-    // 过程行整类不画：思考、工具、命令、步骤、内核日志。要的是"作品生成中…"加最终产物，
-    // 不是几屏绿色文本框（见 ChatTranscript.isProcessRow 上的说明）。
-    //
-    // 作品任务（由 @ 模板发起的对话，首条用户消息是【任务：…】）还要更狠一点：
-    // **模型说的话也不画**。用户原话——"聊天区域要干净，没做完就是作品生成中，
-    // 做完了就是作品已完成，下面是生成的东西"。
-    val deliverableTask = remember(events) {
-        events.firstOrNull { it.kind == "message" && it.role == "user" }
-            ?.text?.trimStart()?.startsWith("【任务：") == true
-    }
-    val shownRows = remember(rows, deliverableTask) {
-        rows.filterNot { row ->
-            isProcessRow(row) ||
-                (deliverableTask && row is TranscriptRow.One && row.event.isAssistant)
-        }
+    val shownRows = remember(events, deliverableTask) {
+        foldTranscript(events, foldAssistant = deliverableTask)
     }
     val deliverableDone = deliverableTask && !chat.isRunning && !sending &&
         events.any { it.isDeliverable }
@@ -2696,7 +2708,10 @@ private fun Conversation(
                         }
                     }
                     items(shownRows, key = { it.key }) { row ->
-                        when (row) {
+                        if (row is TranscriptRow.One && taskPromptSeq != null && row.event.seq == taskPromptSeq) {
+                            // 作品任务的指令：只显示「任务：…」那一行，点开看全文。
+                            TaskPromptLine(row.event.text)
+                        } else when (row) {
                             is TranscriptRow.One -> ChatEventRow(
                                 event = row.event,
                                 onOpenFile = onOpenFile,
@@ -3380,6 +3395,7 @@ private fun Conversation(
                         onValueChange = { themeInput = it },
                         modifier = Modifier.weight(1f),
                         placeholder = { Text("例如：校园开放日", style = MaterialTheme.typography.bodySmall) },
+                        keyboardOptions = MentionFieldKeyboard,
                         textStyle = MaterialTheme.typography.bodySmall,
                         maxLines = 2,
                         shape = RoundedCornerShape(9.dp),
@@ -3440,6 +3456,7 @@ private fun Conversation(
                         placeholder = {
                             Text("例如：专业介绍、实验室开放", style = MaterialTheme.typography.bodySmall)
                         },
+                        keyboardOptions = MentionFieldKeyboard,
                         textStyle = MaterialTheme.typography.bodySmall,
                         maxLines = 3,
                         shape = RoundedCornerShape(9.dp),
@@ -3545,6 +3562,7 @@ private fun Conversation(
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         },
+                        keyboardOptions = MentionFieldKeyboard,
                         textStyle = MaterialTheme.typography.bodySmall,
                         singleLine = true,
                         shape = RoundedCornerShape(9.dp),
@@ -3749,6 +3767,7 @@ private fun Conversation(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
                                 )
                             },
+                            keyboardOptions = MentionFieldKeyboard,
                             textStyle = MaterialTheme.typography.bodySmall,
                             maxLines = 2,
                             shape = RoundedCornerShape(9.dp),
@@ -4419,3 +4438,51 @@ private fun Composer(
  * explicitly did not want a chat-bubble look, so the transcript reads as
  * annotated text rather than a messaging app.
  */
+
+/**
+ * 作品任务的指令行。
+ *
+ * @ 模板拼出来的指令动辄几百字，整段铺在聊天里就是"大量没用的黑字"。这里只显示第一行
+ * （形如 `【任务：生成 PPT · 工作汇报】`），点「展开」才看全文——用户的原话是
+ * "隐藏成一行，用户想点可以打开看，一般不显示大段"。
+ */
+@Composable
+private fun TaskPromptLine(text: String) {
+    var open by remember(text) { mutableStateOf(false) }
+    val title = text.lineSequence().firstOrNull()?.trim().orEmpty().ifBlank { "任务" }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { open = !open },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = if (open) "收起" else "展开",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        if (open) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+    }
+}

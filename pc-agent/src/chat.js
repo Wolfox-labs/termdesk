@@ -69,6 +69,7 @@ import crypto from 'node:crypto';
 
 import { CodexAppServer, notificationToChatEvents, turnToChatEvents } from './kernels/codex.js';
 import { AcpKernel, acpUpdateToChatEvents, acpSessionToSessionInfo } from './kernels/acp.js';
+import { isScratchArtifact } from './kernels/acp.js';
 import { createApprovalHandlers } from './chat/approvals.js';
 import { discardPreviews as discardStreamedPreviews, handleAssistantChunk as handleStreamChunk } from './chat/stream.js';
 import { Chat } from './chat/chat.js';
@@ -697,6 +698,57 @@ export class ChatManager {
    * queue behind itself forever, because a turn that never began never ends. So the
    * failure is written onto that line and the queue moves on.
    */
+  /**
+   * 内核自己写出来的文件，也要变成"产出物"。
+   *
+   * ACP 的 deliverable 只在**写文件工具**完成时才有；PPT / 表格这类是内核跑脚本写盘的
+   * （python-pptx / openpyxl），于是手机上永远停在「作品生成中…」，也没有那张下载卡片
+   * ——真机实测 report.pptx、equipment-ledger.xlsx 都生成了，界面却什么都没给。
+   *
+   * 兜底：回合结束时扫一遍工作目录，把本次新增的交付物补成 deliverable 事件。
+   * 只认常见交付物扩展名，脚本/日志一类（isScratchArtifact）仍然排除。
+   */
+  settleProducedFiles(chat) {
+    try {
+      const dir = chat?.cwd;
+      if (!dir || !fs.existsSync(dir)) return;
+      const now = Date.now();
+      // 只认最近 30 分钟内改过的文件：更早的一定是上一轮已经报过的。
+      const since = now - 30 * 60 * 1000;
+      const done = chat.delivered instanceof Set ? chat.delivered : (chat.delivered = new Set());
+      const wanted = /\.(pptx|ppt|xlsx|xls|docx|pdf|html|htm|md|srt|csv|png|jpg|jpeg|webp|zip)$/i;
+      const found = [];
+      const walk = (d, depth) => {
+        if (depth > 2) return;
+        let entries = [];
+        try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+        for (const entry of entries) {
+          const name = entry?.name ?? '';
+          if (!name || name.startsWith('.') || name === 'node_modules') continue;
+          const full = path.join(d, name);
+          if (entry.isDirectory()) { walk(full, depth + 1); continue; }
+          if (!wanted.test(name) || isScratchArtifact(full) || done.has(full)) continue;
+          let stat;
+          try { stat = fs.statSync(full); } catch { continue; }
+          if (stat.mtimeMs < since) continue;
+          found.push({ path: full, name, bytes: stat.size, description: name });
+        }
+      };
+      walk(dir, 0);
+      if (found.length === 0) return;
+      for (const file of found) done.add(file.path);
+      const record = chat.push({
+        kind: 'deliverable',
+        role: 'assistant',
+        text: found.map((f) => f.description).join('\n').slice(0, 4000),
+        meta: { files: found },
+      });
+      this.emitEvent(chat, record.seq);
+    } catch {
+      // 兜底逻辑失败绝不能影响回合收尾。
+    }
+  }
+
   async drainQueue(chat) {
     if (!chat?.queue || chat.queue.length === 0) return false;
     if (chat.status === 'running') return false;
@@ -719,6 +771,7 @@ export class ChatManager {
         text: `排队中的消息没有发出：${result.message ?? result.code ?? '未知原因'}`,
       });
       this.emitEvent(chat, record.seq);
+      this.settleProducedFiles(chat);
       this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
       return this.drainQueue(chat);
     }
@@ -1135,6 +1188,7 @@ export class ChatManager {
         text: '这条消息没有执行：电脑端把排队中的它删除了。手机端现在和电脑一致——它不会再发出去',
       });
       this.emit({ event: 'chat.turn', chatId: chat.id, state: 'cancelled' });
+      this.settleProducedFiles(chat);
       this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
       this.drainQueue(chat).catch(() => {});
     }
@@ -1145,6 +1199,7 @@ export class ChatManager {
     if (chat.status !== 'running') return;
     this.clearLivePending(chat);
     chat.status = 'idle';
+    this.settleProducedFiles(chat);
     this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
     this.notify(this.turnNotification(chat, 'ended'));
     this.drainQueue(chat).catch(() => {});
@@ -2452,6 +2507,7 @@ export class ChatManager {
       const status = frame.params?.status;
       if (status === 'idle' && chat.status === 'running') {
         chat.status = 'idle';
+        this.settleProducedFiles(chat);
         this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
         this.emit({ event: 'chat.turn', chatId: chat.id, state: 'idle' });
         this.notify(this.turnNotification(chat, 'ended'));
