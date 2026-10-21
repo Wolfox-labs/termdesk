@@ -1,93 +1,44 @@
 package dev.termdesk.app.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import kotlinx.coroutines.launch
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
-import androidx.compose.material.icons.outlined.KeyboardArrowUp
-import androidx.compose.material.icons.outlined.Menu
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.automirrored.outlined.Send
-import androidx.compose.material.icons.outlined.Stop
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import dev.termdesk.app.data.ChatDraft
-import dev.termdesk.app.data.ChatDraftStore
-import android.content.Context
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.findViewTreeLifecycleOwner
@@ -107,11 +58,7 @@ import dev.termdesk.app.data.SessionDetail
 import dev.termdesk.app.data.SessionInfo
 import dev.termdesk.app.data.SessionSort
 import dev.termdesk.app.data.WorkspaceInfo
-import dev.termdesk.app.ui.theme.Semantic
 import kotlinx.coroutines.delay
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * The conversation view: one column, always.
@@ -155,6 +102,10 @@ fun ChatSection(
     onCreateChat: (String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSend: (String, String) -> Unit,
+    /** 手机本地做完一件事（如图片处理）之后，往当前对话里写一行系统提示。 */
+    onNote: (String) -> Unit = {},
+    /** 海报画好之后把卡片放进当前对话。 */
+    onPoster: (String, String) -> Unit = { _, _ -> },
     onCancel: (String) -> Unit,
     onCloseChat: (String) -> Unit,
     onLeaveChat: () -> Unit,
@@ -173,7 +124,21 @@ fun ChatSection(
      * the person had to find the same folder again by hand.
      */
     onOpenFiles: ((String) -> Unit)? = null,
-    /** Messages waiting for a link, and how many expired unsent. */
+    /**
+     * 点对话里的产出物时，在当前这一页直接看结果。
+     *
+     * 传的是 (path, name)：文件已经在电脑上，这里只按扩展名决定用哪个查看器，
+     * 不为分类多打一次往返。为 null 时退回 onOpenFiles 的「打开所在文件夹」。
+     */
+    onPreviewFile: ((String, String) -> Unit)? = null,
+    /**
+     * 把「产出文件」卡片上的那一份直接下到手机。
+     *
+     * 用户的原话是"所有 @ 功能虽然生成了东西，但我在手机端完全找不到，我要手机上也能
+     * 看到生成好的东西、直接可以下载"。路径来自电脑端的产物扫描（chat.js announceArtifacts），
+     * 下载走的是文件区同一个下载器。
+     */
+    onDownloadPath: ((String, String) -> Unit)? = null,
     pendingSends: Int = 0,
     pendingDropped: Int = 0,
     onLoadKernelRuns: () -> Unit = {},
@@ -390,33 +355,63 @@ fun ChatSection(
                             )
                         }
                         Box(Modifier.weight(1f)) {
-                            RecordedTranscript(recordedSession, onOpenFiles)
+                            RecordedTranscript(recordedSession, onOpenFiles, onPreviewFile)
                         }
                     }
                 }
-                activeChat != null -> Conversation(
-                    chat = activeChat,
-                    events = events,
-                    sending = sending,
-                    models = chatModels[activeChat.id],
-                    commands = chatCommands[activeChat.id],
-                    lastUpload = lastUpload,
-                    draftScope = draftScope,
-                    onClaimChat = onClaimChat,
-                    onUploadFile = onUploadFile,
-                    onClearUpload = onClearUpload,
-                    onSend = onSend,
-                    onCancel = onCancel,
-                    onConfigure = onConfigureChat,
-                    onSetMode = onSetChatMode,
-                    onClose = onCloseChat,
-                    connected = connected,
-                    pendingSends = pendingSends,
-                    pendingDropped = pendingDropped,
-                    // The same door the workspace row uses: a produced file is opened the
-                    // way its folder is, so there is one behaviour to learn, not two.
-                    onOpenFile = onOpenFiles,
-                )
+                activeChat != null -> {
+                    // 聊天页顶部那一条：左边「最近会话」，正上方「TermDesk」点了回主页。
+                    //
+                    // 做在这一层而不是改 AppShell 的顶栏：那条顶栏是四个分区共用的，改它要
+                    // 一路改调用点；而这两个入口只对"正在聊天"这一屏有意义——离开会话之后
+                    // 它们自己就没了，正好。
+                    var chatListOpen by remember(activeChat.id) { mutableStateOf(false) }
+                    Column(Modifier.fillMaxSize()) {
+                        ChatTopStrip(
+                            onOpenChats = { chatListOpen = true },
+                            onHome = onLeaveChat,
+                        )
+                        Box(Modifier.weight(1f)) {
+                            Conversation(
+                                chat = activeChat,
+                                events = events,
+                                sending = sending,
+                                models = chatModels[activeChat.id],
+                                commands = chatCommands[activeChat.id],
+                                lastUpload = lastUpload,
+                                draftScope = draftScope,
+                                onClaimChat = onClaimChat,
+                                onUploadFile = onUploadFile,
+                                onClearUpload = onClearUpload,
+                                onSend = onSend,
+                                onNote = onNote,
+                                onPoster = onPoster,
+                                onCancel = onCancel,
+                                onConfigure = onConfigureChat,
+                                onSetMode = onSetChatMode,
+                                onClose = onCloseChat,
+                                connected = connected,
+                                pendingSends = pendingSends,
+                                pendingDropped = pendingDropped,
+                                // 产出物先给「看效果」：在当前页打开它；右侧文件夹图标仍可跳到目录。
+                                onOpenFile = onOpenFiles,
+                                onPreviewFile = onPreviewFile,
+                                onDownloadPath = onDownloadPath,
+                            )
+                        }
+                    }
+                    if (chatListOpen) {
+                        RecentChatsPanel(
+                            chats = chats,
+                            currentId = activeChat.id,
+                            onPick = { id ->
+                                chatListOpen = false
+                                onOpenChat(id)
+                            },
+                            onDismiss = { chatListOpen = false },
+                        )
+                    }
+                }
                 else -> Column(Modifier.fillMaxSize()) {
                     // Kernel scope first: the list is kernel -> workspace ->
                     // conversation, and this is the outermost level.
@@ -508,7 +503,7 @@ fun ChatSection(
     // waiting out the countdown, with the transcript that explains the question unreachable.
     var deferredApproval by remember(activeChat?.id) { mutableStateOf<String?>(null) }
     val pendingApproval = approvals.firstOrNull { it.chatId == null || it.chatId == activeChat?.id }
-    if (pendingApproval != null && open) {
+    if (pendingApproval != null) {
         if (deferredApproval == pendingApproval.requestId) {
             // A way back to a question that was deferred: the dialog is gone, the question is not.
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
@@ -519,159 +514,27 @@ fun ChatSection(
                     Text("助手正在等待确认 · 查看请求")
                 }
             }
-        } else {
+        } else if (open) {
             ApprovalDialog(
                 approval = pendingApproval,
                 onAnswer = onRespondApproval,
                 onDefer = { deferredApproval = pendingApproval.requestId },
             )
-        }
-    }
-}
-
-
-/** One small pill in the conversation's bottom bar: label above value. */
-@Composable
-internal fun ComposerChip(
-    label: String,
-    value: String,
-    withChevron: Boolean = true,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            value,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (withChevron) {
-            Spacer(Modifier.width(2.dp))
-            Icon(
-                Icons.Outlined.KeyboardArrowDown,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(14.dp),
-            )
-        }
-    }
-}
-
-@Composable
-internal fun Composer(
-    draft: String,
-    onDraftChange: (String) -> Unit,
-    sending: Boolean,
-    running: Boolean,
-    canSend: Boolean,
-    onSend: () -> Unit,
-    onCancel: () -> Unit,
-    /**
-     * How many messages are waiting for the link to come back.
-     *
-     * Shown rather than silently held: someone who typed a message on a train
-     * needs to know it is not lost, and needs to know when it finally goes.
-     */
-    pendingCount: Int = 0,
-    /** How many were dropped for being too old to be worth sending. */
-    droppedCount: Int = 0,
-) {
-    Column(Modifier.fillMaxWidth()) {
-        if (pendingCount > 0) {
-            Text(
-                text = "待发 $pendingCount 条 · 重连后自动发送",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 12.dp, top = 4.dp),
-            )
-        }
-        if (droppedCount > 0) {
-            Text(
-                // Said out loud: a message that expired is a message the person
-                // expected to be sent, and finding out by silence is worse.
-                text = "$droppedCount 条待发消息已过期未发出",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(start = 12.dp, top = 4.dp),
-            )
-        }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        OutlinedTextField(
-            value = draft,
-            onValueChange = onDraftChange,
-            modifier = Modifier.weight(1f),
-            placeholder = { Text("输入消息", style = MaterialTheme.typography.bodyMedium) },
-            textStyle = MaterialTheme.typography.bodyMedium,
-            maxLines = 5,
-            shape = RoundedCornerShape(11.dp),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-            keyboardActions = KeyboardActions(),
-        )
-        Spacer(Modifier.width(6.dp))
-        // Two buttons while a reply is streaming, where there used to be one that turned into
-        // "stop" — on the reasoning that a second prompt mid-turn would be rejected. The PC
-        // queues a message typed mid-turn now (ChatManager.drainQueue), so that reasoning is
-        // false and the button outlived it: waiting became something the person can ask for
-        // instead of something they are refused.
-        if (running) {
-            IconButton(onClick = onCancel) {
-                Icon(
-                    Icons.Outlined.Stop,
-                    contentDescription = "停止",
-                    tint = MaterialTheme.colorScheme.error,
-                )
-            }
-        }
-        // Shown while running only once there is something to send, so the row stays calm
-        // when there is not, and appears the moment somebody types.
-        if (!running || draft.isNotBlank()) {
-            // Disabled only by what the person can control themselves. It used to also be
-            // disabled while a send was in flight, which quietly removed the queue on ACP
-            // kernels: there the acknowledgement arrives when the turn *ends*, so the button
-            // stayed dead for the whole turn and nothing could be typed into the queue at all.
-            // The PC accepts and orders the second message either way (ChatManager.drainQueue).
-            if (sending && !running) {
-                // "In flight" means the gap between tapping and the turn starting — not the
-                // whole turn, which would claim the machine is still receiving what it has
-                // already begun answering.
-                CircularProgressIndicator(modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(6.dp))
-            }
-            IconButton(onClick = onSend, enabled = canSend && draft.isNotBlank()) {
-                Icon(
-                    Icons.AutoMirrored.Outlined.Send,
-                    contentDescription = if (running) "发送（排队）" else "发送",
-                    tint = if (canSend && draft.isNotBlank()) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.outline
+        } else {
+            // 会话没打开时也必须有入口：内核在等一个人回答，而用户可能正停在别的页面。
+            // 上一版这一整块挂在 `open` 上，没打开那个会话时连一句提示都没有，
+            // 从用户那边看就是"内核不动了，手机上什么都没有"。
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                Button(
+                    onClick = {
+                        deferredApproval = null
+                        pendingApproval.chatId?.let(onOpenChat)
                     },
-                )
+                    modifier = Modifier.padding(bottom = 18.dp),
+                ) {
+                    Text("内核在等你确认 · 点这里回答")
+                }
             }
         }
     }
-    }
 }
-

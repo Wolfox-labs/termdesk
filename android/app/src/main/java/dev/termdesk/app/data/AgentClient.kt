@@ -72,6 +72,26 @@ class AgentClient(
         .readTimeout(0, TimeUnit.MILLISECONDS) // long-lived socket
         .build()
 
+    private val _kernelTarget = MutableStateFlow(
+        appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.getString(KEY_KERNEL_TARGET, "remote") ?: "remote",
+    )
+    val kernelTarget: StateFlow<String> = _kernelTarget.asStateFlow()
+
+    // The queue is restored during construction, so its counter must already exist.
+    private val _pendingCount = MutableStateFlow(0)
+    val pendingCount: StateFlow<Int> = _pendingCount.asStateFlow()
+    private val _pendingDropped = MutableStateFlow(0)
+    val pendingDropped: StateFlow<Int> = _pendingDropped.asStateFlow()
+    private val pendingSends = PendingSends(
+        load = {
+            runCatching {
+                pendingSendsFile()?.takeIf { it.exists() }?.readText()?.let { PendingSends.fromJson(it) }
+            }.getOrNull()
+        },
+        onChanged = { items -> onPendingSendsChanged(items) },
+    )
+
     /** Uploads and downloads talk HTTP; the socket client owns their flow state. */
     private val uploader = AgentUploader(client)
     private val fileTransfer = AgentFileTransfer(client, appContext)
@@ -175,11 +195,6 @@ class AgentClient(
      * the conversations and the file browser all point at whatever is chosen
      * here, which is the whole point of calling it a kernel.
      */
-    private val _kernelTarget = MutableStateFlow(
-        appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            ?.getString(KEY_KERNEL_TARGET, "remote") ?: "remote",
-    )
-    val kernelTarget: StateFlow<String> = _kernelTarget.asStateFlow()
 
     /** Set when the agent reports the shell is not enabled on the PC. */
     private val _termUnavailable = MutableStateFlow<String?>(null)
@@ -308,17 +323,6 @@ class AgentClient(
      */
     private val calls = PendingCalls()
 
-    private val pendingSends = PendingSends(
-        onChanged = { items -> persistPendingSends(items) },
-    )
-
-    /** How many messages are waiting for a link, for the composer to show. */
-    private val _pendingCount = MutableStateFlow(0)
-    val pendingCount: StateFlow<Int> = _pendingCount.asStateFlow()
-
-    /** What was dropped for being too old, so the screen can say so once. */
-    private val _pendingDropped = MutableStateFlow(0)
-    val pendingDropped: StateFlow<Int> = _pendingDropped.asStateFlow()
 
     private val _sessionDetail = MutableStateFlow<SessionDetail?>(null)
     val sessionDetail: StateFlow<SessionDetail?> = _sessionDetail.asStateFlow()
@@ -400,6 +404,37 @@ class AgentClient(
     /** Rebuilt from the frame stream; see [applyChatEvent]. */
     private var chatEventIndex = LinkedHashMap<Int, ChatEvent>()
 
+    private val phoneChatEvents = PhoneChatEvents(appContext?.filesDir?.resolve("phone-chat-events"))
+
+    private fun phoneEventScope(): String = if (_kernelTarget.value == "local") "local" else "remote:${lastUrl.orEmpty()}"
+
+    private fun showPhoneEvent(text: String, poster: String? = null) {
+        val chat = _activeChat.value ?: return
+        val eventScope = phoneEventScope()
+        runCatching {
+            phoneChatEvents.append(eventScope, phoneChatIdentity(chat), text, poster)
+        }.onSuccess { local ->
+            if (_activeChat.value?.id != chat.id || phoneEventScope() != eventScope) return@onSuccess
+            val server = chatEventIndex.values.filterNot {
+                it.sourceKind == "phone" && it.seq >= 1_000_000_000 && (it.kind == "local" || it.kind == "poster")
+            }
+            val combined = withPhoneChatEvents(server, local)
+            chatEventIndex = LinkedHashMap(combined.associateBy { it.seq })
+            _chatEvents.value = combined
+        }.onFailure {
+            _lastAction.value = ActionResult("local.history", chat.id, false, "save_failed", "无法保存本地产物记录：${it.message}")
+        }
+    }
+
+    fun note(text: String) {
+        if (text.isBlank()) return
+        showPhoneEvent(text)
+    }
+
+    fun poster(text: String, file: String) {
+        showPhoneEvent(text, file)
+    }
+
     /**
      * Engine questions waiting for an answer on this phone.
      *
@@ -445,7 +480,7 @@ class AgentClient(
         pendingSends.restore(PendingSends.fromJson(saved))
     }
 
-    private fun persistPendingSends(items: List<PendingSends.Item>) {
+    private fun onPendingSendsChanged(items: List<PendingSends.Item>) {
         _pendingCount.value = items.size
         val file = pendingSendsFile() ?: return
         runCatching { file.writeText(PendingSends.toJson(items)) }
@@ -1316,12 +1351,12 @@ class AgentClient(
      */
     fun openPreview(entry: FileEntry) {
         if (entry.isDir) return
-        when (entry.kind) {
-            "text" -> {
+        when (previewTransport(entry.kind)) {
+            PreviewTransport.TEXT_FILE -> {
                 _preview.value = null
                 readFile(entry.path)
             }
-            "docx" -> {
+            PreviewTransport.DOCX_TEXT -> {
                 _openFile.value = null
                 _preview.value = FilePreview(
                     kind = "docx",
@@ -1332,7 +1367,7 @@ class AgentClient(
                 )
                 sendFrame(JSONObject().put("type", "fs.doctext").put("path", entry.path))
             }
-            "image", "pdf" -> {
+            PreviewTransport.HTTP_DOWNLOAD -> {
                 _openFile.value = null
                 _preview.value = FilePreview(
                     kind = entry.kind,
@@ -1343,7 +1378,7 @@ class AgentClient(
                 )
                 fetchPreviewBytes(entry)
             }
-            else -> {
+            PreviewTransport.INFORMATION -> {
                 _openFile.value = null
                 _preview.value = FilePreview(
                     kind = "other",
@@ -1417,7 +1452,11 @@ class AgentClient(
             runCatching {
                 fileTransfer.fetchPreview(base, tok, entry)
             }.onSuccess { file ->
-                _preview.value = _preview.value?.copy(loading = false, localFile = file)
+                _preview.value = _preview.value?.copy(
+                    loading = false,
+                    localFile = file,
+                    text = if (entry.kind == "html") file.readText() else null,
+                )
             }.onFailure { err ->
                 _preview.value = _preview.value?.copy(loading = false, message = "无法读取：${err.message}")
             }
@@ -1883,9 +1922,12 @@ class AgentClient(
                 "chat.terminal.input" -> appendTerminalInput(frame)
                 "chat" -> {
                     _chatSending.value = false
-                    val previousChatId = _activeChat.value?.id
+                    val previousChat = _activeChat.value
                     val info = parseChatInfo(frame)
                     if (info != null) {
+                        if (previousChat != null && previousChat.id == info.id) {
+                            phoneChatEvents.migrate(phoneEventScope(), phoneChatIdentity(previousChat), phoneChatIdentity(info))
+                        }
                         _sessionDetail.value = null
                         _activeChat.value = info
                         upsertChat(info)
@@ -1896,7 +1938,8 @@ class AgentClient(
                     // reply does not, so ask for the transcript to pick up the
                     // chat's own opening lines.
                     if (frame.has("events")) {
-                        _chatEvents.value = reconcileChatEvents(frame)
+                        val local = info?.let { phoneChatEvents.read(phoneEventScope(), phoneChatIdentity(it)) }.orEmpty()
+                        _chatEvents.value = withPhoneChatEvents(reconcileChatEvents(frame), local)
                         chatEventIndex = LinkedHashMap(
                             _chatEvents.value.associateBy { it.seq },
                         )

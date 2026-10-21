@@ -52,6 +52,8 @@ fun HomeSection(
     onBrowseFiles: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenSystem: () -> Unit,
+    /** 断开连接：用户点名要把它放到"显示电脑型号"那一行的最右侧。 */
+    onDisconnect: () -> Unit = {},
 ) {
     var pickerOpen by remember { mutableStateOf(false) }
     var assistantPickerOpen by remember { mutableStateOf(false) }
@@ -85,6 +87,16 @@ fun HomeSection(
                         local -> "手机运行环境未就绪"
                         else -> "未连接电脑"
                     }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            // 设备管理入口打开连接页；断开后的用户仍需能从首页切换或重新连接设备。
+            IconButton(onClick = onDisconnect) {
+                Icon(
+                    imageVector = Icons.Outlined.Devices,
+                    contentDescription = "设备管理",
+                    tint = if (connected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.outline,
                 )
             }
         }

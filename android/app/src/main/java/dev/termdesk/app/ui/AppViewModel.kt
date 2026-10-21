@@ -1,5 +1,6 @@
 package dev.termdesk.app.ui
 
+import dev.termdesk.app.BuildConfig
 import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
@@ -362,9 +363,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- theme ----
 
+    private val defaultThemeMode = if (BuildConfig.UI_LAYOUT == "classic") {
+        ThemeMode.Dark
+    } else {
+        ThemeMode.Light
+    }
     private val _themeMode = MutableStateFlow(
-        runCatching { ThemeMode.valueOf(prefs.getString(KEY_THEME, ThemeMode.Dark.name)!!) }
-            .getOrDefault(ThemeMode.Dark),
+        runCatching { ThemeMode.valueOf(prefs.getString(KEY_THEME, defaultThemeMode.name)!!) }
+            .getOrDefault(defaultThemeMode),
     )
     val themeMode: StateFlow<ThemeMode> = _themeMode.asStateFlow()
 
@@ -465,6 +471,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteEntry(path: String) = client.deleteEntry(path)
     fun renameEntry(path: String, newName: String) = client.renameEntry(path, newName)
     fun downloadFile(path: String, name: String) = client.downloadFile(path, name)
+
+    /** 手机本地做完一件事（比如批量处理图片）之后，往当前对话里写一行系统提示。 */
+    fun note(text: String) = client.note(text)
+
+    /** 海报画好之后，把那张卡片放进当前对话（同一张就地更新，不刷屏）。 */
+    fun postPoster(text: String, file: String) = client.poster(text, file)
+
     fun uploadFile(uri: android.net.Uri, remoteDir: String) = client.uploadFile(uri, remoteDir)
 
     val savedUrl: String get() = computers.active()?.url ?: DEFAULT_URL

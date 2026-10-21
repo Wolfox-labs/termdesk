@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<!-- 网页骨架 · 产品介绍页（产品名 + 卖点 + 功能清单 + 规格 + 咨询）
+     用法：整份照抄，只替换双花括号占位符里的文字与 :root 里的色值，不要改结构、不要重写 CSS。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{页面标题}}</title>
+<style>
+:root{
+{{配色变量}}
+  --wrap:920px;--radius:16px;
+  --f:"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--f);font-size:16px;
+  line-height:1.75;overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:var(--wrap);margin:0 auto;padding:0 20px}
+.btn{display:inline-block;padding:11px 24px;border-radius:999px;background:var(--primary);
+  color:var(--bg);font-weight:600;font-size:15px}
+.btn.ghost{background:transparent;color:var(--text);
+  border:1px solid color-mix(in srgb,var(--text) 26%,transparent)}
+
+.hero{padding:60px 0 44px;display:grid;grid-template-columns:1.15fr .85fr;
+  gap:36px;align-items:center}
+.hero .tag{font-size:12px;letter-spacing:2px;color:var(--primary);margin-bottom:14px}
+.hero h1{font-size:34px;font-weight:700;letter-spacing:-.6px;line-height:1.28}
+.hero .lead{margin-top:16px;color:var(--muted);font-size:16px}
+.hero .acts{margin-top:26px;display:flex;gap:12px;flex-wrap:wrap}
+.shot{background:var(--card);border-radius:var(--radius);padding:26px 20px;text-align:center;
+  border:1px solid color-mix(in srgb,var(--text) 8%,transparent)}
+.shot .glyph{font-size:44px;line-height:1;color:var(--primary);font-weight:700}
+.shot p{margin-top:14px;font-size:13px;color:var(--muted)}
+
+section{padding:44px 0}
+h2{font-size:22px;font-weight:700;margin-bottom:8px;letter-spacing:-.3px}
+.sec-sub{color:var(--muted);font-size:15px;margin-bottom:26px}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+.feat{background:var(--card);border-radius:var(--radius);padding:20px;
+  border:1px solid color-mix(in srgb,var(--text) 8%,transparent)}
+.feat h3{font-size:16px;font-weight:600;margin-bottom:7px}
+.feat h3:before{content:"";display:inline-block;width:7px;height:7px;border-radius:2px;
+  background:var(--primary);margin-right:9px;vertical-align:middle}
+.feat p{font-size:14px;color:var(--muted)}
+
+table{width:100%;border-collapse:collapse;background:var(--card);border-radius:var(--radius);
+  overflow:hidden;font-size:14px}
+table tr:nth-child(even){background:color-mix(in srgb,var(--text) 4%,transparent)}
+th,td{text-align:left;padding:13px 18px;
+  border-bottom:1px solid color-mix(in srgb,var(--text) 8%,transparent)}
+th{width:34%;color:var(--muted);font-weight:500}
+tr:last-child th,tr:last-child td{border-bottom:0}
+
+.cta{margin:12px 0 56px;text-align:center;background:var(--card);border-radius:var(--radius);
+  padding:38px 22px;border:1px solid color-mix(in srgb,var(--primary) 24%,transparent)}
+.cta h2{margin-bottom:10px}
+.cta p{color:var(--muted);font-size:15px}
+.cta .acts{margin-top:24px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+
+footer{border-top:1px solid color-mix(in srgb,var(--text) 10%,transparent);
+  padding:28px 0 38px;font-size:13px;color:var(--muted);text-align:center}
+
+@media (max-width:700px){
+  .hero{grid-template-columns:1fr;padding:40px 0 30px;gap:24px}
+  .hero h1{font-size:26px}
+  section{padding:32px 0}
+  h2{font-size:19px}
+}
+</style>
+</head>
+<body>
+
+<div class="hero wrap">
+  <div>
+    <div class="tag">{{角标}}</div>
+    <h1>{{产品名}}</h1>
+    <p class="lead">{{一句话卖点}}</p>
+    <div class="acts">
+      <a href="#contact" class="btn">{{主按钮}}</a>
+      <a href="#spec" class="btn ghost">{{次按钮}}</a>
+    </div>
+  </div>
+  <div class="shot">
+    <div class="glyph">{{图位文字}}</div>
+    <p>{{图位说明}}</p>
+  </div>
+</div>
+
+<section>
+  <div class="wrap">
+    <h2>{{功能区标题}}</h2>
+    <p class="sec-sub">{{功能区副标题}}</p>
+    <div class="grid">
+      <div class="feat"><h3>{{功能1标题}}</h3><p>{{功能1说明}}</p></div>
+      <div class="feat"><h3>{{功能2标题}}</h3><p>{{功能2说明}}</p></div>
+      <div class="feat"><h3>{{功能3标题}}</h3><p>{{功能3说明}}</p></div>
+      <div class="feat"><h3>{{功能4标题}}</h3><p>{{功能4说明}}</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="spec">
+  <div class="wrap">
+    <h2>{{规格区标题}}</h2>
+    <p class="sec-sub">{{规格区副标题}}</p>
+    <table>
+      <tr><th>{{规格1名}}</th><td>{{规格1值}}</td></tr>
+      <tr><th>{{规格2名}}</th><td>{{规格2值}}</td></tr>
+      <tr><th>{{规格3名}}</th><td>{{规格3值}}</td></tr>
+      <tr><th>{{规格4名}}</th><td>{{规格4值}}</td></tr>
+    </table>
+  </div>
+</section>
+
+<div class="cta" id="contact">
+  <div class="wrap">
+    <h2>{{行动号召标题}}</h2>
+    <p>{{行动号召说明}}</p>
+    <div class="acts">
+      <a href="tel:{{联系电话}}" class="btn">{{行动号召按钮}}</a>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">{{页脚版权}}</div>
+</footer>
+
+</body>
+</html>

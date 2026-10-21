@@ -167,6 +167,7 @@ import org.json.JSONObject
             streaming = o.optBoolean("streaming", false),
             queued = o.optBoolean("queued", false),
             files = parseChatFiles(meta?.optJSONArray("files")),
+            poster = if (o.isNull("poster")) null else o.optString("poster"),
         )
     }
 

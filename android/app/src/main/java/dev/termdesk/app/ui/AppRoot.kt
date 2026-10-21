@@ -29,6 +29,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.findViewTreeLifecycleOwner
@@ -397,14 +399,6 @@ fun AppRoot(
                 onForget = { vm.forgetDevice(); connectionOpen = true },
             )
 
-            // An open file takes over the work area: viewing and editing are
-            // both focused modes, never a panel beside the browser.
-            preview != null -> FilePreviewScreen(
-                preview = preview!!,
-                onClose = vm::closePreview,
-                onSave = vm::savePreviewToDownloads,
-            )
-
             openFile != null -> FileEditor(
                 file = openFile!!,
                 saveResult = lastAction,
@@ -430,6 +424,8 @@ fun AppRoot(
                 onNavigate = vm::listDirectory,
                 onOpenFile = { entry -> vm.openPreview(entry) },
                 onDownload = { entry -> vm.downloadFile(entry.path, entry.name) },
+                // 聊天里「产出文件」卡片上的「下载」：同一个下载器，按路径取。
+                onDownloadPath = { path, name -> vm.downloadFile(path, name) },
                 onUpload = vm::uploadFile,
                 onCreateEntry = vm::createEntry,
                 onDeleteEntry = vm::deleteEntry,
@@ -493,6 +489,8 @@ fun AppRoot(
                     section = Section.Sessions
                 },
                 onSendChat = vm::sendChatMessage,
+                onNote = vm::note,
+                onPoster = vm::postPoster,
                 onCancelChat = vm::cancelChat,
                 onCloseChat = vm::closeChat,
                 onLeaveChat = vm::leaveChat,
@@ -574,6 +572,23 @@ fun AppRoot(
                 },
                 onCloseTerminalView = vm::closeTerminalView,
             )
+        }
+
+        preview?.let { open ->
+            Dialog(
+                onDismissRequest = vm::closePreview,
+                properties = DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                FilePreviewScreen(
+                    preview = open,
+                    onClose = vm::closePreview,
+                    onSave = vm::savePreviewToDownloads,
+                    onEdit = {
+                        vm.closePreview()
+                        vm.readFile(open.path)
+                    },
+                )
+            }
         }
 
         SnackbarHost(

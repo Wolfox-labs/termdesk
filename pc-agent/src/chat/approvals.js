@@ -110,12 +110,37 @@ export function createApprovalHandlers({
     async handleAcpPermission(engineId, info) {
       const chat = acpChatForSession(info?.sessionId);
       const options = Array.isArray(info.options) ? info.options : [];
-      const ids = options
-        .map((o) => o?.optionId ?? o?.id)
-        .filter((id) => KNOWN_OPTIONS.includes(id));
-      // A kernel that offers something we do not speak (a "cancel" kind, say)
-      // still gets an answer: the vocabulary is ours, and anything unmapped is
-      // simply not offered.
+
+      // ACP 只规定选项的 **kind**（allow_once / allow_always / reject_once /
+      // reject_always），`optionId` 由内核自己取——真机上 OpenCode 给的就不是
+      // 「allow_always」这种字面量。所以先按 kind 建一张「我们的话 → 内核的话」
+      // 对照表，再拿它问手机；找不到 kind 才退回按 id 同名匹配。
+      //
+      // 这张表是必须的：上一版只按 id 同名过滤，匹配不上就用自己的三个 id 去问，
+      // 手机答「总是允许」时回给内核的 optionId 它根本不认识（acp.js 按 optionId
+      // 在 options 里找不到就回 `cancelled`），于是工具调用被取消、这一轮直接结束——
+      // 现场表现就是「审批像是通过了，但什么都没生成」。
+      const oursOfEngineId = new Map();
+      const engineIdOfOurs = new Map();
+      const remember = (ours, kinds, aliases) => {
+        const hit = kinds.map(kind => options.find(o => String(o?.kind ?? '') === kind)).find(Boolean)
+          ?? aliases.map(alias => options.find(o => String(o?.optionId ?? o?.id ?? '') === alias)).find(Boolean);
+        if (!hit) return;
+        const engineOption = hit.optionId ?? hit.id;
+        if (typeof engineOption !== 'string' || engineOption.length === 0) return;
+        engineIdOfOurs.set(ours, engineOption);
+        oursOfEngineId.set(engineOption, ours);
+      };
+      remember(OPTIONS.ALLOW_ONCE, ['allow_once'], ['allow_once']);
+      remember(OPTIONS.ALLOW_ALWAYS, ['allow_always'], ['allow_always']);
+      // 拒绝：内核的两种 kind 都算「拒绝」，我们这边只有一种说法。
+      remember(OPTIONS.DENY, ['reject_once', 'reject_always'], ['deny', 'reject_once', 'reject_always']);
+
+      // 内核自己声明的默认项，也要翻译回我们的话，才能在超时/离线时给出它认识的那一个。
+      const defaultOurs = oursOfEngineId.get(String(info.defaultOptionId ?? '')) ?? null;
+      const fallback = defaultOurs ?? (KNOWN_OPTIONS.includes(info.defaultOptionId) ? info.defaultOptionId : OPTIONS.DENY);
+
+      const ids = [...engineIdOfOurs.keys()];
       const optionId = await broker.request({
         chatId: chat?.id ?? null,
         engine: engineId,
@@ -125,9 +150,13 @@ export function createApprovalHandlers({
         detail: info.toolCall?.title ? '' : (info.toolCall?.kind ?? ''),
         kind: info.toolCall?.kind === 'edit' || info.toolCall?.kind === 'write' ? 'file' : 'tool',
         ids: ids.length > 0 ? ids : null,
-        fallback: KNOWN_OPTIONS.includes(info.defaultOptionId) ? info.defaultOptionId : OPTIONS.DENY,
+        fallback,
       }).catch(() => OPTIONS.DENY);
-      info.respond(optionId === OPTIONS.DENY ? null : optionId);
+
+      // 把我们的话翻回内核的话。翻不出来（内核一个认识的选项都没给）就当「取消」处理：
+      // 给一个它不认识的 optionId 比拒绝更糟——那会让它把整轮工具调用判废。
+      const engineOptionId = engineIdOfOurs.get(optionId) ?? null;
+      info.respond(engineOptionId);
     },
 
     /**

@@ -54,7 +54,7 @@ const asked = approvalsFor(chatId)[0];
 check('the phone is asked about an ACP permission', Boolean(asked), `${approvalsFor(chatId).length} request(s)`);
 check('the question names the tool', `${asked?.title} ${asked?.detail}`.includes('npm test'), asked?.title);
 check('only answers we speak are offered',
-  asked?.options?.map((o) => o.id).join(',') === 'allow_once,allow_always', asked?.options?.map((o) => o.id).join(','));
+  asked?.options?.map((o) => o.id).join(',') === 'allow_once,allow_always,deny', asked?.options?.map((o) => o.id).join(','));
 check('the kernel is not answered before the phone decides', respondArgs.length === 0);
 
 const answered = manager.resolveApproval({ requestId: asked.requestId, optionId: 'allow_always' });
@@ -77,7 +77,7 @@ await manager.handleAcpPermission('opencode', {
   respond: (id) => offlineArgs.push(id),
 });
 check('without a phone the kernel default is used at once',
-  offlineArgs.length === 1 && offlineArgs[0] === null,
+  offlineArgs.length === 1 && offlineArgs[0] === 'reject_once',
   JSON.stringify(offlineArgs));
 manager.attach((payload) => frames.push(payload));
 
@@ -127,7 +127,7 @@ check('the chat-close case starts from a pending request', manager.approvals.pen
 manager.close(chatId);
 await tick();
 check('closing the chat settles the pending permission',
-  stranded.length === 1 && stranded[0] === null, JSON.stringify(stranded));
+  stranded.length === 1 && stranded[0] === 'reject_once', JSON.stringify(stranded));
 check('nothing is left pending', manager.approvals.pending().length === 0);
 
 manager.disposeAll();

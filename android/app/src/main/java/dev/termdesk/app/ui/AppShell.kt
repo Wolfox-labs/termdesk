@@ -1,5 +1,6 @@
 package dev.termdesk.app.ui
 
+import dev.termdesk.app.BuildConfig
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -57,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -152,6 +154,8 @@ fun AppShell(
     onNavigate: (String) -> Unit,
     onOpenFile: (FileEntry) -> Unit,
     onDownload: (FileEntry) -> Unit,
+    /** 聊天里「产出文件」卡片上的「下载」：给的是路径，不是 FileEntry。 */
+    onDownloadPath: (String, String) -> Unit = { _, _ -> },
     onUpload: (Uri, String) -> Unit,
     onCreateEntry: (String, String, Boolean) -> Unit,
     onDeleteEntry: (String) -> Unit,
@@ -205,6 +209,10 @@ fun AppShell(
     onCreateChat: (String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSendChat: (String, String) -> Unit,
+    /** 手机本地做完一件事之后，往当前对话里写一行系统提示（见 AgentClient.note）。 */
+    onNote: (String) -> Unit = {},
+    /** 海报画好之后把卡片放进对话（见 AgentClient.poster）。 */
+    onPoster: (String, String) -> Unit = { _, _ -> },
     onCancelChat: (String) -> Unit,
     onCloseChat: (String) -> Unit,
     onLeaveChat: () -> Unit,
@@ -264,6 +272,7 @@ fun AppShell(
     onCloseTerminalView: () -> Unit,
 ) {
     var panelOpen by remember { mutableStateOf(false) }
+    val classicLayout = BuildConfig.UI_LAYOUT == "classic"
     // Sections live in a drawer rather than a permanent rail: a phone is about
     // 400dp wide and the rail charged every screen 56dp for it.
     var sectionDrawerOpen by remember { mutableStateOf(false) }
@@ -288,6 +297,7 @@ fun AppShell(
                 TopBar(
                     section = section,
                     panelOpen = panelOpen,
+                    classicLayout = classicLayout,
                     onOpenSections = { sectionDrawerOpen = true },
                     onTogglePanel = { panelOpen = !panelOpen },
                     onDisconnect = onDisconnect,
@@ -318,6 +328,8 @@ fun AppShell(
                     storage = storage,
                     onLoadStorage = onLoadStorage,
                     onClearStorage = onClearStorage,
+                    onDisconnect = onDisconnect,
+                    onDownloadPath = onDownloadPath,
                     localKernel = localKernel,
                     onLoadLocalKernel = onLoadLocalKernel,
                     onInstallLocalKernel = onInstallLocalKernel,
@@ -391,6 +403,8 @@ fun AppShell(
                     onCreateChat = onCreateChat,
                     onOpenChat = onOpenChat,
                     onSendChat = onSendChat,
+                    onNote = onNote,
+                    onPoster = onPoster,
                     onCancelChat = onCancelChat,
                     onCloseChat = onCloseChat,
                     onLeaveChat = onLeaveChat,
@@ -480,14 +494,15 @@ fun AppShell(
 
         AnimatedVisibility(
             visible = sectionDrawerOpen,
-            enter = slideInHorizontally { -it },
-            exit = slideOutHorizontally { -it },
-            modifier = Modifier.align(Alignment.CenterStart),
+            enter = slideInHorizontally { if (classicLayout) -it else it },
+            exit = slideOutHorizontally { if (classicLayout) -it else it },
+            modifier = Modifier.align(if (classicLayout) Alignment.CenterStart else Alignment.CenterEnd),
         ) {
             SectionDrawer(
                 hostname = hostname,
                 section = section,
                 connected = connected,
+                classicLayout = classicLayout,
                 onSelect = {
                     onSectionChange(it)
                     sectionDrawerOpen = false
@@ -502,24 +517,28 @@ fun AppShell(
 private fun TopBar(
     section: Section,
     panelOpen: Boolean,
+    classicLayout: Boolean,
     onOpenSections: () -> Unit,
     onTogglePanel: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
+    // 用户点名的重排：三横（分区）搬到**右上角**，点开的面板从右边滑出；
+    // 「查看工作状态」的图表图标搬到**左上角**；断开连接不在这条栏里了——
+    // 它搬到首页"显示电脑型号"那一行的最右侧（见 HomeSection）。
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
             .background(MaterialTheme.colorScheme.surface)
-            .padding(start = 4.dp, end = 2.dp),
+            .padding(start = if (classicLayout) 4.dp else 2.dp, end = if (classicLayout) 2.dp else 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onClick = onOpenSections) {
-            Icon(
-                imageVector = Icons.Outlined.Menu,
-                contentDescription = "分区",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        if (classicLayout) {
+            IconButton(onClick = onOpenSections) {
+                Icon(Icons.Outlined.Menu, contentDescription = "分区", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            HostStatusButton(panelOpen, onTogglePanel)
         }
         Text(
             text = section.label,
@@ -528,13 +547,8 @@ private fun TopBar(
             maxLines = 1,
             modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
         )
-        IconButton(onClick = onTogglePanel) {
-            Icon(
-                imageVector = Icons.Outlined.Memory,
-                contentDescription = "主机状态",
-                tint = if (panelOpen) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        if (classicLayout) {
+            HostStatusButton(panelOpen, onTogglePanel)
         }
         IconButton(onClick = onDisconnect) {
             Icon(
@@ -543,6 +557,23 @@ private fun TopBar(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        if (!classicLayout) {
+            IconButton(onClick = onOpenSections) {
+                Icon(Icons.Outlined.Menu, contentDescription = "分区", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HostStatusButton(panelOpen: Boolean, onTogglePanel: () -> Unit) {
+    IconButton(onClick = onTogglePanel) {
+        Icon(
+            imageVector = Icons.Outlined.Memory,
+            contentDescription = "主机状态",
+            tint = if (panelOpen) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -552,11 +583,12 @@ private fun SectionDrawer(
     hostname: String,
     section: Section,
     connected: Boolean,
+    classicLayout: Boolean,
     onSelect: (Section) -> Unit,
 ) {
     Column(
         modifier = Modifier
-            .width(236.dp)
+            .width(if (classicLayout) 236.dp else (LocalConfiguration.current.screenWidthDp * 0.5f).dp)
             .fillMaxHeight()
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .padding(vertical = 14.dp),
@@ -693,6 +725,8 @@ private fun SectionBody(
     onNavigate: (String) -> Unit,
     onOpenFile: (FileEntry) -> Unit,
     onDownload: (FileEntry) -> Unit,
+    /** 聊天里「产出文件」卡片上的「下载」：给的是路径，不是 FileEntry。 */
+    onDownloadPath: (String, String) -> Unit = { _, _ -> },
     onUpload: (Uri, String) -> Unit,
     onCreateEntry: (String, String, Boolean) -> Unit,
     onDeleteEntry: (String) -> Unit,
@@ -749,6 +783,10 @@ private fun SectionBody(
     onCreateChat: (String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSendChat: (String, String) -> Unit,
+    /** 手机本地做完一件事之后写一行系统提示，见 AgentClient.note。 */
+    onNote: (String) -> Unit = {},
+    /** 海报画好之后把卡片放进对话，见 AgentClient.poster。 */
+    onPoster: (String, String) -> Unit = { _, _ -> },
     onCancelChat: (String) -> Unit,
     onCloseChat: (String) -> Unit,
     onLeaveChat: () -> Unit,
@@ -795,6 +833,8 @@ private fun SectionBody(
     onNewChatNow: () -> Unit,
     canCreateChat: Boolean,
     onGoto: (Section) -> Unit,
+    /** 首页那一行"电脑型号 + 已连接"最右侧的断开按钮（用户点名搬过来的）。 */
+    onDisconnect: () -> Unit,
     chatTerminals: Map<String, List<ChatTerminal>>,
     terminalView: TerminalView?,
     onLoadTerminals: (String) -> Unit,
@@ -833,6 +873,7 @@ private fun SectionBody(
             onBrowseFiles = { onGoto(Section.Files) },
             onOpenTerminal = { onGoto(Section.Terminal) },
             onOpenSystem = { onGoto(Section.System) },
+            onDisconnect = onDisconnect,
         )
         // No local gate here any more: the sandbox agent serves this section too.
         Section.System -> SystemSection(
@@ -914,6 +955,8 @@ private fun SectionBody(
             onCreateChat = onCreateChat,
             onOpenChat = onOpenChat,
             onSend = onSendChat,
+            onNote = onNote,
+            onPoster = onPoster,
             onCancel = onCancelChat,
             onCloseChat = onCloseChat,
             onLeaveChat = onLeaveChat,
@@ -925,6 +968,10 @@ private fun SectionBody(
             sessionSort = sessionSort,
             onSetSessionSort = onSetSessionSort,
             onOpenFiles = onOpenFilesAt,
+            // 对话里的产出物：用已有的 onOpenFile（AppRoot 接到预览）打开它，
+            // kind 由 FileEntry.produced 按扩展名推断，见 Files.kt 的说明。
+            onPreviewFile = { path, name -> onOpenFile(FileEntry.produced(path, name)) },
+            onDownloadPath = onDownloadPath,
             pendingSends = pendingSends,
             pendingDropped = pendingDropped,
             onOpenSession = onOpenSession,

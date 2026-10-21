@@ -1,24 +1,16 @@
 package dev.termdesk.app.ui
 
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,92 +18,39 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
-import androidx.compose.material.icons.outlined.KeyboardArrowUp
-import androidx.compose.material.icons.outlined.Menu
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.automirrored.outlined.Send
-import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import dev.termdesk.app.data.ChatDraft
-import dev.termdesk.app.data.ChatDraftStore
-import android.content.Context
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.findViewTreeLifecycleOwner
-import dev.termdesk.app.data.ChatApproval
 import dev.termdesk.app.data.ChatEvent
-import dev.termdesk.app.data.ChatCommands
 import dev.termdesk.app.data.ChatModels
-import dev.termdesk.app.data.SessionGroups
-import dev.termdesk.app.data.UploadedFile
 import dev.termdesk.app.data.CodexConfig
-import dev.termdesk.app.data.KernelInfo
-import dev.termdesk.app.data.KernelRun
 import dev.termdesk.app.data.ChatInfo
-import dev.termdesk.app.data.ChatTerminal
-import dev.termdesk.app.data.TerminalView
 import dev.termdesk.app.data.SessionDetail
-import dev.termdesk.app.data.SessionInfo
-import dev.termdesk.app.data.SessionSort
-import dev.termdesk.app.data.WorkspaceInfo
-import dev.termdesk.app.ui.theme.Semantic
-import kotlinx.coroutines.delay
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+
 
 /** Folded-away facts about the open conversation, plus what the next turn runs on. */
 @Composable
@@ -353,9 +292,18 @@ internal fun RecordedDetailPanel(session: SessionDetail) {
 /** Above this many choices a chip row stops being a choice and becomes a scroll. */
 private const val CHIP_LIMIT = 12
 
-
+/**
+ * 「什么都能选」的 MIME 通配符。
+ *
+ * 单独提成常量不只是为了整洁：这个字面量里出现了星号紧跟斜杠的形状，而 **Kotlin 的块注释
+ * 是可以嵌套的**——同样的形状一旦出现在文档注释内部，就会又开一层注释，于是外层注释一直
+ * 开到文件末尾，把后面整片代码都吃掉（这个坑真踩过一次，报错位置和真正的原因差了上千行）。
+ * 收在一处，就不用每次写文档注释时提心吊胆。
+ */
+internal const val MIME_ANY = "*/*"
 
 /** Searchable model picker: an ACP kernel can declare more models than a screen holds. */
+
 @Composable
 internal fun ChoicePickerDialog(
     title: String,
@@ -436,7 +384,11 @@ internal fun ChoicePickerDialog(
 
 /** Recorded history, listed like conversations because that is what it is. */
 @Composable
-internal fun RecordedTranscript(session: SessionDetail, onOpenFile: ((String) -> Unit)? = null) {
+internal fun RecordedTranscript(
+    session: SessionDetail,
+    onOpenFile: ((String) -> Unit)? = null,
+    onPreviewFile: ((String, String) -> Unit)? = null,
+) {
     if (session.events.isEmpty()) {
         Text(
             "这条会话没有可显示的记录。",
@@ -485,10 +437,9 @@ internal fun RecordedTranscript(session: SessionDetail, onOpenFile: ((String) ->
     ) {
         items(rows, key = { it.key }) { row ->
             when (row) {
-                is TranscriptRow.One -> ChatEventRow(row.event, onOpenFile)
-                is TranscriptRow.Run -> ProcessRunLine(row.events, onOpenFile)
+                is TranscriptRow.One -> ChatEventRow(row.event, onOpenFile, onPreviewFile)
+                is TranscriptRow.Run -> ProcessRunLine(row.events, onOpenFile, onPreviewFile)
             }
         }
     }
 }
-

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<!-- 网页骨架 · 官网首页（参照「数智融媒官方网站」的结构：导航 / 首屏 / 核心服务 / 数据 / 页脚）
+     用法：整份照抄，只替换双花括号占位符里的文字与 :root 里的色值，不要改结构、不要重写 CSS。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{页面标题}}</title>
+<meta name="description" content="{{一句话简介}}">
+<style>
+:root{
+{{配色变量}}
+  --wrap:960px;
+  --radius:14px;
+  --f:"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--f);line-height:1.75;
+  font-size:16px;overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:var(--wrap);margin:0 auto;padding:0 20px}
+.muted{color:var(--muted)}
+
+/* ── 顶部导航 ─────────────────────────────────────────── */
+header{position:sticky;top:0;z-index:9;background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:blur(10px);border-bottom:1px solid color-mix(in srgb,var(--text) 10%,transparent)}
+header .wrap{display:flex;align-items:center;gap:18px;height:60px}
+.logo{font-size:19px;font-weight:700;letter-spacing:.5px;white-space:nowrap}
+.logo i{display:inline-block;width:9px;height:9px;border-radius:3px;background:var(--primary);
+  margin-right:8px;vertical-align:middle}
+nav{display:flex;gap:20px;margin-left:auto;font-size:14px}
+nav a{color:var(--muted);white-space:nowrap}
+nav a:hover{color:var(--primary)}
+.btn{display:inline-block;padding:9px 18px;border-radius:999px;background:var(--primary);
+  color:var(--bg);font-size:14px;font-weight:600;white-space:nowrap}
+.btn.ghost{background:transparent;color:var(--text);
+  border:1px solid color-mix(in srgb,var(--text) 26%,transparent)}
+
+/* ── 首屏 ────────────────────────────────────────────── */
+.hero{padding:64px 0 56px;position:relative;overflow:hidden}
+.hero:before{content:"";position:absolute;inset:-30% -20% auto -20%;height:420px;
+  background:radial-gradient(closest-side,color-mix(in srgb,var(--primary) 22%,transparent),transparent);
+  pointer-events:none}
+.hero .wrap{position:relative}
+.hero h1{font-size:34px;line-height:1.3;font-weight:700;letter-spacing:-.5px}
+.hero .sub{margin-top:16px;font-size:16px;color:var(--muted);max-width:620px}
+.hero .sub p{margin-top:4px}
+.hero .acts{margin-top:28px;display:flex;flex-wrap:wrap;gap:12px}
+.tag{display:inline-block;font-size:12px;letter-spacing:1px;color:var(--primary);
+  border:1px solid color-mix(in srgb,var(--primary) 40%,transparent);border-radius:999px;
+  padding:3px 12px;margin-bottom:18px}
+
+/* ── 区块通用 ────────────────────────────────────────── */
+section{padding:52px 0}
+.sec-head{margin-bottom:32px}
+.sec-head h2{font-size:24px;font-weight:700;letter-spacing:-.3px}
+.sec-head p{margin-top:10px;color:var(--muted);font-size:15px;max-width:640px}
+
+/* ── 核心服务卡片 ────────────────────────────────────── */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.card{background:var(--card);border-radius:var(--radius);padding:22px 20px;
+  border:1px solid color-mix(in srgb,var(--text) 8%,transparent)}
+.card .dot{width:34px;height:34px;border-radius:10px;background:color-mix(in srgb,var(--primary) 20%,transparent);
+  color:var(--primary);display:flex;align-items:center;justify-content:center;
+  font-weight:700;font-size:15px;margin-bottom:14px}
+.card h3{font-size:17px;font-weight:600;margin-bottom:8px}
+.card p{font-size:14px;color:var(--muted);line-height:1.7}
+
+/* ── 数据条 ──────────────────────────────────────────── */
+.stats{background:var(--card);border-radius:var(--radius);padding:28px 20px;
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:20px;text-align:center}
+.stats b{display:block;font-size:28px;font-weight:700;color:var(--primary);letter-spacing:-.5px}
+.stats span{font-size:13px;color:var(--muted)}
+
+/* ── 行动号召 ────────────────────────────────────────── */
+.cta{background:var(--card);border-radius:var(--radius);padding:36px 24px;text-align:center;
+  border:1px solid color-mix(in srgb,var(--primary) 22%,transparent)}
+.cta h2{font-size:22px;font-weight:700}
+.cta p{margin-top:10px;color:var(--muted);font-size:15px}
+.cta .btn{margin-top:22px}
+
+/* ── 页脚 ────────────────────────────────────────────── */
+footer{border-top:1px solid color-mix(in srgb,var(--text) 10%,transparent);
+  padding:34px 0 40px;margin-top:20px;font-size:13px;color:var(--muted)}
+footer .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:22px}
+footer h4{font-size:13px;color:var(--text);font-weight:600;margin-bottom:10px}
+footer a{display:block;line-height:2}
+footer a:hover{color:var(--primary)}
+.copy{margin-top:26px;padding-top:18px;font-size:12px;
+  border-top:1px solid color-mix(in srgb,var(--text) 8%,transparent)}
+
+@media (max-width:640px){
+  nav{display:none}
+  .hero{padding:44px 0 40px}
+  .hero h1{font-size:26px}
+  section{padding:38px 0}
+  .sec-head h2{font-size:20px}
+  .stats b{font-size:23px}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a href="#" class="logo"><i></i>{{站名}}</a>
+    <nav>
+      <a href="#feature">核心服务</a>
+      <a href="#data">数据</a>
+      <a href="#about">关于</a>
+      <a href="#contact">联系</a>
+    </nav>
+    <a href="#contact" class="btn">{{导航按钮}}</a>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <span class="tag">{{角标}}</span>
+    <h1>{{标题}}</h1>
+    <div class="sub">
+      <p>{{副标题}}</p>
+      <p>{{副标题2}}</p>
+    </div>
+    <div class="acts">
+      <a href="#contact" class="btn">{{主按钮}}</a>
+      <a href="#feature" class="btn ghost">{{次按钮}}</a>
+    </div>
+  </div>
+</div>
+
+<section id="feature">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>{{服务区标题}}</h2>
+      <p>{{服务区副标题}}</p>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="dot">1</div>
+        <h3>{{要点1标题}}</h3>
+        <p>{{要点1说明}}</p>
+      </div>
+      <div class="card">
+        <div class="dot">2</div>
+        <h3>{{要点2标题}}</h3>
+        <p>{{要点2说明}}</p>
+      </div>
+      <div class="card">
+        <div class="dot">3</div>
+        <h3>{{要点3标题}}</h3>
+        <p>{{要点3说明}}</p>
+      </div>
+      <div class="card">
+        <div class="dot">4</div>
+        <h3>{{要点4标题}}</h3>
+        <p>{{要点4说明}}</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!--可选-->
+<section id="data">
+  <div class="wrap">
+    <div class="stats">
+      <div><b>{{数据1}}</b><span>{{数据1说明}}</span></div>
+      <div><b>{{数据2}}</b><span>{{数据2说明}}</span></div>
+      <div><b>{{数据3}}</b><span>{{数据3说明}}</span></div>
+    </div>
+  </div>
+</section>
+<!--/可选-->
+
+<section id="about">
+  <div class="wrap">
+    <div class="cta">
+      <h2>{{行动号召标题}}</h2>
+      <p>{{行动号召说明}}</p>
+      <a href="#contact" class="btn">{{行动号召按钮}}</a>
+    </div>
+  </div>
+</section>
+
+<footer id="contact">
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <h4>{{页脚栏1标题}}</h4>
+        <a href="#">{{页脚栏1链接1}}</a>
+        <a href="#">{{页脚栏1链接2}}</a>
+        <a href="#">{{页脚栏1链接3}}</a>
+      </div>
+      <div>
+        <h4>{{页脚栏2标题}}</h4>
+        <a href="#">{{页脚栏2链接1}}</a>
+        <a href="#">{{页脚栏2链接2}}</a>
+      </div>
+      <!--可选-->
+      <div>
+        <h4>联系我们</h4>
+        <a href="tel:{{联系电话}}">{{联系电话}}</a>
+        <a href="mailto:{{邮箱}}">{{邮箱}}</a>
+        <a href="#">{{地址}}</a>
+      </div>
+      <!--/可选-->
+    </div>
+    <div class="copy">{{页脚版权}}</div>
+  </div>
+</footer>
+
+</body>
+</html>

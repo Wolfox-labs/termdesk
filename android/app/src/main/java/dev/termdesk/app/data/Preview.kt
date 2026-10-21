@@ -2,6 +2,22 @@ package dev.termdesk.app.data
 
 import java.io.File
 
+/** Transport used to get a preview into the phone's viewer. */
+internal enum class PreviewTransport {
+    TEXT_FILE,
+    DOCX_TEXT,
+    HTTP_DOWNLOAD,
+    INFORMATION,
+}
+
+/** Keep file classification and preview transport aligned. HTML is downloaded for WebView. */
+internal fun previewTransport(kind: String): PreviewTransport = when (kind) {
+    "text" -> PreviewTransport.TEXT_FILE
+    "docx" -> PreviewTransport.DOCX_TEXT
+    "html", "image", "pdf" -> PreviewTransport.HTTP_DOWNLOAD
+    else -> PreviewTransport.INFORMATION
+}
+
 /**
  * A file the phone is showing in its viewer.
  *
@@ -11,14 +27,14 @@ import java.io.File
  * — because the PC keeps the file and the phone only ever gets what it draws.
  */
 data class FilePreview(
-    /** image | pdf | docx | other */
+    /** html | image | pdf | docx | other */
     val kind: String,
     val name: String,
     val path: String,
     val loading: Boolean = false,
-    /** docx: the text the PC extracted. */
+    /** docx: extracted text; html: downloaded HTML source for WebView. */
     val text: String? = null,
-    /** image / pdf: the bytes fetched into the app cache. */
+    /** Downloaded preview bytes, retained in the app cache. */
     val localFile: File? = null,
     val sizeBytes: Long = 0L,
     /** Set when the file could not be shown; shown instead of an empty viewer. */

@@ -113,6 +113,7 @@ export function previewKind(name, isDir) {
   if (IMAGE_EXTENSIONS.has(ext)) return 'image';
   if (PDF_EXTENSIONS.has(ext)) return 'pdf';
   if (DOCX_EXTENSIONS.has(ext)) return 'docx';
+  if (ext === '.html' || ext === '.htm') return 'html';
   if (isProbablyText(name)) return 'text';
   return 'other';
 }

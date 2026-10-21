@@ -115,6 +115,34 @@ export function acpToolContentToText(content) {
  * Records never carry a `type` field: encodeFrame spreads payload after `type`,
  * so a top-level `type` would silently overwrite the wire frame type.
  */
+/**
+ * 一次已完成的工具调用在磁盘上留下了哪些文件。
+ *
+ * 只认内核自己的记录：`rawOutput.metadata.filepath` 是写文件工具写完之后
+ * 报告的那一条。不从 `locations` 猜——读文件、搜索命中的也是 locations，
+ * 把那些当成产出物，等于每次搜索都长出一张「产出文件」卡片。
+ */
+function acpProducedFiles(update) {
+  const found = new Map();
+  const meta = update?.rawOutput?.metadata;
+  if (meta && typeof meta.filepath === 'string') {
+    const filePath = meta.filepath.trim();
+    if (filePath.length > 0) found.set(filePath, { path: filePath, description: null });
+  }
+  return [...found.values()];
+}
+
+/**
+ * 构建脚本、日志、备份这类东西**不算产出物**。
+ *
+ * 真机上实测：一次 PPT 生成里，内核先用写文件工具落一个 `build_deck.py`、
+ * 再落一个 `analyze.py`，最后才由脚本产出 `report.pptx`。如果全报，
+ * 手机上「产出文件」卡片里排在最前面的是脚本，成品被挤到下面——那就本末倒置了。
+ */
+export function isScratchArtifact(filePath) {
+  return /\.(py|ps1|sh|bat|cmd|log|tmp|bak)$/i.test(String(filePath ?? ''));
+}
+
 export function acpUpdateToChatEvents(update) {
   if (!update || typeof update !== 'object') return [];
   switch (update.sessionUpdate) {
@@ -148,14 +176,33 @@ export function acpUpdateToChatEvents(update) {
       // A pure status flip (pending -> in_progress) carries nothing readable.
       const detail = acpToolContentToText(update.content);
       const status = update.status ?? 'completed';
-      if (!detail && status === 'in_progress') return [];
-      return [{
-        kind: 'tool_result',
-        role: 'tool',
-        text: (detail || `[${status}]`).slice(0, MAX_TEXT),
-        name: update.kind ?? 'tool_call',
-        meta: { state: status, toolCallId: update.toolCallId ?? null },
-      }];
+      const out = [];
+      if (detail || status !== 'in_progress') {
+        out.push({
+          kind: 'tool_result',
+          role: 'tool',
+          text: (detail || `[${status}]`).slice(0, MAX_TEXT),
+          name: update.kind ?? 'tool_call',
+          meta: { state: status, toolCallId: update.toolCallId ?? null },
+        });
+      }
+      // 产出文件。写文件的工具在完成时由内核给出落盘路径，这个通道原本
+      // 不提取它，手机上就只剩一行「Wrote file successfully.」——文件点不开，
+      // 而「看一眼它刚做出来的东西」正是这条记录存在的意义。
+      if (status === 'completed') {
+        // 构建脚本、日志、备份不是"产出物"：真机上它们会先于成品出现，把
+        // report.pptx 这种真正的交付物挤到下面去。手机上要的是成品那张卡。
+        const produced = acpProducedFiles(update).filter((f) => !isScratchArtifact(f.path));
+        if (produced.length > 0) {
+          out.push({
+            kind: 'deliverable',
+            role: 'assistant',
+            text: produced.map((f) => f.description || f.path).join('\n').slice(0, MAX_TEXT),
+            meta: { files: produced },
+          });
+        }
+      }
+      return out;
     }
     case 'plan': {
       const entries = Array.isArray(update.entries) ? update.entries : [];

@@ -34,6 +34,18 @@ class PendingSends(
     private val maxItems: Int = DEFAULT_MAX_ITEMS,
     /** How long an unsent message is still worth sending. */
     private val ttlMs: Long = DEFAULT_TTL_MS,
+    /**
+     * Where the previous process left its queue; read exactly once, by [init].
+     *
+     * 由**队列自己**在构造时读，而不是由调用方在某个 `init` 块里读：调用方的属性按
+     * 声明顺序初始化，"在 init 里读"就等于"这段代码能不能跑，取决于它被写在类的第几行"。
+     * `AgentClient` 就是这么坏的——那个 init 块写在属性前面，那一刻队列还是 null，
+     * 异常又被 `runCatching` 吞掉，于是队列只写不读：文件里的消息永远发不出去，也永远不清。
+     * 放在这里，读回来的时机只有一个，和调用方的类体长什么样无关。
+     *
+     * 返回值是 `List<Item>?`：null 表示"没有可读的存档"，不是错误。
+     */
+    private val load: () -> List<Item>? = { null },
     private val onChanged: (List<Item>) -> Unit = {},
 ) {
 
@@ -46,6 +58,13 @@ class PendingSends(
     )
 
     private val items = ArrayDeque<Item>()
+
+    // 读档必须写在 `items` **之后**：Kotlin 按声明顺序初始化，写在前面的话，
+    // restore() 拿到的 items 还是 null，异常又会被外面兜住——那就正好复刻了
+    // 这个类要修的那个缺陷（第一版就是这么写的，被下面的单测当场抓住）。
+    init {
+        load()?.let { restore(it) }
+    }
 
     val size: Int get() = items.size
     val isEmpty: Boolean get() = items.isEmpty()

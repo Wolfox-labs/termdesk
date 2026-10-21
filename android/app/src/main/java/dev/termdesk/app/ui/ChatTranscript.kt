@@ -20,7 +20,9 @@ import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,6 +41,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.termdesk.app.data.ChatEvent
+import dev.termdesk.app.data.PosterRenderer
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextAlign
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import dev.termdesk.app.ui.theme.Semantic
 
 /**
@@ -80,6 +92,19 @@ private const val RUN_MIN = 4
 /** Rows that describe *how* the work was done rather than what was said. */
 private fun isProcess(event: ChatEvent): Boolean =
     event.isTool || event.isReasoning || event.isCommand || event.isStep
+
+/**
+ * 这一行是不是「过程」。
+ *
+ * This describes the row, not permission to discard it. The conversation keeps
+ * process runs expandable so commands, failures and diagnostics remain readable.
+ */
+internal fun isProcessRow(row: TranscriptRow): Boolean = when (row) {
+    is TranscriptRow.Run -> true
+    is TranscriptRow.One -> isProcess(row.event) ||
+        row.event.kind == "engine_plan" || row.event.kind == "engine_summary" ||
+        row.event.kind == "usage" || row.event.isEngineLog
+}
 
 /**
  * Fold consecutive process rows into runs.
@@ -143,7 +168,11 @@ private fun runSummary(events: List<ChatEvent>): String {
  * is not indistinguishable from "read a file".
  */
 @Composable
-internal fun ProcessRunLine(run: List<ChatEvent>, onOpenFile: ((String) -> Unit)? = null) {
+internal fun ProcessRunLine(
+    run: List<ChatEvent>,
+    onOpenFile: ((String) -> Unit)? = null,
+    onPreviewFile: ((String, String) -> Unit)? = null,
+) {
     var expanded by remember(run.firstOrNull()?.seq, run.size) { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth()) {
         Row(
@@ -179,20 +208,32 @@ internal fun ProcessRunLine(run: List<ChatEvent>, onOpenFile: ((String) -> Unit)
                 modifier = Modifier.padding(start = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                for (event in run) ChatEventRow(event, onOpenFile)
+                for (event in run) ChatEventRow(event, onOpenFile, onPreviewFile)
             }
         }
     }
 }
 
 @Composable
-internal fun ChatEventRow(event: ChatEvent, onOpenFile: ((String) -> Unit)? = null) {    when {
+internal fun ChatEventRow(
+    event: ChatEvent,
+    onOpenFile: ((String) -> Unit)? = null,
+    onPreviewFile: ((String, String) -> Unit)? = null,
+    /** 海报卡片：点开看大图 / 下载到相册 / 点快捷调整重画。 */
+    onPosterOpen: ((String) -> Unit)? = null,
+    onPosterDownload: ((String) -> Unit)? = null,
+    onPosterTweak: ((PosterRenderer.Tweak) -> Unit)? = null,
+    /** 产物卡片上的「下载」：把文件存到手机里。 */
+    onDownloadFile: ((String, String) -> Unit)? = null,
+) {    when {
+        // 海报排在最前：它是这台手机自己画出来的，不该掉进下面任何一条"模型说的话"里。
+        event.kind == "poster" -> PosterLine(event, onPosterOpen, onPosterDownload, onPosterTweak)
         event.kind == "turn" -> TurnMarker(event)
         event.kind == "step" -> Spacer(Modifier.height(0.dp))
         event.isUser -> UserLine(event)
         event.isAssistant -> AssistantLine(event)
         event.isReasoning -> ReasoningLine(event)
-        event.isDeliverable -> DeliverableLine(event, onOpenFile)
+        event.isDeliverable -> DeliverableLine(event, onOpenFile, onPreviewFile, onDownloadFile)
         event.isInjectedContext -> ContextLine(event)
         event.isTool -> ToolLine(event)
         event.isCommand -> CommandLine(event)
@@ -204,6 +245,138 @@ internal fun ChatEventRow(event: ChatEvent, onOpenFile: ((String) -> Unit)? = nu
         event.hasText -> PlainLine(event)
         else -> Spacer(Modifier.height(0.dp))
     }
+}
+
+/**
+ * 一张画好的海报。
+ *
+ * 布局就是用户点名的那三件事：
+ *  · 上面一句话——`「主标题」海报已绘制完成`；
+ *  · 左边是图，**点一下看大图**；
+ *  · 右边**竖排**几个快手：对比、饱和、暖色、字号、换底、还原——点一下就地重画；
+ *  · 右下角是**下载端口**，写进手机相册。
+ *
+ * 图是从本机文件读的（`BitmapFactory`），在 IO 线程解码：海报是 1080×1440 的图，
+ * 在主线程解会卡住界面。全项目没有图片加载库，所以这里就自己读这一张。
+ */
+@Composable
+private fun PosterLine(
+    event: ChatEvent,
+    onOpen: ((String) -> Unit)?,
+    onDownload: ((String) -> Unit)?,
+    onTweak: ((PosterRenderer.Tweak) -> Unit)?,
+) {
+    val path: String? = event.poster
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text = event.text.ifBlank { "海报已绘制完成" },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        if (path == null) return@Column
+
+        val bitmap by produceState<android.graphics.Bitmap?>(null, path) {
+            value = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(path) }
+        }
+        Row(modifier = Modifier.padding(top = 8.dp)) {
+            bitmap?.let {
+                Image(
+                    bitmap = it.asImageBitmap(),
+                    contentDescription = "生成的海报",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(max = 320.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(enabled = onOpen != null) { onOpen?.invoke(path) },
+                )
+            } ?: Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(180.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "读取中…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            // 卡片里**不再摆**那排快捷键：用户点名要它们出现在「点开图片之后」的右上角，
+            // 聊天里只留一句提示，点开才是编辑台。
+            Column(
+                modifier = Modifier
+                    .padding(start = 10.dp)
+                    .width(78.dp)
+                    .heightIn(min = 180.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = "点开可调",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "对比 · 饱和\n字号 · 换底",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                )
+                Spacer(Modifier.weight(1f))
+                PosterQuickKey("下载", emphasis = true) { onDownload?.invoke(path) }
+            }
+        }
+    }
+}
+
+/** 竖排那几个快手：顺序就是用户会想调的顺序。 */
+internal data class PosterKey(val label: String, val tweak: PosterRenderer.Tweak)
+
+internal val posterKeys: List<PosterKey> = listOf(
+    PosterKey("对比 +", PosterRenderer.Tweak.Contrast),
+    PosterKey("饱和 +", PosterRenderer.Tweak.Saturation),
+    PosterKey("暖一点", PosterRenderer.Tweak.Warm),
+    PosterKey("换字号", PosterRenderer.Tweak.TitleSize),
+    PosterKey("换底图", PosterRenderer.Tweak.Variant),
+    PosterKey("还原", PosterRenderer.Tweak.Reset),
+)
+
+@Composable
+internal fun PosterQuickKey(
+    label: String,
+    emphasis: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val background = if (emphasis) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    val foreground = if (emphasis) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        color = foreground,
+        textAlign = TextAlign.Center,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(7.dp))
+            .background(background)
+            .clickable(onClick = onClick)
+            .padding(vertical = 5.dp),
+    )
 }
 
 /**
@@ -219,7 +392,13 @@ internal fun ChatEventRow(event: ChatEvent, onOpenFile: ((String) -> Unit)? = nu
  * shows the paths, which is what a recorded session can offer.
  */
 @Composable
-internal fun DeliverableLine(event: ChatEvent, onOpenFile: ((String) -> Unit)?) {
+internal fun DeliverableLine(
+    event: ChatEvent,
+    onOpenFile: ((String) -> Unit)?,
+    onPreviewFile: ((String, String) -> Unit)? = null,
+    /** 把这一份产物直接下到手机上（用户点名：手机上也要能拿到生成好的东西）。 */
+    onDownloadFile: ((String, String) -> Unit)? = null,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -235,15 +414,24 @@ internal fun DeliverableLine(event: ChatEvent, onOpenFile: ((String) -> Unit)?) 
         )
         for (file in event.files) {
             val dir = parentDirectoryOf(file.path)
-            val openable = onOpenFile != null && dir != null
+            val folderOpenable = onOpenFile != null && dir != null
+            // 「看效果」优先：产出物就在当前这一页里打开。没有预览通道时，
+            // 才退回原来的「打开所在文件夹」——那个入口仍然留在右侧的文件夹图标上。
+            val tappable = onPreviewFile != null || folderOpenable
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .then(
-                        if (openable) {
+                        if (tappable) {
                             Modifier
                                 .clip(RoundedCornerShape(8.dp))
-                                .clickable { onOpenFile?.invoke(dir!!) }
+                                .clickable {
+                                    if (onPreviewFile != null) {
+                                        onPreviewFile.invoke(file.path, file.name)
+                                    } else {
+                                        onOpenFile?.invoke(dir!!)
+                                    }
+                                }
                         } else {
                             Modifier
                         },
@@ -278,12 +466,30 @@ internal fun DeliverableLine(event: ChatEvent, onOpenFile: ((String) -> Unit)?) 
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                if (openable) {
+                // 「下载」：把这份产物直接存到手机（用户点名要的入口）。
+                if (onDownloadFile != null) {
+                    TextButton(
+                        onClick = { onDownloadFile.invoke(file.path, file.name) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            "下载",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Semantic.current.info,
+                        )
+                    }
+                }
+                if (folderOpenable) {
                     Icon(
                         Icons.Outlined.FolderOpen,
                         contentDescription = "打开所在文件夹",
                         tint = Semantic.current.info,
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onOpenFile?.invoke(dir!!) }
+                            .padding(7.dp)
+                            .size(18.dp),
                     )
                 }
             }

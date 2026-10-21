@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<!-- 网页骨架 · 监测预警页（参照「舆情洞察平台 · 全媒体洞察专家」的结构：
+     导航 + 电话 / 首屏 / 能力模块 / 处置流程时间线 / 优势数字 / 试用号召 / 页脚）
+     用法：整份照抄，只替换双花括号占位符里的文字与 :root 里的色值，不要改结构、不要重写 CSS。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{页面标题}}</title>
+<meta name="description" content="{{一句话简介}}">
+<style>
+:root{
+{{配色变量}}
+  --wrap:960px;
+  --radius:14px;
+  --f:"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--f);line-height:1.75;
+  font-size:16px;overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:var(--wrap);margin:0 auto;padding:0 20px}
+.muted{color:var(--muted)}
+
+/* ── 顶部导航：右边常驻一个电话 ───────────────────────── */
+header{position:sticky;top:0;z-index:9;background:color-mix(in srgb,var(--bg) 88%,transparent);
+  backdrop-filter:blur(10px);border-bottom:1px solid color-mix(in srgb,var(--text) 10%,transparent)}
+header .wrap{display:flex;align-items:center;gap:16px;height:60px}
+.logo{font-size:19px;font-weight:700;letter-spacing:.5px;white-space:nowrap}
+.logo i{display:inline-block;width:9px;height:9px;border-radius:3px;background:var(--primary);
+  margin-right:8px;vertical-align:middle}
+nav{display:flex;gap:16px;margin-left:auto;font-size:14px}
+nav a{color:var(--muted);white-space:nowrap}
+nav a:hover{color:var(--primary)}
+.tel{font-size:14px;font-weight:600;color:var(--primary);white-space:nowrap;
+  font-variant-numeric:tabular-nums}
+.btn{display:inline-block;padding:9px 18px;border-radius:999px;background:var(--primary);
+  color:var(--bg);font-size:14px;font-weight:600;white-space:nowrap;border:0;cursor:pointer}
+.btn.ghost{background:transparent;color:var(--text);
+  border:1px solid color-mix(in srgb,var(--text) 26%,transparent)}
+
+/* ── 首屏 ────────────────────────────────────────────── */
+.hero{padding:56px 0 20px;position:relative;overflow:hidden}
+.hero .grid{display:grid;grid-template-columns:1.25fr 1fr;gap:26px;align-items:center}
+.hero:before{content:"";position:absolute;inset:-30% auto auto -18%;width:420px;height:420px;
+  background:radial-gradient(closest-side,color-mix(in srgb,var(--primary) 18%,transparent),transparent);
+  pointer-events:none}
+.hero .txt{position:relative}
+.hero h1{font-size:32px;line-height:1.34;font-weight:700;letter-spacing:-.5px}
+.hero .sub{margin-top:14px;font-size:15px;color:var(--muted);max-width:560px}
+.hero .acts{margin-top:24px;display:flex;flex-wrap:wrap;gap:12px}
+.tag{display:inline-block;font-size:12px;letter-spacing:1px;color:var(--primary);
+  border:1px solid color-mix(in srgb,var(--primary) 40%,transparent);border-radius:999px;
+  padding:3px 12px;margin-bottom:16px}
+/* 监控大屏示意位：原站这里是截图。骨架不带图，用纯 CSS 画一块「大屏」。 */
+.screen{position:relative;background:var(--card);border-radius:var(--radius);
+  border:1px solid color-mix(in srgb,var(--text) 10%,transparent);padding:16px;
+  box-shadow:0 10px 30px color-mix(in srgb,var(--primary) 10%,transparent)}
+.screen .bar{display:flex;align-items:center;gap:6px;margin-bottom:12px}
+.screen .bar i{width:8px;height:8px;border-radius:50%;
+  background:color-mix(in srgb,var(--primary) 45%,transparent)}
+.screen .bar span{margin-left:auto;font-size:11px;color:var(--muted);letter-spacing:1px}
+.screen .rows{display:flex;flex-direction:column;gap:9px}
+.screen .rows .row{height:9px;border-radius:5px;
+  background:linear-gradient(90deg,color-mix(in srgb,var(--primary) 40%,transparent),
+    color-mix(in srgb,var(--primary) 8%,transparent))}
+.screen .rows .row:nth-child(2){width:78%}
+.screen .rows .row:nth-child(3){width:56%}
+.screen .rows .row:nth-child(4){width:88%}
+.screen .cap{margin-top:12px;font-size:12px;color:var(--muted);text-align:center}
+
+/* ── 区块通用 ────────────────────────────────────────── */
+section{padding:46px 0}
+.sec-head{margin-bottom:28px}
+.sec-head.center{text-align:center}
+.sec-head h2{font-size:24px;font-weight:700;letter-spacing:-.3px}
+.sec-head p{margin-top:10px;color:var(--muted);font-size:15px;max-width:640px}
+.sec-head.center p{margin-left:auto;margin-right:auto}
+
+/* ── 能力模块 ────────────────────────────────────────── */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px}
+.card{background:var(--card);border-radius:var(--radius);padding:22px 20px;
+  border:1px solid color-mix(in srgb,var(--text) 8%,transparent)}
+.card .dot{width:34px;height:34px;border-radius:10px;
+  background:color-mix(in srgb,var(--primary) 20%,transparent);color:var(--primary);
+  display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;
+  margin-bottom:14px}
+.card h3{font-size:17px;font-weight:600;margin-bottom:8px}
+.card p{font-size:14px;color:var(--muted);line-height:1.7}
+
+/* ── 处置流程时间线 ──────────────────────────────────── */
+.steps{list-style:none;position:relative;padding-left:34px}
+.steps:before{content:"";position:absolute;left:13px;top:8px;bottom:8px;width:2px;
+  background:color-mix(in srgb,var(--primary) 25%,transparent)}
+.steps li{position:relative;padding:0 0 22px 8px}
+.steps li:last-child{padding-bottom:0}
+.steps .no{position:absolute;left:-34px;top:2px;width:22px;height:22px;border-radius:50%;
+  background:var(--card);border:2px solid var(--primary);color:var(--primary);
+  font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.steps h3{font-size:16px;font-weight:600;margin-bottom:4px}
+.steps p{font-size:14px;color:var(--muted)}
+
+/* ── 优势数字 ────────────────────────────────────────── */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:18px;
+  background:var(--card);border-radius:var(--radius);padding:28px 20px;text-align:center;
+  border:1px solid color-mix(in srgb,var(--text) 8%,transparent)}
+.stats b{display:block;font-size:27px;font-weight:700;color:var(--primary);letter-spacing:-.5px}
+.stats span{font-size:13px;color:var(--muted)}
+
+/* ── 试用号召 ────────────────────────────────────────── */
+.cta{background:var(--card);border-radius:var(--radius);padding:36px 24px;text-align:center;
+  border:1px solid color-mix(in srgb,var(--primary) 22%,transparent)}
+.cta h2{font-size:22px;font-weight:700}
+.cta p{margin-top:10px;color:var(--muted);font-size:15px}
+.cta .acts{margin-top:22px;display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
+
+/* ── 页脚 ────────────────────────────────────────────── */
+footer{border-top:1px solid color-mix(in srgb,var(--text) 10%,transparent);
+  padding:34px 0 40px;margin-top:16px;font-size:13px;color:var(--muted)}
+footer .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:22px}
+footer h4{font-size:13px;color:var(--text);font-weight:600;margin-bottom:10px}
+footer a{display:block;line-height:2}
+footer a:hover{color:var(--primary)}
+.copy{margin-top:26px;padding-top:18px;font-size:12px;
+  border-top:1px solid color-mix(in srgb,var(--text) 8%,transparent)}
+
+@media (max-width:760px){
+  .hero{padding:36px 0 12px}
+  .hero .grid{grid-template-columns:1fr}
+  .hero h1{font-size:24px}
+  nav,.tel{display:none}
+  section{padding:32px 0}
+  .sec-head h2{font-size:20px}
+  .stats b{font-size:22px}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a href="#" class="logo"><i></i>{{站名}}</a>
+    <nav>
+      <a href="#ability">{{导航1}}</a>
+      <a href="#steps">{{导航2}}</a>
+      <a href="#why">{{导航3}}</a>
+      <a href="#contact">{{导航4}}</a>
+    </nav>
+    <!--可选-->
+    <a href="tel:{{联系电话}}" class="tel">{{联系电话}}</a>
+    <!--/可选-->
+    <a href="#contact" class="btn">{{导航按钮}}</a>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <div class="grid">
+      <div class="txt">
+        <span class="tag">{{角标}}</span>
+        <h1>{{标题}}</h1>
+        <p class="sub">{{副标题}}</p>
+        <div class="acts">
+          <a href="#contact" class="btn">{{主按钮}}</a>
+          <a href="#ability" class="btn ghost">{{次按钮}}</a>
+        </div>
+      </div>
+      <div class="screen">
+        <div class="bar"><i></i><i></i><i></i><span>{{图位说明}}</span></div>
+        <div class="rows"><div class="row"></div><div class="row"></div>
+          <div class="row"></div><div class="row"></div></div>
+        <div class="cap">{{图位文字}}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<section id="ability">
+  <div class="wrap">
+    <div class="sec-head center">
+      <h2>{{能力区标题}}</h2>
+      <p>{{能力区副标题}}</p>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="dot">1</div>
+        <h3>{{要点1标题}}</h3>
+        <p>{{要点1说明}}</p>
+      </div>
+      <div class="card">
+        <div class="dot">2</div>
+        <h3>{{要点2标题}}</h3>
+        <p>{{要点2说明}}</p>
+      </div>
+      <div class="card">
+        <div class="dot">3</div>
+        <h3>{{要点3标题}}</h3>
+        <p>{{要点3说明}}</p>
+      </div>
+      <div class="card">
+        <div class="dot">4</div>
+        <h3>{{要点4标题}}</h3>
+        <p>{{要点4说明}}</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="steps">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>{{流程区标题}}</h2>
+      <p>{{流程区副标题}}</p>
+    </div>
+    <ol class="steps">
+      <li>
+        <span class="no">1</span>
+        <h3>{{环节1标题}}</h3>
+        <p>{{环节1说明}}</p>
+      </li>
+      <li>
+        <span class="no">2</span>
+        <h3>{{环节2标题}}</h3>
+        <p>{{环节2说明}}</p>
+      </li>
+      <li>
+        <span class="no">3</span>
+        <h3>{{环节3标题}}</h3>
+        <p>{{环节3说明}}</p>
+      </li>
+      <li>
+        <span class="no">4</span>
+        <h3>{{环节4标题}}</h3>
+        <p>{{环节4说明}}</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!--可选-->
+<section id="why">
+  <div class="wrap">
+    <div class="stats">
+      <div><b>{{优势1数值}}</b><span>{{优势1名称}}</span></div>
+      <div><b>{{优势2数值}}</b><span>{{优势2名称}}</span></div>
+      <div><b>{{优势3数值}}</b><span>{{优势3名称}}</span></div>
+      <div><b>{{优势4数值}}</b><span>{{优势4名称}}</span></div>
+    </div>
+  </div>
+</section>
+<!--/可选-->
+
+<section id="contact">
+  <div class="wrap">
+    <div class="cta">
+      <h2>{{行动号召标题}}</h2>
+      <p>{{行动号召说明}}</p>
+      <div class="acts">
+        <a href="#contact" class="btn">{{行动号召按钮}}</a>
+        <a href="#ability" class="btn ghost">{{行动号召次按钮}}</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="cols">
+      <div>
+        <h4>{{页脚栏1标题}}</h4>
+        <a href="#">{{页脚栏1链接1}}</a>
+        <a href="#">{{页脚栏1链接2}}</a>
+        <a href="#">{{页脚栏1链接3}}</a>
+      </div>
+      <div>
+        <h4>{{页脚栏2标题}}</h4>
+        <a href="#">{{页脚栏2链接1}}</a>
+        <a href="#">{{页脚栏2链接2}}</a>
+      </div>
+      <!--可选-->
+      <div>
+        <h4>联系我们</h4>
+        <a href="tel:{{联系电话}}">{{联系电话}}</a>
+        <a href="mailto:{{邮箱}}">{{邮箱}}</a>
+        <a href="#">{{地址}}</a>
+      </div>
+      <!--/可选-->
+    </div>
+    <div class="copy">{{页脚版权}}</div>
+  </div>
+</footer>
+
+</body>
+</html>

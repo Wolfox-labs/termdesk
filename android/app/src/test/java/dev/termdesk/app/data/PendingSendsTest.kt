@@ -171,4 +171,49 @@ class PendingSendsTest {
     fun `an empty queue has nothing to peek at`() {
         assertNull(queue().peek())
     }
+
+    /**
+     * 这条钉的是一个真机上抓到的缺陷：队列**只写不读**。
+     *
+     * 原来"读回来"写在调用方的 `init` 块里，而那个块写在属性前面——那一刻队列对象
+     * 还是 null，异常被 `runCatching` 吞掉，于是文件里的消息永远发不出去、也永远不清
+     *（30 分钟 TTL 从不执行）。现在读盘是队列**构造**的一部分：只要构造了，存档就一定会
+     * 被读、被过滤、并立刻回写一次。
+     */
+    @Test
+    fun `constructing the queue reads the archive back and rewrites it once`() {
+        val archive = listOf(
+            PendingSends.Item("stale", "c1", "too old to send", clock - PendingSends.DEFAULT_TTL_MS - 1_000),
+            PendingSends.Item("fresh", "c1", "still worth sending", clock - 1_000),
+        )
+        val q = PendingSends(now = { clock }, load = { archive }, onChanged = { changes += it })
+
+        assertEquals("过期的丢掉，新鲜的留下", listOf("fresh"), q.snapshot().map { it.id })
+        assertEquals(
+            "读回来的结果必须回写一次——不然过期项会永远躺在文件里",
+            1,
+            changes.size,
+        )
+        assertEquals(listOf("fresh"), changes.last().map { it.id })
+    }
+
+    @Test
+    fun `no archive at all is an empty queue that says nothing`() {
+        val q = PendingSends(now = { clock }, load = { null }, onChanged = { changes += it })
+
+        assertTrue(q.isEmpty)
+        assertTrue("没有存档就不是一次变更", changes.isEmpty())
+    }
+
+    @Test
+    fun `a restored message keeps the chat it was written to`() {
+        // 恢复出来的每一条都要带着自己的 chatId：重放时正是靠它找到那个会话。
+        val archive = listOf(
+            PendingSends.Item("a", "c-one", "first", clock),
+            PendingSends.Item("b", "c-two", "second", clock),
+        )
+        val q = PendingSends(now = { clock }, load = { archive }, onChanged = {})
+
+        assertEquals(listOf("c-one", "c-two"), q.snapshot().map { it.chatId })
+    }
 }
