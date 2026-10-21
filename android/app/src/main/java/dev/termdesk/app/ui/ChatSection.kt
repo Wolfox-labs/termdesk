@@ -2556,7 +2556,7 @@ private fun Conversation(
         if (outlineInputs.isEmpty()) {
             val fresh = composeOutlineRows(md)
             outlineRows = fresh
-            outlineInputs = fresh.map { rowText(it) }
+            outlineInputs = fresh.map { "" }
         }
         templatePanel = null; colorPanel = false; themePanel = false; pointsPanel = false
         deckPanel = null; pagesPanel = false
@@ -2609,7 +2609,22 @@ private fun Conversation(
     val rows = remember(events) { foldTranscript(events) }
     // 过程行整类不画：思考、工具、命令、步骤、内核日志。要的是"作品生成中…"加最终产物，
     // 不是几屏绿色文本框（见 ChatTranscript.isProcessRow 上的说明）。
-    val shownRows = remember(rows) { rows.filterNot { isProcessRow(it) } }
+    //
+    // 作品任务（由 @ 模板发起的对话，首条用户消息是【任务：…】）还要更狠一点：
+    // **模型说的话也不画**。用户原话——"聊天区域要干净，没做完就是作品生成中，
+    // 做完了就是作品已完成，下面是生成的东西"。
+    val deliverableTask = remember(events) {
+        events.firstOrNull { it.kind == "message" && it.role == "user" }
+            ?.text?.trimStart()?.startsWith("【任务：") == true
+    }
+    val shownRows = remember(rows, deliverableTask) {
+        rows.filterNot { row ->
+            isProcessRow(row) ||
+                (deliverableTask && row is TranscriptRow.One && row.event.isAssistant)
+        }
+    }
+    val deliverableDone = deliverableTask && !chat.isRunning && !sending &&
+        events.any { it.isDeliverable }
 
     // Open / switch: snap to the last item's bottom (not merely its top).
     LaunchedEffect(chat.id) {
@@ -2651,6 +2666,25 @@ private fun Conversation(
                     ),
                     verticalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
+                    // 作品做完之后先给一行结论，下面才是产物卡片。
+                    if (deliverableDone) {
+                        item(key = "td-done") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    "✓ 作品已完成",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
                     items(shownRows, key = { it.key }) { row ->
                         when (row) {
                             is TranscriptRow.One -> ChatEventRow(
@@ -3023,7 +3057,7 @@ private fun Conversation(
                             if (outlineInputs.isEmpty()) {
                                 val fresh = composeOutlineRows(mentionDraft)
                                 outlineRows = fresh
-                                outlineInputs = fresh.map { rowText(it) }
+                                outlineInputs = fresh.map { "" }
                             }
                             closeComposerPanels(
                                 keep = { outlinePanel = true },
@@ -3640,11 +3674,36 @@ private fun Conversation(
             ) {
                 Text(
                     text = "确认一下大纲：左边是页数，右边写「章节|这几页讲什么」。" +
-                        "任意一条都能单独改，改完点最下面的确认才开始生成。",
+                        "灰字是模板建议，直接打字就覆盖；不改就用建议的内容。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 6.dp),
+                    modifier = Modifier.padding(bottom = 2.dp),
                 )
+                // 「确认」放在**面板顶部**：底部那份要滚到底才能点到，而面板里全是输入框，
+                // 手指落在输入框上拖动只会选中文字、滚不动，于是按钮永远够不着（真机实测）。
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.weight(1f))
+                    TextButton(
+                        onClick = {
+                            val md = MentionDraft.parse(draft.text)
+                            val rows = outlineRows.mapIndexed { index, row ->
+                                parseRowText(outlineInputs.getOrNull(index).orEmpty(), row)
+                            }
+                            val confirmed = MentionDraft.render(MentionDraft.withOutline(md, rows))
+                            draft = caretAtEnd(confirmed)
+                            outlineRows = rows
+                            outlinePanel = false
+                            sendDraftExpanded(confirmed)
+                        },
+                    ) {
+                        Text(
+                            "确认，开始生成",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
                 outlineInputs.forEachIndexed { index, value ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -3671,7 +3730,14 @@ private fun Conversation(
                             },
                             modifier = Modifier.weight(1f),
                             placeholder = {
-                                Text("章节|这几页讲什么", style = MaterialTheme.typography.bodySmall)
+                                // 提示就是模板建议的那一条，但**只是灰字**：用户直接打字即可，
+                                // 不用先删掉预填内容（用户原话："还要把那些删掉再写自己要的"）。
+                                Text(
+                                    text = outlineRows.getOrNull(index)?.let { rowText(it) }
+                                        ?: "章节|这几页讲什么",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                                )
                             },
                             textStyle = MaterialTheme.typography.bodySmall,
                             maxLines = 2,
@@ -3685,7 +3751,7 @@ private fun Conversation(
                             // 重铺一份：用户把某几条改乱了、或者改了主题要点想从头来。
                             val fresh = composeOutlineRows(MentionDraft.parse(draft.text))
                             outlineRows = fresh
-                            outlineInputs = fresh.map { rowText(it) }
+                            outlineInputs = fresh.map { "" }
                         },
                     ) {
                         Text("重新生成大纲", style = MaterialTheme.typography.labelSmall)
@@ -3838,7 +3904,7 @@ private fun Conversation(
                             if (outlineInputs.isEmpty()) {
                                 val fresh = composeOutlineRows(pending)
                                 outlineRows = fresh
-                                outlineInputs = fresh.map { rowText(it) }
+                                outlineInputs = fresh.map { "" }
                             }
                             outlinePanel = true; templatePanel = null; colorPanel = false
                             themePanel = false; pointsPanel = false; deckPanel = null
