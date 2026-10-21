@@ -1730,71 +1730,26 @@ internal fun Conversation(
         )
 
         // 加号点开的小选择：先问一句"相册还是文件"，再跳对应的系统选择器。
-        if (attachChooserOpen) {
-            AlertDialog(
-                onDismissRequest = { attachChooserOpen = false },
-                title = { Text("上传附件", style = MaterialTheme.typography.titleSmall) },
-                text = {
-                    Column(Modifier.fillMaxWidth()) {
-                        Text(
-                            text = "选一个来源，下一步会跳到手机对应的选择界面。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        ComposerChip("相册", "照片 / 截图") {
-                            attachChooserOpen = false
-                            photoPicker.launch("image/*")
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        ComposerChip("文件", "内存 / 微信 / QQ") {
-                            attachChooserOpen = false
-                            filePicker.launch(arrayOf(MIME_ANY))
-                        }
-                    }
-                },
-                confirmButton = {},
-                dismissButton = {
-                    TextButton(onClick = { attachChooserOpen = false }) { Text("取消") }
-                },
-            )
-        }
-
-        // 海报生成的表单已经搬进上面的面板区；这里只剩"点开看大图"——
-        // 那是看和下载的动作，整屏一张图才看得清，和填需求不是一回事。
-        posterViewing?.let { file ->
-            PosterPreviewDialog(
-                file = file,
-                onClose = { posterViewing = null },
-                onDownload = { downloadPoster(file) },
-                onTweak = { tweakPoster(it) },
-            )
-        }
-
-        if (modelPickerOpen) {
-            ChoicePickerDialog(
-                title = "选择模型 · " + chat.engine,
-                options = modelOptions,
-                selected = chat.model,
-                onDismiss = { modelPickerOpen = false },
-                onPick = { id ->
-                    modelPickerOpen = false
-                    onConfigure(chat.id, id, chat.effort.ifBlank { null })
-                },
-            )
-        }
-        if (modePickerOpen) {
-            ChoicePickerDialog(
-                title = "权限模式 · " + chat.engine,
-                options = modeOptions,
-                selected = chosenMode.orEmpty(),
-                onDismiss = { modePickerOpen = false },
-                onPick = { id ->
-                    modePickerOpen = false
-                    onSetMode(chat.id, id)
-                },
-            )
-        }
+        ConversationPickers(
+            chat = chat,
+            modelOptions = modelOptions,
+            modeOptions = modeOptions,
+            chosenMode = chosenMode,
+            attachChooserOpen = attachChooserOpen,
+            onAttachChooserOpen = { attachChooserOpen = it },
+            onPickPhoto = { photoPicker.launch("image/*") },
+            onPickFile = { filePicker.launch(arrayOf(MIME_ANY)) },
+            posterViewing = posterViewing,
+            onPosterClose = { posterViewing = null },
+            onPosterDownload = { downloadPoster(it) },
+            onPosterTweak = { tweakPoster(it) },
+            modelPickerOpen = modelPickerOpen,
+            onModelPickerOpen = { modelPickerOpen = it },
+            modePickerOpen = modePickerOpen,
+            onModePickerOpen = { modePickerOpen = it },
+            onConfigure = onConfigure,
+            onSetMode = onSetMode,
+        )
     }
 }
 
@@ -1978,4 +1933,94 @@ private fun TranscriptPane(
             }
         }
     }
+}
+
+/** 附件来源、海报大图、模型与权限四张弹层。整段搬出来是为了给 Conversation 减负，
+ *  它太大时 ART 的校验器会拒绝整个类（debug 包一进会话就 VerifyError）。 */
+@Composable
+private fun ConversationPickers(
+    chat: ChatInfo,
+    modelOptions: List<Pair<String, String>>,
+    modeOptions: List<Pair<String, String>>,
+    chosenMode: String?,
+    attachChooserOpen: Boolean,
+    onAttachChooserOpen: (Boolean) -> Unit,
+    onPickPhoto: () -> Unit,
+    onPickFile: () -> Unit,
+    posterViewing: String?,
+    onPosterClose: () -> Unit,
+    onPosterDownload: (String) -> Unit,
+    onPosterTweak: (PosterRenderer.Tweak) -> Unit,
+    modelPickerOpen: Boolean,
+    onModelPickerOpen: (Boolean) -> Unit,
+    modePickerOpen: Boolean,
+    onModePickerOpen: (Boolean) -> Unit,
+    onConfigure: (String, String?, String?) -> Unit,
+    onSetMode: (String, String) -> Unit,
+) {
+if (attachChooserOpen) {
+    AlertDialog(
+        onDismissRequest = { onAttachChooserOpen(false) },
+        title = { Text("上传附件", style = MaterialTheme.typography.titleSmall) },
+        text = {
+            Column(Modifier.fillMaxWidth()) {
+                Text(
+                    text = "选一个来源，下一步会跳到手机对应的选择界面。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                ComposerChip("相册", "照片 / 截图") {
+                    onAttachChooserOpen(false)
+                    onPickPhoto()
+                }
+                Spacer(Modifier.height(6.dp))
+                ComposerChip("文件", "内存 / 微信 / QQ") {
+                    onAttachChooserOpen(false)
+                    onPickFile()
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = { onAttachChooserOpen(false) }) { Text("取消") }
+        },
+    )
+}
+
+// 海报生成的表单已经搬进上面的面板区；这里只剩"点开看大图"——
+// 那是看和下载的动作，整屏一张图才看得清，和填需求不是一回事。
+posterViewing?.let { file ->
+    PosterPreviewDialog(
+        file = file,
+        onClose = { onPosterClose() },
+        onDownload = { onPosterDownload(file) },
+        onTweak = { onPosterTweak(it) },
+    )
+}
+
+if (modelPickerOpen) {
+    ChoicePickerDialog(
+        title = "选择模型 · " + chat.engine,
+        options = modelOptions,
+        selected = chat.model,
+        onDismiss = { onModelPickerOpen(false) },
+        onPick = { id ->
+            onModelPickerOpen(false)
+            onConfigure(chat.id, id, chat.effort.ifBlank { null })
+        },
+    )
+}
+if (modePickerOpen) {
+    ChoicePickerDialog(
+        title = "权限模式 · " + chat.engine,
+        options = modeOptions,
+        selected = chosenMode.orEmpty(),
+        onDismiss = { onModePickerOpen(false) },
+        onPick = { id ->
+            onModePickerOpen(false)
+            onSetMode(chat.id, id)
+        },
+    )
+}
 }
