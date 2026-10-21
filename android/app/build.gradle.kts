@@ -123,6 +123,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            // 这个 composable 太大，ART 在 debuggable 包里会拒绝整个类（VerifyError）。
+            // 关掉 debuggable 让调试包按普通包编译安装，行为与 release 一致。
+            isDebuggable = false
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("release")
