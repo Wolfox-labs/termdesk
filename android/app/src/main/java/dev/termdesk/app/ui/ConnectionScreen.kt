@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -117,9 +118,17 @@ fun ConnectionScreen(
 
         OutlinedTextField(
             value = url,
-            onValueChange = { url = it.trim() },
+            // P1：中文输入法会把 `ws://` 当成拼音变成「晚上：、、」。这里只保留地址里
+            // 可能出现的 ASCII 字符，非 ASCII 一律丢掉——用户敲什么就只留什么，
+            // 不再出现"打进去是网址、显示出来是汉字"的情况。
+            onValueChange = { typed ->
+                url = typed.filter { ch ->
+                    ch.isLetterOrDigit() && ch.code < 128 ||
+                        ch in ":/.-_[]?=&%#@+~"
+                }.trim()
+            },
             label = { Text("连接地址") },
-            placeholder = { Text("wss://你的节点域名") },
+            placeholder = { Text("ws://192.168.1.10:7420") },
             singleLine = true,
             enabled = !connecting,
             keyboardOptions = KeyboardOptions(
@@ -156,11 +165,14 @@ fun ConnectionScreen(
                 .height(50.dp),
         ) {
             if (connecting) {
+                // P4：连接中不能只剩一个转圈——文字要留着，否则读屏和自动化都读不出它在干什么。
                 CircularProgressIndicator(
                     strokeWidth = 2.dp,
                     modifier = Modifier.height(20.dp),
                     color = MaterialTheme.colorScheme.onPrimary,
                 )
+                Spacer(Modifier.width(10.dp))
+                Text("连接中…")
             } else {
                 Text("连接")
             }
@@ -169,7 +181,10 @@ fun ConnectionScreen(
         if (link is LinkState.Failed) {
             Spacer(Modifier.height(16.dp))
             Text(
-                text = link.reason,
+                // P3：底层异常（failed to connect to /192.168.1.6 … from /10.100.2.x）
+                // 直接抛到界面上既看不懂、又泄露内网地址。这里只给结论和处理办法，
+                // 原始原因留在日志里给开发看。
+                text = friendlyFailure(link.reason),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.align(Alignment.Start),
@@ -266,5 +281,25 @@ private fun ComputerRow(
             },
             onDismiss = { confirmForget = false },
         )
+    }
+}
+
+/**
+ * 把底层连接异常翻译成一句人话，并去掉内网地址。
+ *
+ * P3：之前界面直接把 `failed to connect to /192.168.1.6 (port 7420) from /10.100.2.x`
+ * 抛给用户——中文界面里夹一段英文技术异常，还顺带把手机内网 IP 显示出来了。
+ * 原始原因留在 logcat 里给开发排查，这里只给结论和下一步该做什么。
+ */
+private fun friendlyFailure(reason: String): String {
+    val lower = reason.lowercase()
+    return when {
+        "failed to connect" in lower || "connection refused" in lower ||
+            "timeout" in lower || "unreachable" in lower ->
+            "连不上这台电脑。请确认：电脑端的 TermDesk 正在运行、地址和端口没写错、手机与电脑在同一网络。"
+        "unauthorized" in lower || "401" in lower || "token" in lower ->
+            "配对码不对或已失效。请回到电脑的配对页重新取一次配对码。"
+        else ->
+            "连接失败，请稍后再试。"
     }
 }
