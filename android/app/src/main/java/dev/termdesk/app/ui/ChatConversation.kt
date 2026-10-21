@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -581,83 +582,21 @@ internal fun Conversation(
                 TextButton(onClick = { onClaimChat(chat.id, true) }, enabled = connected && !chat.isRunning) { Text(if (chat.isRunning) "生成中" else "接管") }
             }
         }
-        Box(Modifier.weight(1f)) {
-            if (events.isEmpty()) {
-                Text(
-                    "发送消息开始对话",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(16.dp),
-                )
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        start = 10.dp, end = 10.dp, top = 10.dp, bottom = 10.dp,
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(7.dp),
-                ) {
-                    // 作品做完之后先给一行结论，下面才是产物卡片。
-                    if (deliverableDone) {
-                        item(key = "td-done") {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 4.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Text(
-                                    "✓ 作品已完成",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                            }
-                        }
-                    }
-                    items(shownRows, key = { it.key }) { row ->
-                        when (row) {
-                            is TranscriptRow.One -> ChatEventRow(
-                                event = row.event,
-                                onOpenFile = onOpenFile,
-                                onPreviewFile = onPreviewFile,
-                                onPosterOpen = { posterViewing = it },
-                                onPosterDownload = { downloadPoster(it) },
-                                onPosterTweak = { tweakPoster(it) },
-                                onDownloadFile = onDownloadPath,
-                            )
-                            is TranscriptRow.Run -> ProcessRunLine(row.events, onOpenFile, onPreviewFile)
-                        }
-                    }
-                    // 正在生成：只留这一行。过程（工具、思考、命令、步骤、内核日志）整类不画，
-                    // 用户要的是"作品生成中…"，不是几屏绿色文本框；生成完了这行自己就没了。
-                    if (chat.isRunning || sending) {
-                        item(key = "td-working") {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 4.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                                Text(
-                                    "作品生成中…",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        TranscriptPane(
+            events = events,
+            rows = shownRows,
+            deliverableDone = deliverableDone,
+            running = chat.isRunning,
+            sending = sending,
+            listState = listState,
+            modifier = Modifier.weight(1f),
+            onOpenFile = onOpenFile,
+            onPreviewFile = onPreviewFile,
+            onPosterOpen = { posterViewing = it },
+            onPosterDownload = { downloadPoster(it) },
+            onPosterTweak = { tweakPoster(it) },
+            onDownloadPath = onDownloadPath,
+        )
 
         run {
             Row(
@@ -1937,5 +1876,106 @@ internal fun SlashRow(label: String, hint: String, enabled: Boolean, onClick: ()
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
+    }
+}
+
+/**
+ * 会话的正文区：过程行不画，作品任务连模型的话也不画，只剩结论与产物。
+ *
+ * 单独成函数不只是为了可读：这段并进 Conversation 之后那个方法有一千多行，
+ * ART 的校验器会直接拒绝整个类（VerifyError），debug 包一打开会话就崩。
+ */
+@Composable
+private fun TranscriptPane(
+    events: List<ChatEvent>,
+    rows: List<TranscriptRow>,
+    deliverableDone: Boolean,
+    running: Boolean,
+    sending: Boolean,
+    listState: LazyListState,
+    modifier: Modifier = Modifier,
+    onOpenFile: ((String) -> Unit)?,
+    onPreviewFile: ((String, String) -> Unit)?,
+    onPosterOpen: (String) -> Unit,
+    onPosterDownload: (String) -> Unit,
+    onPosterTweak: ((PosterRenderer.Tweak) -> Unit)?,
+    onDownloadPath: ((String, String) -> Unit)?,
+) {
+    Box(modifier) {
+        if (events.isEmpty()) {
+            Text(
+                "发送消息开始对话",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(16.dp),
+            )
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    start = 10.dp, end = 10.dp, top = 10.dp, bottom = 10.dp,
+                ),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                // 作品做完之后先给一行结论，下面才是产物卡片。
+                if (deliverableDone) {
+                    item(key = "td-done") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                "✓ 作品已完成",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+                items(rows, key = { it.key }) { row ->
+                    when (row) {
+                        is TranscriptRow.One -> ChatEventRow(
+                            event = row.event,
+                            onOpenFile = onOpenFile,
+                            onPreviewFile = onPreviewFile,
+                            onPosterOpen = onPosterOpen,
+                            onPosterDownload = onPosterDownload,
+                            onPosterTweak = onPosterTweak,
+                            onDownloadFile = onDownloadPath,
+                        )
+                        is TranscriptRow.Run -> ProcessRunLine(row.events, onOpenFile, onPreviewFile)
+                    }
+                }
+                // 正在生成：只留这一行。过程（工具、思考、命令、步骤、内核日志）整类不画，
+                // 用户要的是"作品生成中…"，不是几屏绿色文本框；生成完了这行自己就没了。
+                if (running || sending) {
+                    item(key = "td-working") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Text(
+                                "作品生成中…",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
