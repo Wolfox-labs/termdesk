@@ -372,6 +372,13 @@ fun TerminalSection(
                     )
                     if (sessionId == null) {
                         TextButton(onClick = onNewTerminal) { Text("新建终端") }
+                        // P8：点了没反应是最糟的反馈。电脑端没开 shell 时，这里必须说清楚
+                        // 该去电脑上做什么，而不是让用户以为按钮坏了。
+                        Text(
+                            "打不开时请在电脑端加 --enable-shell 重新启动",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     }
                 }

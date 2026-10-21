@@ -700,7 +700,17 @@ private fun ApprovalDialog(
                             },
                         ),
                     ) {
-                        Text(option.label)
+                        // P7：引擎给的选项 label 可能是空的，于是按钮上什么都没有——
+                        // 真机上就是两个没有文字的可点区域，读屏也读不出来。给个兜底文案。
+                        Text(
+                            option.label.ifBlank {
+                                when (option.style) {
+                                    "danger" -> "拒绝"
+                                    "primary" -> "允许"
+                                    else -> "选择"
+                                }
+                            },
+                        )
                     }
                 }
             }

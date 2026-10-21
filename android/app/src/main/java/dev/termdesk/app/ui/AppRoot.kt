@@ -286,7 +286,9 @@ fun AppRoot(
     }
     val connectionLabel = when (val state = link) {
         is LinkState.NodeOffline -> "VPS 已连接 · ${state.hostname} 内核离线，上线后自动恢复"
-        is LinkState.Connecting -> "正在连接 · 已缓存内容仍可查看"
+        // P5：这里原来写「正在连接 · 已缓存内容仍可查看」，但同一屏的正文写着
+        // 「未连接电脑」「在设备管理中连接电脑」——一句话两种状态。统一成一句。
+        is LinkState.Connecting -> "正在连接电脑…"
         is LinkState.ProtocolMismatch -> "版本不匹配 · ${state.reason}"
         is LinkState.Failed -> "暂时无法连接 · 点击管理设备"
         else -> "离线模式 · 点击连接或管理设备"
