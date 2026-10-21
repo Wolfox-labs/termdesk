@@ -202,7 +202,8 @@ fun AppShell(
     sessions: List<SessionInfo>,
     recordedSession: SessionDetail?,
     onLoadChats: () -> Unit,
-    onCreateChat: (String?) -> Unit,
+    /** (working directory, kernel): both chosen in the new-conversation dialog. */
+    onCreateChat: (String?, String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSendChat: (String, String) -> Unit,
     onCancelChat: (String) -> Unit,
@@ -746,7 +747,7 @@ private fun SectionBody(
     recordedSession: SessionDetail?,
     onLoadChats: () -> Unit,
     // Starts a conversation right away on the kernel the home page shows.
-    onCreateChat: (String?) -> Unit,
+    onCreateChat: (String?, String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSendChat: (String, String) -> Unit,
     onCancelChat: (String) -> Unit,
@@ -895,6 +896,8 @@ private fun SectionBody(
             workspaces = workspaces,
             sessions = sessions,
             defaultCwd = defaultCwd,
+            defaultEngine = defaultEngine,
+            roots = roots,
             recordedSession = recordedSession,
             engines = engines,
             codexConfig = codexConfig,

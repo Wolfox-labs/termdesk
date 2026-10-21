@@ -138,6 +138,10 @@ fun ChatSection(
     workspaces: List<WorkspaceInfo>,
     sessions: List<SessionInfo>,
     defaultCwd: String,
+    /** The kernel the home page has selected; the new-chat dialog starts here. */
+    defaultEngine: String? = null,
+    /** Directories the agent allows, offered beside the known workspaces. */
+    roots: List<String> = emptyList(),
     recordedSession: SessionDetail?,
     engines: List<KernelInfo>,
     codexConfig: CodexConfig?,
@@ -152,7 +156,8 @@ fun ChatSection(
     onRequestChatCommands: (String) -> Unit,
     onOpenSections: () -> Unit,
     onLoadChats: () -> Unit,
-    onCreateChat: (String?) -> Unit,
+    /** (working directory, kernel): both chosen in the new-conversation dialog. */
+    onCreateChat: (String?, String?) -> Unit,
     onOpenChat: (String) -> Unit,
     onSend: (String, String) -> Unit,
     onCancel: (String) -> Unit,
@@ -212,6 +217,10 @@ fun ChatSection(
     // The command lines of this conversation, shown over the conversation rather
     // than beside it: output wants the whole 400dp.
     var terminalsOpen by remember { mutableStateOf(false) }
+    // "+" asks where and on which kernel before it creates anything. The home page
+    // keeps a standing choice, but pressing "+" here is starting a new subject and
+    // may want a different directory or assistant for it.
+    var newChatOpen by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         onLoadChats()
@@ -327,7 +336,7 @@ fun ChatSection(
                 }
             },
             onToggleDetail = { detailOpen = !detailOpen },
-            onNew = { onCreateChat(defaultCwd) },
+            onNew = { newChatOpen = true },
             canResume = connected && recordedSession?.canResume == true && !sending,
             onResume = { recordedSession?.let(onResumeSession) },
             onOpenTerminals = {
@@ -471,7 +480,7 @@ fun ChatSection(
                                 onOpenChat = onOpenChat,
                                 onCloseChat = onCloseChat,
                                 onOpenSession = onOpenSession,
-                                onCreateChat = { onCreateChat(defaultCwd) },
+                                onCreateChat = { newChatOpen = true },
                                 externalRuns = kernelRuns,
                                 externalRunsNote = kernelRunsNote,
                                 sort = sessionSort,
@@ -485,7 +494,7 @@ fun ChatSection(
                                 onOpenChat = onOpenChat,
                                 onCloseChat = onCloseChat,
                                 onOpenSession = onOpenSession,
-                                onCreateChat = { onCreateChat(defaultCwd) },
+                                onCreateChat = { newChatOpen = true },
                                 onScanSessions = onLoadSessions,
                                 allowClose = false,
                                 sort = sessionSort,
@@ -526,6 +535,21 @@ fun ChatSection(
                 onDefer = { deferredApproval = pendingApproval.requestId },
             )
         }
+    }
+
+    if (newChatOpen) {
+        NewChatDialog(
+            engines = engines,
+            selectedEngine = defaultEngine,
+            workspaces = workspaces,
+            roots = roots,
+            currentCwd = defaultCwd,
+            onDismiss = { newChatOpen = false },
+            onCreate = { cwd, engine ->
+                newChatOpen = false
+                onCreateChat(cwd, engine)
+            },
+        )
     }
 }
 
