@@ -38,6 +38,33 @@ import { createFrameHandler, pushStatusFrame } from './handlers.js';
 import { reapOrphans, describeReap } from './spawnledger.js';
 import { DeviceRegistry } from './devices.js';
 
+/**
+ * 兜底：任何未捕获异常都不许把整个服务端带走。
+ *
+ * 起因是一次真机测试：内核子进程的 stdin 关闭后，往它写会抛 `write EPIPE`，而这个
+ * 错误没人监听——Node 的默认行为是**直接退出进程**。手机端看到的现象是"内核跑了
+ * 5 步，然后既没有回复也没有产物"，因为服务端在那一刻已经死了。单个会话可以重来，
+ * 但整台电脑的 agent 不该因为一根管道断掉就下线。
+ *
+ * 这里只记录并继续；真正的修法是给每个子进程的管道挂 error 处理。
+ */
+process.on('uncaughtException', (err) => {
+  // 这个 try 不能省：日志本身也是往管道里写，管道断了会**在异常处理器里再抛一次**，
+  // 那一样会让 Node 退出——第一次加固就栽在这里。
+  try {
+    console.log('  [guard] 未捕获异常，已记录并继续：' + (err && err.message ? err.message : String(err)));
+  } catch {
+    /* 连日志都写不出去时，唯一要做的就是别让进程死 */
+  }
+});
+process.on('unhandledRejection', (err) => {
+  try {
+    console.log('  [guard] 未处理的 Promise 拒绝，已记录并继续：' + (err && err.message ? err.message : String(err)));
+  } catch {
+    /* 同上 */
+  }
+});
+
 const DEFAULT_PORT = 7420;
 /** Cap inbound frames: file writes are the largest legitimate payload (~2 MB text). */
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
