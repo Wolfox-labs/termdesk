@@ -75,8 +75,6 @@ android {
     namespace = "dev.termdesk.app"
     compileSdk = 35
 
-    flavorDimensions += "uiLayout"
-
     defaultConfig {
         applicationId = "dev.termdesk.app"
         minSdk = 26
@@ -94,8 +92,8 @@ android {
         // knowingly. Set TERMDESK_MODERN_TARGET_SDK=1 to build at 35 instead,
         // which gives up the local kernel and keeps everything else.
         targetSdk = if (System.getenv("TERMDESK_MODERN_TARGET_SDK") == "1") 35 else 28
-        versionCode = 14
-        versionName = "1.0.1-dev.4"
+        versionCode = 13
+        versionName = "1.0.1-dev.3"
     }
 
     /**
@@ -110,21 +108,7 @@ android {
     val signingProps = file(
         System.getProperty("user.home") + "/.termdesk/keystore/termdesk-release.properties",
     )
-    val classicDebugSigningProps = file(
-        System.getProperty("user.home") + "/.termdesk/keystore/termdesk-classic-debug.properties",
-    )
     signingConfigs {
-        if (classicDebugSigningProps.exists()) {
-            create("classicDebug") {
-                val props = Properties().apply {
-                    classicDebugSigningProps.inputStream().use { stream -> load(stream) }
-                }
-                storeFile = file(props.getProperty("storeFile"))
-                storePassword = props.getProperty("storePassword")
-                keyAlias = props.getProperty("keyAlias")
-                keyPassword = props.getProperty("keyPassword")
-            }
-        }
         if (signingProps.exists()) {
             create("release") {
                 val props = Properties().apply {
@@ -138,28 +122,7 @@ android {
         }
     }
 
-    productFlavors {
-        create("classic") {
-            dimension = "uiLayout"
-            applicationIdSuffix = ".classic"
-            buildConfigField("String", "UI_LAYOUT", "\"classic\"")
-            signingConfig = signingConfigs.findByName("classicDebug")
-                ?: throw GradleException(
-                    "Classic debug signing requires ~/.termdesk/keystore/termdesk-classic-debug.properties and its keystore.",
-                )
-        }
-        create("modern") {
-            dimension = "uiLayout"
-            buildConfigField("String", "UI_LAYOUT", "\"modern\"")
-            signingConfig = signingConfigs.getByName("debug")
-        }
-    }
-
     buildTypes {
-        debug {
-            // Let each flavor select its own certificate explicitly.
-            signingConfig = null
-        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("release")
@@ -177,7 +140,6 @@ android {
 
     buildFeatures {
         compose = true
-        buildConfig = true
     }
 
     // No `unitTests.isReturnDefaultValues`: it is deliberately left off. It would
