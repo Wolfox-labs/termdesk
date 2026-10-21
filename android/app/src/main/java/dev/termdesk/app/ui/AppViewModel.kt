@@ -598,6 +598,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // was already replaced by a fresh pairing, which overwrote the working
         // credential with a dead one.
         val existing = computers.list().firstOrNull { it.url == url }
+        // 用户在地址框里填了新地址时，先把旧的那条踢下线。否则旧的已配对电脑还在后台
+        // 自动重连，它的失败文案会一直刷新，用户看到的就是"我明明填了新地址，它却还在连
+        // 192.168.1.6"。
+        val active = computers.list().firstOrNull { it.id == activeComputerId.value }
+        if (active != null && active.url != url) client.disconnect()
         val effective = token.ifBlank { existing?.let { computers.credentialFor(it.id) }.orEmpty() }
         if (effective.isBlank()) {
             client.reportLocalMessage("这台电脑还没有凭据：请在电脑上打开 /pair，用那个码配对")

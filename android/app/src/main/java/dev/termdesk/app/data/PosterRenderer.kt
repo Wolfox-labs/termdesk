@@ -163,76 +163,47 @@ internal object PosterRenderer {
     /**
      * 按风格 + 换底次数挑构图。
      *
-     * 坐标全部写死在这里而不是散在绘制函数里：三套版式差在哪，看这一张表就够了，
-     * 也避免了"改了赛博的标题基线，顺手把极简也改了"这种事故。
+     * 2026-10-21 二次改版。用户否掉了"标题压在图上"的做法，并给出两条路径：
+     *   1) 完全自设计：文字/内容/排版全部自己排，**模板只作参考，不当底图**；
+     *   2) 用模板：把模板上不相干的字擦掉，再放用户的内容。
+     *
+     * 所以这里的照片退成**顶部主视觉区**（0~520 或 0~560），标题、分区、信息条
+     * 全在它下面的独立文字区里，互不压盖；整版由上到下都有内容，不再出现大片空白。
      */
     private fun layoutFor(style: PosterStyle, variant: Int): Layout {
         val v = ((variant % 2) + 2) % 2
         val comp = if (v == 0) Comp.A else Comp.B
-        val top = MARGIN
         val wide = OUT_W - MARGIN * 2
+        // A：主视觉 520 高；B：主视觉 640 高——换底键在两种节奏之间切。
+        val heroH = if (comp == Comp.A) 520f else 640f
         return when (style.id) {
-            // 赛博：细网格 + 斜切色块，标题压在左上方大留白里，照片是右侧竖条或顶部横幅。
-            PosterStyles.CYBER.id -> if (comp == Comp.A) {
-                Layout(
-                    role = PhotoRole.VERTICAL, comp = comp, serif = false,
-                    align = Layout.Alignment.LEFT,
-                    photo = RectF(600f, 96f, 996f, 624f),
-                    titleX = MARGIN, titleY = 372f, titleW = 468f,
-                    titleLines = 3, titleStart = TITLE_START, bandTop = 1180f,
-                )
-            } else {
-                Layout(
-                    role = PhotoRole.BANNER, comp = comp, serif = false,
-                    align = Layout.Alignment.LEFT,
-                    photo = RectF(96f, 96f, 984f, 556f),
-                    titleX = MARGIN, titleY = 760f, titleW = wide,
-                    titleLines = 3, titleStart = TITLE_START, bandTop = 1180f,
-                )
-            }
-            // 极简：浅底大留白，照片退成右上一个小方块/一个圆，文字几乎占满整版。
-            PosterStyles.MINIMAL.id -> if (comp == Comp.A) {
-                Layout(
-                    role = PhotoRole.TILE, comp = comp, serif = false,
-                    align = Layout.Alignment.LEFT,
-                    photo = RectF(704f, 132f, 996f, 424f),
-                    titleX = MARGIN, titleY = 620f, titleW = wide,
-                    titleLines = 3, titleStart = TITLE_START - 8f, bandTop = 1240f,
-                )
-            } else {
-                Layout(
-                    role = PhotoRole.CIRCLE, comp = comp, serif = false,
-                    align = Layout.Alignment.CENTER,
-                    photo = RectF(790f, 130f, 996f, 336f),
-                    titleX = MARGIN, titleY = 620f, titleW = wide,
-                    titleLines = 3, titleStart = TITLE_START - 8f, bandTop = 1240f,
-                )
-            }
-            // 复古：暖纸底 + 衬线字，照片像贴在纸上的一张小照，信息条压在底部深色带上。
-            PosterStyles.RETRO.id -> if (comp == Comp.A) {
-                Layout(
-                    role = PhotoRole.TILE, comp = comp, serif = true,
-                    align = Layout.Alignment.LEFT,
-                    photo = RectF(626f, 112f, 978f, 452f),
-                    titleX = MARGIN, titleY = 596f, titleW = wide,
-                    titleLines = 3, titleStart = 118f, bandTop = 1250f,
-                )
-            } else {
-                Layout(
-                    role = PhotoRole.VERTICAL, comp = comp, serif = true,
-                    align = Layout.Alignment.LEFT,
-                    photo = RectF(636f, 112f, 978f, 568f),
-                    titleX = MARGIN, titleY = 420f, titleW = 500f,
-                    titleLines = 3, titleStart = 118f, bandTop = 1250f,
-                )
-            }
-            // 兜底：按赛博走，保证任何新风格 id 进来都不会画成空白。
+            PosterStyles.CYBER.id -> Layout(
+                role = PhotoRole.BANNER, comp = comp, serif = false,
+                align = Layout.Alignment.LEFT,
+                photo = RectF(0f, 0f, OUT_W.toFloat(), heroH),
+                titleX = MARGIN, titleY = heroH + 190f, titleW = wide,
+                titleLines = 3, titleStart = 118f, bandTop = 1120f,
+            )
+            PosterStyles.MINIMAL.id -> Layout(
+                role = PhotoRole.BANNER, comp = comp, serif = false,
+                align = Layout.Alignment.LEFT,
+                photo = RectF(0f, 0f, OUT_W.toFloat(), heroH),
+                titleX = MARGIN, titleY = heroH + 200f, titleW = wide,
+                titleLines = 3, titleStart = 112f, bandTop = 1120f,
+            )
+            PosterStyles.RETRO.id -> Layout(
+                role = PhotoRole.BANNER, comp = comp, serif = true,
+                align = Layout.Alignment.LEFT,
+                photo = RectF(0f, 0f, OUT_W.toFloat(), heroH),
+                titleX = MARGIN, titleY = heroH + 200f, titleW = wide,
+                titleLines = 3, titleStart = 114f, bandTop = 1120f,
+            )
             else -> Layout(
                 role = PhotoRole.BANNER, comp = comp, serif = false,
                 align = Layout.Alignment.LEFT,
-                photo = RectF(96f, 96f, 984f, 556f),
-                titleX = MARGIN, titleY = 760f, titleW = wide,
-                titleLines = 3, titleStart = TITLE_START, bandTop = 1180f,
+                photo = RectF(0f, 0f, OUT_W.toFloat(), heroH),
+                titleX = MARGIN, titleY = heroH + 190f, titleW = wide,
+                titleLines = 3, titleStart = TITLE_START, bandTop = 1120f,
             )
         }
     }
@@ -689,7 +660,11 @@ internal object PosterRenderer {
             strokeWidth = 4f
             color = withAlpha(style.accentColor, 0.85f)
         }
-        when (layout.role) {
+        // 通栏出血的图不描边：贴着画布边缘画一圈线，看起来像"图没放好"，
+        // 而且这条线在成品海报上会被裁掉一半。
+        val flush = frame.left <= 0.5f && frame.top <= 0.5f &&
+            frame.right >= OUT_W - 0.5f && frame.bottom >= OUT_H - 0.5f
+        if (!flush) when (layout.role) {
             PhotoRole.CIRCLE -> canvas.drawCircle(frame.centerX(), frame.centerY(), frame.width() / 2f, outline)
             PhotoRole.TILE -> {
                 // 复古的"贴纸"要转一点点角度才像手工放的；旋转只影响描边这一笔。
@@ -1002,7 +977,51 @@ internal object PosterRenderer {
         }
     }
 
-    /** 文字层。顺序：锚点 → 主标题 → 副标题 → 要点 → 信息条。 */
+    /**
+     * 三个信息盒：日期 / 地点 / 主办。
+     *
+     * 存在的理由是"把中间那段空白填上"——用户的原话是"大部分你设计的却特别的空"。
+     * 盒子里的内容全部来自用户自己填的场景文字（[infoCells]），不是编的。
+     */
+    private fun drawKeyBoxes(
+        canvas: Canvas,
+        style: PosterStyle,
+        layout: Layout,
+        cells: List<String>,
+        top: Float,
+    ) {
+        if (cells.isEmpty()) return
+        // 放不下就不画：宁可少一块装饰，也不能压到标题或信息条上。
+        if (top < 0f || top + 96f > layout.bandTop - 40f) return
+
+        val gap = 14f
+        val w = (OUT_W - MARGIN * 2 - gap * 2) / 3f
+        val boxH = 96f
+        val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.style = Paint.Style.STROKE
+            strokeWidth = 2f
+            color = withAlpha(style.accentColor, 0.42f)
+        }
+        val index = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = Typeface.DEFAULT_BOLD
+            textSize = 20f
+            color = withAlpha(style.accentColor, 0.85f)
+        }
+        val value = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = Typeface.DEFAULT
+            textSize = 26f
+            color = style.titleColor
+        }
+        cells.take(3).forEachIndexed { i, cell ->
+            val x = MARGIN + i * (w + gap)
+            canvas.drawRoundRect(RectF(x, top, x + w, top + boxH), 10f, 10f, border)
+            canvas.drawText("0${i + 1}", x + 16f, top + 30f, index)
+            val shown = truncateToWidth(cell, w - 32f) { value.measureText(it) }
+            canvas.drawText(shown, x + 16f, top + 68f, value)
+        }
+    }
+
+    /** 文字层。顺序：锚点 → 主标题 → 副标题 → 要点 → 信息盒 → 页脚 → 信息条。 */
     private fun paintWords(canvas: Canvas, style: PosterStyle, request: Request, layout: Layout) {
         val align = layout.align
         val centered = align == Layout.Alignment.CENTER
@@ -1121,6 +1140,30 @@ internal object PosterRenderer {
         } else {
             bulletTop
         }
+
+        // 三个信息盒：把要点与信息条之间的那块空白填上，内容仍然全部来自用户输入。
+        drawKeyBoxes(canvas, style, layout, infoCells(request), afterBullets + 34f)
+
+        // 页脚：一条主色细线 + 一行小字，给整张海报一个收口，别让底部悬空。
+        val footY = OUT_H - 58f
+        val footPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = Typeface.DEFAULT
+            textSize = 20f
+            color = withAlpha(style.subtitleColor, 0.75f)
+        }
+        canvas.drawText(
+            truncateToWidth(style.badge + " · " + titleSource, safeW) { footPaint.measureText(it) },
+            layout.titleX,
+            footY,
+            footPaint,
+        )
+        val footRule = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = withAlpha(style.accentColor, 0.5f) }
+        canvas.drawRoundRect(
+            RectF(layout.titleX, footY + 12f, layout.titleX + 72f, footY + 16f),
+            2f,
+            2f,
+            footRule,
+        )
 
         // 信息条上面那句：有位置才画，位置是"要点画完后到信息条之间"这段空白。
         val stripTop = afterBullets + 12f
