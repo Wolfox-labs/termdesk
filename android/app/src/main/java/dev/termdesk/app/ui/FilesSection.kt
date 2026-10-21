@@ -6,7 +6,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -28,14 +27,8 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.DriveFileRenameOutline
-import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Upload
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.CircularProgressIndicator
@@ -49,18 +42,16 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.SearchResults
@@ -392,218 +383,4 @@ fun FilesSection(
             onDismiss = { showNewFile = false },
         )
     }
-}
-
-@Composable
-private fun FileRow(
-    entry: FileEntry,
-    onOpen: () -> Unit,
-    onDownload: () -> Unit,
-    onRename: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onOpen)
-            .padding(start = 14.dp, end = 2.dp, top = 9.dp, bottom = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = if (entry.isDir) Icons.Outlined.Folder else Icons.Outlined.Description,
-            contentDescription = null,
-            tint = if (entry.isDir) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
-        )
-        Spacer(Modifier.width(11.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                entry.name,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (entry.isDir) FontWeight.Medium else FontWeight.Normal,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (!entry.isDir) {
-                Text(
-                    formatBytes(entry.sizeBytes),
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        var menuOpen by remember { mutableStateOf(false) }
-        Box {
-            IconButton(onClick = { menuOpen = true }) {
-                Icon(Icons.Outlined.MoreVert, contentDescription = "文件操作", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                if (!entry.isDir) DropdownMenuItem(text = { Text("下载到手机") }, onClick = { menuOpen = false; onDownload() })
-                DropdownMenuItem(text = { Text("重命名") }, onClick = { menuOpen = false; onRename() })
-                DropdownMenuItem(text = { Text("删除", color = MaterialTheme.colorScheme.error) }, onClick = { menuOpen = false; onDelete() })
-            }
-        }
-    }
-}
-
-/** Small text prompt shared by rename and create. */
-@Composable
-fun NameInputDialog(
-    title: String,
-    initial: String,
-    confirmLabel: String,
-    onConfirm: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var value by remember { mutableStateOf(initial) }
-    val clean = value.trim()
-    val nameError = when {
-        clean.isEmpty() -> null
-        clean == "." || clean == ".." -> "名称不能是 . 或 .."
-        clean.any { it == '/' || it == '\\' || it.code < 32 } -> "名称不能包含路径分隔符或控制字符"
-        else -> null
-    }
-    val valid = clean.isNotEmpty() && nameError == null
-
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            OutlinedTextField(
-                value = value,
-                onValueChange = { value = it },
-                singleLine = true,
-                label = { Text("名称") },
-                isError = nameError != null,
-                supportingText = { nameError?.let { Text(it) } },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                modifier = Modifier.fillMaxWidth(),
-            )
-        },
-        confirmButton = {
-            androidx.compose.material3.TextButton(
-                onClick = { if (valid) onConfirm(clean) },
-                enabled = valid,
-            ) { Text(confirmLabel) }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }
-        },
-        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-    )
-}
-
-/** Results of a name search, with the directory each hit lives in. */
-@Composable
-private fun SearchResultsList(
-    results: SearchResults,
-    onOpen: (FileEntry) -> Unit,
-    onClose: () -> Unit,
-) {
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = buildString {
-                    append("\u201c${results.query}\u201d 找到 ${results.items.size} 项")
-                    if (results.truncated) append(" · 结果未全部显示，请缩小搜索范围")
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                modifier = Modifier.weight(1f),
-            )
-            TextButton(onClick = onClose) { Text("收起") }
-        }
-        if (results.items.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(
-                    "没有匹配的文件",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            return@Column
-        }
-        LazyColumn(Modifier.fillMaxSize()) {
-            items(results.items, key = { it.path }) { entry ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onOpen(entry) }
-                        .padding(horizontal = 14.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        imageVector = if (entry.isDir) Icons.Outlined.Folder
-                        else Icons.Outlined.Description,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            entry.name,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            text = entry.path.substringBeforeLast('\\').substringBeforeLast('/'),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-            }
-        }
-    }
-}
-
-/** Type an absolute path to jump straight there. */
-@Composable
-private fun PathEditDialog(
-    draft: String,
-    onDraftChange: (String) -> Unit,
-    onGo: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("前往路径") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = onDraftChange,
-                    label = { Text("绝对路径", style = MaterialTheme.typography.labelSmall) },
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "输入当前设备上的目录路径，需位于允许访问的目录内。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(enabled = draft.isNotBlank(), onClick = onGo) { Text("前往") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        },
-    )
 }
