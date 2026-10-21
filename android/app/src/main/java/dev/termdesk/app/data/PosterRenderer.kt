@@ -213,7 +213,9 @@ internal object PosterRenderer {
         val style = request.style
         val adjust = request.adjust
         val layout = layoutFor(style, adjust.variant)
-        val asset = style.backgroundAt(adjust.variant)
+        // 2026-10-21：用户要求**不再拿模板图当底图**，整版由程序自己设计。
+        // 素材仍留在 assets 里，但这条渲染路径不再取用；以后要做"模板模式"再按需打开。
+        val asset: String? = null
 
         val canvasBitmap = Bitmap.createBitmap(OUT_W, OUT_H, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(canvasBitmap)
@@ -1179,26 +1181,23 @@ internal object PosterRenderer {
     /**
      * 底部信息条的三段：日期 / 地点 / 主办。
      *
-     * 取不到就留占位而不是留空——空着的信息条看起来像渲染失败，占位至少版式是完整的。
-     * 日期占位跟着 [Adjust.variant] 走，用户点"换底图"时能看出它在动，说明这一行是活的。
+     * 2026-10-21：用户明确要求**不许出现「待定/待补充」这类字眼**。取不到就少画一格，
+     * 而不是留一句占位——少一格是留白，写「地点待定」是没做完。
+     * 日期跟着 [Adjust.variant] 走，用户点"换底"时能看出它在动。
      */
     private fun infoCells(request: Request): List<String> {
-        val scene = request.scene.trim()
-        if (scene.isEmpty()) {
-            // 日期用**今天**，不是写死的某个月：这一条是给不认识的人看的信息，写错年月
-            // 比留空更糟。换底图时仍然让它在几天内走动，看得出这一行是活的。
-            val day = java.time.LocalDate.now().plusDays(((request.adjust.variant % 9) + 9) % 9L)
-            val stamp = "%04d.%02d.%02d".format(day.year, day.monthValue, day.dayOfMonth)
-            return listOf(stamp, "地点待定", "主办方待定")
-        }
-        // 场景里已经有" / "分好的三段就直接用，否则整句进第二格。
-        val parts = scene.split('/', '·', '|')
+        // 日期用**今天**，不是写死的某个月：换底图时仍然让它在几天内走动，看得出这一行是活的。
+        val day = java.time.LocalDate.now().plusDays(((request.adjust.variant % 9) + 9) % 9L)
+        val date = "%04d.%02d.%02d".format(day.year, day.monthValue, day.dayOfMonth)
+        // 场景里已经有" / "分好的几段就直接用，否则整句进第二格。
+        val parts = request.scene
+            .split('/', '·', '|')
             .map { it.trim() }
             .filter { it.isNotEmpty() }
         return when (parts.size) {
-            0 -> listOf("日期待定", "地点待定", "主办方待定")
-            1 -> listOf("日期待定", parts[0], "主办方待定")
-            2 -> listOf(parts[0], parts[1], "主办方待定")
+            0 -> listOf(date)
+            1 -> listOf(date, parts[0])
+            2 -> listOf(date, parts[0], parts[1])
             else -> parts.take(3)
         }
     }

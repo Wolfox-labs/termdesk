@@ -11,11 +11,47 @@ package dev.termdesk.app.data
 internal object PosterText {
 
     /**
+     * 切成可断行的**词**。
+     *
+     * 中文逐字（中文本来就能在任意字之间断），拉丁字母 / 数字连成一个词，
+     * 空格跟在前一个词后面当断点。这样 `Art` 不会被劈成 `A` + `rts`——
+     * 用户上一版看到的就是这个：一行末尾一个 `A`，下一行开头 `rts`。
+     */
+    private fun tokens(s: String): List<String> {
+        val out = ArrayList<String>()
+        val word = StringBuilder()
+        fun flush() { if (word.isNotEmpty()) { out.add(word.toString()); word.setLength(0) } }
+        for (ch in s) {
+            when {
+                ch == '\n' -> { flush(); out.add("\n") }
+                ch == ' ' -> { word.append(ch); flush() }
+                ch.code < 128 && !ch.isWhitespace() -> word.append(ch)
+                else -> { flush(); out.add(ch.toString()) }
+            }
+        }
+        flush()
+        return out
+    }
+
+    /** 一个词长到一行都放不下时，只能按字符硬拆。 */
+    private fun splitLong(token: String, maxWidth: Float, measure: (String) -> Float): List<String> {
+        val parts = ArrayList<String>()
+        val cur = StringBuilder()
+        for (ch in token) {
+            if (cur.isNotEmpty() && measure(cur.toString() + ch) > maxWidth) {
+                parts.add(cur.toString()); cur.setLength(0)
+            }
+            cur.append(ch)
+        }
+        if (cur.isNotEmpty()) parts.add(cur.toString())
+        return parts
+    }
+
+    /**
      * 按宽度折行。
      *
-     * 中文逐字断行（中文本来就可以在任意字之间断），英文数字也会被逐字量宽，
-     * 所以中英混排不会算错。超过 [maxLines] 的部分丢掉，并在最后一行补省略号——
-     * 宁可省略，也不许冲出版面。
+     * 先按词排，排不下再换行；单个词比整行还宽时才逐字硬拆。
+     * 超过 [maxLines] 的部分丢掉，并在最后一行补省略号——宁可省略，也不许冲出版面。
      */
     fun wrap(
         text: String,
@@ -28,39 +64,51 @@ internal object PosterText {
 
         val lines = ArrayList<String>()
         val line = StringBuilder()
-        var i = 0
-        var consumed = 0
-        while (i < s.length) {
-            val ch = s[i]
-            if (ch == '\n') {
-                lines.add(line.toString())
-                line.setLength(0)
-                i += 1
-                consumed += 1
-                if (lines.size == maxLines) break
-                continue
-            }
-            if (line.isNotEmpty() && measure(line.toString() + ch) > maxWidth) {
-                lines.add(line.toString())
-                line.setLength(0)
-                if (lines.size == maxLines) break
-                continue
-            }
-            line.append(ch)
-            i += 1
-            consumed += 1
-        }
-        if (lines.size < maxLines && line.isNotEmpty()) lines.add(line.toString())
+        // 有内容因为超行被丢掉了：最后一行要补省略号，否则人看到的是"话说到一半"。
+        var dropped = false
 
-        val total = s.count { it != '\n' }
-        if (consumed < total || (consumed == total && i < s.length)) {
-            if (lines.isEmpty()) {
-                lines.add("…")
-            } else {
-                var last = lines[lines.size - 1]
-                while (last.isNotEmpty() && measure(last + "…") > maxWidth) last = last.dropLast(1)
-                lines[lines.size - 1] = last + "…"
+        fun pushLine() { lines.add(line.toString().trimEnd()); line.setLength(0) }
+
+        for (token in tokens(s)) {
+            if (lines.size == maxLines) { dropped = true; break }
+            if (token == "\n") { pushLine(); continue }
+            val candidate = (line.toString() + token).trimEnd()
+            if (measure(candidate) <= maxWidth) {
+                line.append(token)
+                continue
             }
+            // 放不下：先把满了的当前行收掉，再决定这个词怎么办。
+            if (line.isNotEmpty()) {
+                pushLine()
+                if (lines.size == maxLines) { dropped = true; break }
+            }
+            if (measure(token.trimEnd()) > maxWidth) {
+                // 这个词本身比一整行还宽（比如一长串英文/数字），只能逐字硬拆。
+                val parts = splitLong(token, maxWidth, measure)
+                for ((idx, part) in parts.withIndex()) {
+                    if (idx == parts.size - 1) { line.append(part); continue }
+                    lines.add(part)
+                    if (lines.size == maxLines) { dropped = true; break }
+                }
+                if (dropped) break
+            } else {
+                line.append(token)
+            }
+        }
+        if (line.isNotEmpty()) {
+            if (lines.size < maxLines) pushLine() else dropped = true
+        }
+
+        if (dropped && lines.isNotEmpty()) {
+            // 最后一行补省略号，而且补完之后仍然不许超宽。
+            var last = lines[lines.size - 1].trimEnd()
+            if (!last.endsWith("…")) {
+                while (last.isNotEmpty() && measure(last + "…") > maxWidth) {
+                    last = last.dropLast(1).trimEnd()
+                }
+                last += "…"
+            }
+            lines[lines.size - 1] = last
         }
         return lines
     }
@@ -77,17 +125,22 @@ internal object PosterText {
         if (s.isEmpty()) return 0
         var lines = 1
         val line = StringBuilder()
-        for (ch in s) {
-            if (ch == '\n') {
+        for (token in tokens(s)) {
+            if (token == "\n") { lines += 1; line.setLength(0); continue }
+            val candidate = line.toString() + token
+            if (line.isEmpty() || measure(candidate.trimEnd()) <= maxWidth) {
+                line.append(token)
+            } else {
                 lines += 1
                 line.setLength(0)
-                continue
+                if (measure(token.trimEnd()) > maxWidth) {
+                    val parts = splitLong(token, maxWidth, measure)
+                    lines += (parts.size - 1)
+                    line.append(parts.lastOrNull().orEmpty())
+                } else {
+                    line.append(token)
+                }
             }
-            if (line.isNotEmpty() && measure(line.toString() + ch) > maxWidth) {
-                lines += 1
-                line.setLength(0)
-            }
-            line.append(ch)
         }
         return lines
     }

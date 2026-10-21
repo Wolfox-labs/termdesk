@@ -68,7 +68,7 @@ import readline from 'node:readline';
 import crypto from 'node:crypto';
 
 import { CodexAppServer, notificationToChatEvents, turnToChatEvents } from './kernels/codex.js';
-import { AcpKernel, acpUpdateToChatEvents, acpSessionToSessionInfo } from './kernels/acp.js';
+import { AcpKernel, acpUpdateToChatEvents, acpSessionToSessionInfo, isScratchArtifact } from './kernels/acp.js';
 import { createApprovalHandlers } from './chat/approvals.js';
 import { discardPreviews as discardStreamedPreviews, handleAssistantChunk as handleStreamChunk } from './chat/stream.js';
 import { Chat } from './chat/chat.js';
@@ -561,6 +561,58 @@ export class ChatManager {
    *   dsh   — resident SDK runtime, one `session/prompt` per turn.
    *   codex — one `codex exec` (or `exec resume <thread_id>`) per turn.
    */
+
+  /**
+   * 内核自己写出来的文件，也要变成「产出物」。
+   *
+   * ACP 的 deliverable 只在**写文件工具**完成时才有；PPT / 表格这类是内核跑脚本写盘的
+   * （python-pptx / openpyxl），于是手机上永远停在「作品生成中…」，也没有那张下载卡片
+   * ——真机实测 report.pptx、equipment-ledger.xlsx 都生成了，界面却什么都没给。
+   *
+   * 兜底：回合结束时扫一遍工作目录，把本轮新增的交付物补成 deliverable 事件。
+   * 只认常见交付物扩展名，脚本/日志一类（isScratchArtifact）仍然排除。
+   */
+  settleProducedFiles(chat) {
+    try {
+      const dir = chat?.cwd;
+      if (!dir || !fs.existsSync(dir)) return;
+      const now = Date.now();
+      // 只认**本轮**写出来的文件：更早的（比如用户自己刚下载的东西）不是这次的产物。
+      const since = (chat.turnStartedAt ?? (now - 10 * 60 * 1000)) - 2000;
+      const done = chat.delivered instanceof Set ? chat.delivered : (chat.delivered = new Set());
+      const wanted = /\.(pptx|ppt|xlsx|xls|docx|pdf|html|htm|md|srt|csv|png|jpg|jpeg|webp|zip)$/i;
+      const found = [];
+      const walk = (d, depth) => {
+        // 只扫工作目录这一层：往子目录里钻会把 Downloads / 文档里的无关文件也当成产物。
+        if (depth > 0) return;
+        let entries = [];
+        try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+        for (const entry of entries) {
+          const name = entry?.name ?? '';
+          if (!name || name.startsWith('.') || name === 'node_modules') continue;
+          const full = path.join(d, name);
+          if (entry.isDirectory()) { walk(full, depth + 1); continue; }
+          if (!wanted.test(name) || isScratchArtifact(full) || done.has(full)) continue;
+          let stat;
+          try { stat = fs.statSync(full); } catch { continue; }
+          if (stat.mtimeMs < since) continue;
+          found.push({ path: full, name, bytes: stat.size, description: name });
+        }
+      };
+      walk(dir, 0);
+      if (found.length === 0) return;
+      for (const file of found) done.add(file.path);
+      const record = chat.push({
+        kind: 'deliverable',
+        role: 'assistant',
+        text: found.map((f) => f.description).join('\n').slice(0, 4000),
+        meta: { files: found },
+      });
+      this.emitEvent(chat, record);
+    } catch {
+      // 兜底逻辑失败绝不能影响回合收尾。
+    }
+  }
 
   capabilitiesOf(engine) {
     return kernelCapabilities(engine, lookupKernel);

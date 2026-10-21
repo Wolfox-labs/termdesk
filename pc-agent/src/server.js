@@ -47,12 +47,27 @@ import { DeviceRegistry } from './devices.js';
  * 但整台电脑的 agent 不该因为一根管道断掉就下线。
  *
  * 这里只记录并继续；真正的修法是给每个子进程的管道挂 error 处理。
+ *
+ * 但"继续"只对**已经在服务之后**的异常成立。启动阶段抛出来的（比如 `--tunnel` 这种
+ * 该被拒绝的参数）如果也照吞不误，进程会以 0 退出——启动失败看起来像启动成功，
+ * 外面的脚本和测试全都看不出来。所以监听之前一律按致命处理。
  */
+let serving = false;
 process.on('uncaughtException', (err) => {
+  const text = err && err.message ? err.message : String(err);
+  if (!serving) {
+    try {
+      process.stderr.write('  [fatal] 启动失败：' + text + '\n');
+    } catch {
+      /* 写不出 stderr 也要退出 */
+    }
+    process.exit(1);
+    return;
+  }
   // 这个 try 不能省：日志本身也是往管道里写，管道断了会**在异常处理器里再抛一次**，
   // 那一样会让 Node 退出——第一次加固就栽在这里。
   try {
-    console.log('  [guard] 未捕获异常，已记录并继续：' + (err && err.message ? err.message : String(err)));
+    console.log('  [guard] 未捕获异常，已记录并继续：' + text);
   } catch {
     /* 连日志都写不出去时，唯一要做的就是别让进程死 */
   }
@@ -1092,6 +1107,8 @@ function pushChats() {
 
 let relayConnector = null;
 server.listen(args.port, args.host, async () => {
+  // 从这里往后，单个管道的异常不再值得让整台电脑的 agent 下线。
+  serving = true;
   // The launcher and management console enable the configured VPS relay.
   // CLI callers opt in explicitly; isolated tests can disable it with 0.
   const relayConfig = !args.local && process.env.TERMDESK_RELAY === '1' ? loadRelayConfig() : null;

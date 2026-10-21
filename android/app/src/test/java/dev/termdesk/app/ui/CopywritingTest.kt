@@ -113,8 +113,10 @@ class CopywritingTest {
         assertTrue("要给文件名规则", sent.contains("copy.md"))
         assertTrue("要保存在工作目录根下，手机才能下载到", sent.contains("工作目录根下"))
         assertTrue("要回报完整路径", sent.contains("文件的完整路径"))
-        assertTrue("不要编造事实", sent.contains("不要编造"))
-        assertTrue("要有占位词规矩", sent.contains("待补充"))
+        // 2026-10-22：稿子里出现「待补充」比稿子差更糟——用户拿到的是不能用的一堆占位符。
+        // 所以规矩反过来了：不许留占位，要写成能直接发的完整稿。
+        assertTrue("不许留占位词", sent.contains("不要写“待补充”"))
+        assertTrue("缺的信息要自己拟、且前后一致", sent.contains("按主题自己拟") && sent.contains("前后一致"))
     }
 
     @Test

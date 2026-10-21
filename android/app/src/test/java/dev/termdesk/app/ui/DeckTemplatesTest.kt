@@ -349,7 +349,11 @@ class DeckTemplatesTest {
         assertTrue("要给字号档位", sent.contains("字号只用这七档"))
         assertTrue("要禁止整行大留白", sent.contains("不许留下超过 1.0in 的整行空白"))
         assertTrue("配色只许派生不许新色相", sent.contains("不要引入新色相"))
-        assertTrue("禁止编造数字", sent.contains("禁止填看起来真实的数字"))
+        // 2026-10-22：数字的处理也反过来了。上一版让模型"禁止填看起来真实的数字"，
+        // 结果成品里全是「待补充」，用户拿到手根本不能用；现在要求写满、写自洽，
+        // 只是不许再用占位词。
+        assertTrue("数字必须写满", sent.contains("必须写满"))
+        assertTrue("数字不许写占位词", sent.contains("不许写“待补充”"))
         assertTrue("图表表格必须带单位", sent.contains("都必须带单位"))
         assertTrue("深色底表格要有分隔线", sent.contains("每行加一条 0.75pt 分隔线"))
         assertTrue("封面主标题有字数上限", sent.contains("封面主标题 ≤12 汉字"))

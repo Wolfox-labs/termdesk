@@ -149,6 +149,8 @@ export const runtimeMethods = {
       const status = frame.params?.status;
       if (status === 'idle' && chat.status === 'running') {
         chat.status = 'idle';
+        // 产物兜底：内核自己写出来的文件不走写文件工具，回合结束时扫一遍工作目录。
+        this.settleProducedFiles(chat);
         this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
         this.emit({ event: 'chat.turn', chatId: chat.id, state: 'idle' });
         this.notify(this.turnNotification(chat, 'ended'));
@@ -156,6 +158,7 @@ export const runtimeMethods = {
         this.drainQueue(chat).catch(() => {});
       } else if (status === 'running' && chat.status !== 'running') {
         chat.status = 'running';
+        chat.turnStartedAt = Date.now();
         this.emit({ event: 'chat.status', chatId: chat.id, status: 'running' });
       }
       return;

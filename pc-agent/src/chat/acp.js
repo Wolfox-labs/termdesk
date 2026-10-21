@@ -636,6 +636,9 @@ export const acpMethods = {
     }
     chat.status = failed ? 'failed' : 'idle';
     chat.lastError = failed ? '内核拒绝了本轮请求' : null;
+    // 产物兜底：内核自己写出来的文件（python-pptx / openpyxl 之类）不会走 ACP 的
+    // deliverable 通道，回合结束前扫一遍工作目录补一张卡，否则手机上永远停在「生成中」。
+    this.settleProducedFiles(chat);
     chat.push({
       kind: 'turn', role: 'engine', text: '',
       meta: { state: failed ? 'failed' : 'ended', reason: cancelled ? 'interrupted' : (stopReason ?? null) },

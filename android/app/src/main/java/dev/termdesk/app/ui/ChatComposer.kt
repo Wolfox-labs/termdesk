@@ -347,22 +347,28 @@ internal fun Composer(
     ) {
         // 输入框左边一个圆形加号：上传附件的第一入口。
         // 点了先问「相册还是文件」，再跳到对应的系统选择器（相册、内存、微信/QQ 文件都能到）。
+        //
+        // 用 40dp 的 Box 自己画，不用 IconButton：后者自带 48dp 最小触控区，配一个 38dp
+        // 的圆会让圆比输入框矮半截、还顶到屏幕左边被裁掉。输入框 minHeight 是 56dp，
+        // 底部留 8dp 之后圆心的位置正好压在首行文字的中线上。
         if (onAttach != null) {
-            IconButton(
-                onClick = onAttach,
+            Box(
                 modifier = Modifier
-                    .size(38.dp)
+                    .padding(bottom = 8.dp)
+                    .size(40.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+                    .clickable(onClick = onAttach),
+                contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     Icons.Outlined.Add,
                     contentDescription = "上传附件",
                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(22.dp),
                 )
             }
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(8.dp))
         }
         OutlinedTextField(
             value = draft,

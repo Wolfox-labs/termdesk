@@ -280,6 +280,8 @@ export const codexMethods = {
       chat.status = 'idle';
       chat.lastError = null;
     }
+    // 产物兜底：内核自己跑脚本写出来的文件不走写文件工具，这里补一张产出物卡片。
+    this.settleProducedFiles(chat);
     chat.push({
       kind: 'turn', role: 'engine', text: '',
       meta: { state: failed ? 'failed' : 'ended', reason: cancelled ? 'interrupted' : null },

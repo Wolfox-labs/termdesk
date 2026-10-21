@@ -38,7 +38,10 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -51,6 +54,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+
+
+/**
+ * 作品表单里的输入框统一走 ASCII 键盘。
+ *
+ * 真机实测：手机上三个输入法默认都是中文，input text 敲进去的 "Digital Media Art Week"
+ * 会被当成拼音转成"滴啊A让他…"——用户手打英文标题同样中招。设成 Ascii 键盘后
+ * 输入法不再做候选转换，敲什么就是什么（想打中文仍可自己切回中文输入法）。
+ */
+internal val MentionFieldKeyboard = KeyboardOptions(
+    keyboardType = KeyboardType.Ascii,
+    imeAction = ImeAction.Next,
+)
 
 
 /** 当前这张海报的配方：右上角那些快捷键就是拿它再画一遍。 */
@@ -143,6 +159,7 @@ internal fun PosterFormDialog(
             placeholder = {
                 Text("例如：新媒体创意大赛", style = MaterialTheme.typography.bodySmall)
             },
+            keyboardOptions = MentionFieldKeyboard,
             textStyle = MaterialTheme.typography.bodySmall,
             shape = RoundedCornerShape(9.dp),
             modifier = Modifier.fillMaxWidth(),
@@ -154,6 +171,7 @@ internal fun PosterFormDialog(
             enabled = !busy,
             singleLine = true,
             label = { Text("副标题（可留空）", style = MaterialTheme.typography.bodySmall) },
+            keyboardOptions = MentionFieldKeyboard,
             textStyle = MaterialTheme.typography.bodySmall,
             shape = RoundedCornerShape(9.dp),
             modifier = Modifier.fillMaxWidth(),
@@ -168,6 +186,7 @@ internal fun PosterFormDialog(
             placeholder = {
                 Text("例如：面向全院学生，扫码报名", style = MaterialTheme.typography.bodySmall)
             },
+            keyboardOptions = MentionFieldKeyboard,
             textStyle = MaterialTheme.typography.bodySmall,
             shape = RoundedCornerShape(9.dp),
             modifier = Modifier.fillMaxWidth(),
@@ -409,6 +428,7 @@ internal fun ImageFormDialog(
             placeholder = {
                 Text("例如：© 数智融媒", style = MaterialTheme.typography.bodySmall)
             },
+            keyboardOptions = MentionFieldKeyboard,
             textStyle = MaterialTheme.typography.bodySmall,
             shape = RoundedCornerShape(9.dp),
             modifier = Modifier
@@ -533,6 +553,7 @@ internal fun CopyFormDialog(
                     style = MaterialTheme.typography.bodySmall,
                 )
             },
+            keyboardOptions = MentionFieldKeyboard,
             textStyle = MaterialTheme.typography.bodySmall,
             maxLines = 2,
             shape = RoundedCornerShape(9.dp),

@@ -109,16 +109,24 @@ internal fun isProcessRow(row: TranscriptRow): Boolean = when (row) {
 /**
  * Fold consecutive process rows into runs.
  *
+ * [foldAssistant] 打开时，作品任务里模型自己的叙述（assistant 文本）也按"过程"折起来：
+ * 默认只留一行，点开才看全文。用户的原话是"把他隐藏成一行，想点可以打开看，
+ * 一般不显示大段"。
+ *
  * Messages, errors, deliverables and the engine's own summaries are never folded: they are what
  * somebody came to read, and a folded error is a hidden error.
  */
-internal fun foldTranscript(events: List<ChatEvent>): List<TranscriptRow> {
+internal fun foldTranscript(events: List<ChatEvent>, foldAssistant: Boolean = false): List<TranscriptRow> {
     val rows = ArrayList<TranscriptRow>(events.size)
     var run = ArrayList<ChatEvent>()
+    // 作品任务里哪怕只有一段叙述也要折——否则"一段大字"直接铺在屏幕上。
+    val minRun = if (foldAssistant) 1 else RUN_MIN
+
+    fun isFolded(event: ChatEvent): Boolean = isProcess(event) || (foldAssistant && event.isAssistant)
 
     fun flush() {
         if (run.isEmpty()) return
-        if (run.size >= RUN_MIN) {
+        if (run.size >= minRun) {
             rows.add(TranscriptRow.Run(run))
         } else {
             for (event in run) rows.add(TranscriptRow.One(event))
@@ -127,7 +135,7 @@ internal fun foldTranscript(events: List<ChatEvent>): List<TranscriptRow> {
     }
 
     for (event in events) {
-        if (isProcess(event)) {
+        if (isFolded(event)) {
             run.add(event)
             continue
         }
@@ -151,6 +159,10 @@ private fun runSummary(events: List<ChatEvent>): String {
         if (event.kind != "tool") continue
         val name = event.name ?: "工具"
         byName[name] = (byName[name] ?: 0) + 1
+    }
+    // 作品任务里被折起来的只有模型的叙述，没有工具名可列——那就老实说这是思考过程。
+    if (byName.isEmpty() && events.all { it.isAssistant }) {
+        return "思考过程 · ${events.size} 段"
     }
     val names = byName.entries.take(3).joinToString(" · ") { (name, count) -> "$name ×$count" }
     val more = if (byName.size > 3) " · 等 ${byName.size} 种" else ""

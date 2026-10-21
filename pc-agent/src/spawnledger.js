@@ -64,7 +64,19 @@ const MAX_LEDGER_ENTRIES = 200;
  * tokens, its config directories), and handing it only our marker would break it.
  */
 export function kernelEnv(extra = {}) {
-  return { ...process.env, [SPAWN_MARKER]: RUN_ID, ...extra };
+  const env = { ...process.env, [SPAWN_MARKER]: RUN_ID, ...extra };
+  // 真机实测：从某些启动方式继承来的 TEMP 是 8.3 短名（C:\Users\LITTLE~1\AppData\Local\Temp），
+  // 内核往那里 new-item 会被判"拒绝访问"，于是 PPT / 表格这类"先写临时脚本再跑"的任务
+  // 全部卡在生成中。这里统一换成真实的长名临时目录，并确保它存在。
+  try {
+    const tmp = os.tmpdir();
+    fs.mkdirSync(tmp, { recursive: true });
+    env.TEMP = tmp;
+    env.TMP = tmp;
+  } catch {
+    // 换不掉就沿用继承来的，至少别因为这一步让内核起不来。
+  }
+  return env;
 }
 
 /**

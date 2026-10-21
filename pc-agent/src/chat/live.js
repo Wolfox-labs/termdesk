@@ -422,6 +422,7 @@ export const liveMethods = {
         text: '这条消息没有执行：电脑端把排队中的它删除了。手机端现在和电脑一致——它不会再发出去',
       });
       this.emit({ event: 'chat.turn', chatId: chat.id, state: 'cancelled' });
+      this.settleProducedFiles(chat);
       this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
       this.drainQueue(chat).catch(() => {});
     }
@@ -433,6 +434,8 @@ export const liveMethods = {
     if (chat.status !== 'running') return;
     this.clearLivePending(chat);
     chat.status = 'idle';
+    // 产物兜底：内核自己写出来的文件不走写文件工具，回合结束时扫一遍工作目录。
+    this.settleProducedFiles(chat);
     this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
     this.notify(this.turnNotification(chat, 'ended'));
     this.drainQueue(chat).catch(() => {});

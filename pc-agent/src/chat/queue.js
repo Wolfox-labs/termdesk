@@ -54,6 +54,7 @@ export const queueMethods = {
     if (typeof opts.effort === 'string' && opts.effort.trim()) chat.effort = opts.effort.trim();
 
     chat.lastUsedAt = Date.now();
+    chat.turnStartedAt = Date.now();
     chat.status = 'running';
 
     // Show the user's own message immediately, before the engine answers. Both
@@ -113,6 +114,7 @@ export const queueMethods = {
     const next = chat.queue.shift();
     chat.status = 'running';
     chat.lastUsedAt = Date.now();
+    chat.turnStartedAt = Date.now();
     chat.pendingUserEcho = next.line;
     // It is being sent now, so it stops saying "waiting". The phone redraws this line from
     // the event; without it the marker would sit on a message the kernel has already seen.
@@ -128,7 +130,9 @@ export const queueMethods = {
         role: 'engine',
         text: `排队中的消息没有发出：${result.message ?? result.code ?? '未知原因'}`,
       });
-      this.emitEvent(chat, record.seq);
+      this.emitEvent(chat, record);
+      // 这一轮没发出去也要收尾：产物兜底扫一遍，别让上一轮写出来的文件丢掉卡片。
+      this.settleProducedFiles(chat);
       this.emit({ event: 'chat.status', chatId: chat.id, status: 'idle' });
       return this.drainQueue(chat);
     }
