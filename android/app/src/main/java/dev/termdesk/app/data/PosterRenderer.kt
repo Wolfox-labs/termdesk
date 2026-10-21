@@ -895,7 +895,9 @@ internal object PosterRenderer {
             textSize = size
         }
         // 三段都量一遍再决定左右锚点：中间那段永远正中，两边不会因为字数不同而歪。
-        val base = OUT_H - 64f
+        // 信息条要让出页脚那一行：两者都贴着底边时，页脚的小字会直接叠在日期上，
+        // 真机上看起来像渲染坏了（2026.10.12 和地点那一行糊成一处）。
+        val base = OUT_H - 108f
         val gap = 26f
         val widths = cells.map { paint.measureText(it) }
         val sepW = sep.measureText("·")
