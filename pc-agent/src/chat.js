@@ -647,6 +647,7 @@ export class ChatManager {
     if (typeof opts.effort === 'string' && opts.effort.trim()) chat.effort = opts.effort.trim();
 
     chat.lastUsedAt = Date.now();
+    chat.turnStartedAt = Date.now();
     chat.status = 'running';
 
     // Show the user's own message immediately, before the engine answers. Both
@@ -714,12 +715,14 @@ export class ChatManager {
       if (!dir || !fs.existsSync(dir)) return;
       const now = Date.now();
       // 只认最近 30 分钟内改过的文件：更早的一定是上一轮已经报过的。
-      const since = now - 30 * 60 * 1000;
+      // 只认**本轮**写出来的文件：更早的（比如用户自己刚下载的东西）不是这次的产物。
+      const since = (chat.turnStartedAt ?? (now - 10 * 60 * 1000)) - 2000;
       const done = chat.delivered instanceof Set ? chat.delivered : (chat.delivered = new Set());
       const wanted = /\.(pptx|ppt|xlsx|xls|docx|pdf|html|htm|md|srt|csv|png|jpg|jpeg|webp|zip)$/i;
       const found = [];
       const walk = (d, depth) => {
-        if (depth > 2) return;
+        // 只扫工作目录这一层：往子目录里钻会把 Downloads / 文档里的无关文件也当成产物。
+        if (depth > 0) return;
         let entries = [];
         try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
         for (const entry of entries) {
@@ -735,6 +738,7 @@ export class ChatManager {
         }
       };
       walk(dir, 0);
+      console.log('[settle] dir=' + dir + ' found=' + found.length);
       if (found.length === 0) return;
       for (const file of found) done.add(file.path);
       const record = chat.push({
@@ -743,7 +747,7 @@ export class ChatManager {
         text: found.map((f) => f.description).join('\n').slice(0, 4000),
         meta: { files: found },
       });
-      this.emitEvent(chat, record.seq);
+      this.emitEvent(chat, record);
     } catch {
       // 兜底逻辑失败绝不能影响回合收尾。
     }
@@ -2159,6 +2163,9 @@ export class ChatManager {
     }
     chat.status = failed ? 'failed' : 'idle';
     chat.lastError = failed ? '内核拒绝了本轮请求' : null;
+    // 产物兜底：内核自己写出来的文件（python-pptx / openpyxl 之类）不会走 ACP 的
+    // deliverable 通道，回合结束前扫一遍工作目录补一张卡，否则手机上永远停在"生成中"。
+    this.settleProducedFiles(chat);
     chat.push({
       kind: 'turn', role: 'engine', text: '',
       meta: { state: failed ? 'failed' : 'ended', reason: cancelled ? 'interrupted' : (stopReason ?? null) },
