@@ -39,7 +39,17 @@ function read(file = FILE) {
       legacyLastSeenAt: parsed?.legacyLastSeenAt ?? null,
       legacyLastAddress: parsed?.legacyLastAddress ?? null,
     };
-  } catch {
+  } catch (err) {
+    // 读坏了不能装作"一台设备都没有"：面板会显示 0 台有效、手机连不上，
+    // 而且下一次写盘就把手里的坏数据覆盖成空表，再也查不出原样。
+    // 先留一份原文件，再喊一声，然后按空表继续启动。
+    const backup = `${file}.broken-${Date.now()}`;
+    try {
+      fs.copyFileSync(file, backup);
+    } catch {
+      // 备份失败也不该挡住启动。
+    }
+    console.error(`[devices] 设备表读不出来（${err?.message ?? err}）；原文件已备份到 ${backup}`);
     return { devices: [] };
   }
 }
