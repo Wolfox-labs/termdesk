@@ -22,17 +22,7 @@ import java.io.File
  */
 class WebMentionJourneyTest {
 
-    private fun assetsDir(): File {
-        val direct = File("src/main/assets")
-        if (direct.isDirectory) return direct
-        var dir: File? = File("").absoluteFile
-        while (dir != null) {
-            val candidate = File(dir, "app/src/main/assets")
-            if (candidate.isDirectory) return candidate
-            dir = dir.parentFile
-        }
-        throw AssertionError("找不到 assets 目录")
-    }
+    private fun assetsDir(): File = PackFixtures.assetsDir()
 
     /** 和 ChatSection 里那条 `skeletonOf` 取的是同一个文件。 */
     private val realSkeleton: (PageTemplate) -> String = { template ->

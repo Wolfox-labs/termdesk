@@ -21,17 +21,7 @@ import java.io.File
  */
 class DeckAllocationSweepTest {
 
-    private fun assetsDir(): File {
-        val direct = File("src/main/assets")
-        if (direct.isDirectory) return direct
-        var dir: File? = File("").absoluteFile
-        while (dir != null) {
-            val candidate = File(dir, "app/src/main/assets")
-            if (candidate.isDirectory) return candidate
-            dir = dir.parentFile
-        }
-        throw AssertionError("找不到 assets 目录")
-    }
+    private fun assetsDir(): File = PackFixtures.assetsDir()
 
     /** 封面 / 目录 / 结尾这类"结构页"：永远只占一页。 */
     private val structural = setOf("封面", "目录", "结尾", "封底", "致谢")

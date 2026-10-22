@@ -17,19 +17,8 @@ import java.io.File
  */
 class DeckTemplatesTest {
 
-    private fun assetsDir(): File {
-        val direct = File("src/main/assets")
-        if (direct.isDirectory) return direct
-        var dir: File? = File("").absoluteFile
-        while (dir != null) {
-            val candidate = File(dir, "app/src/main/assets")
-            if (candidate.isDirectory) return candidate
-            val here = File(dir, "src/main/assets")
-            if (here.isDirectory) return here
-            dir = dir.parentFile
-        }
-        throw AssertionError("找不到 assets 目录，当前工作目录：" + File("").absolutePath)
-    }
+    /** 蓝图已从 assets 搬到 packs/，这里交给 PackFixtures 摊平（包内路径不变）。 */
+    private fun assetsDir(): File = PackFixtures.assetsDir()
 
     private fun blueprintOf(deck: DeckTemplate): String =
         File(assetsDir(), deck.assetPath).readText(Charsets.UTF_8)
