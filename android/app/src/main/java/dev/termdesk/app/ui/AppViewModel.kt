@@ -24,6 +24,7 @@ import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.LocalAgentState
 import dev.termdesk.app.data.LocalKernelState
+import dev.termdesk.app.data.FeatureState
 import dev.termdesk.app.data.PairedComputer
 import dev.termdesk.app.data.FileEntry
 import dev.termdesk.app.data.FilePreview
@@ -50,8 +51,11 @@ import dev.termdesk.app.ui.theme.ThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -174,6 +178,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun loadLocalKernelManifest() = client.loadLocalKernelManifest()
     fun installLocalKernel() = client.installLocalKernel()
     fun removeLocalKernel() = client.removeLocalKernel()
+
+    // ---- feature packs (web / ppt / poster / table / image) ----
+    //
+    // 五个功能块的模板与知识不再编在 APK 里，跟内核一样按需下载。这里只是转发：
+    // 下载、校验、解包都在 FeatureInstaller 里，界面读的是同一个 StateFlow。
+
+    val featurePacks: StateFlow<Map<String, FeatureState>> = client.featurePacks
+
+    /** 已安装的功能包 id；@ 菜单据此决定哪些条目现在真的能用。 */
+    val installedFeatures: StateFlow<Set<String>> = featurePacks
+        .map { packs -> packs.filterValues { it.installed }.keys }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    fun refreshFeatures() = client.refreshFeatures()
+    fun installFeature(id: String) = client.installFeature(id)
+    fun removeFeature(id: String) = client.removeFeature(id)
 
     // ---- kernels (the PC kernel table) ----
     //

@@ -1,6 +1,6 @@
 package dev.termdesk.app.ui
 
-import android.content.res.AssetManager
+import dev.termdesk.app.data.FeatureSource
 
 // 除了读资源包要用的 AssetManager，这个文件只用 Kotlin 标准库。
 // 位置要求：和 ChatSection.kt 放在同一个文件夹（app/src/main/java/dev/termdesk/app/ui/），
@@ -349,10 +349,11 @@ internal object DeckTemplates {
      * 读不到返回空串——那时 [instruction] 会退回「按大纲自己设计版式」，
      * 而不是发一段半截结构。宁可退化成"没模板"，也不要产出"坏模板"。
      */
-    fun readBlueprint(assets: AssetManager, deck: DeckTemplate): String =
+    fun readBlueprint(source: FeatureSource, deck: DeckTemplate): String =
         runCatching {
-            assets.open(deck.assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
-        }.getOrDefault("")
+            // 蓝图随「PPT 生成」功能包下发，不在 APK 里；读不到就是没装包。
+            source.open(deck.assetPath)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+        }.getOrNull().orEmpty()
 
     /**
      * 把蓝图正文解析成章节表。

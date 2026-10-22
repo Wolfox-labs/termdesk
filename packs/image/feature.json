@@ -1,0 +1,9 @@
+{
+  "id": "image",
+  "name": "图片处理",
+  "version": "1.0.0",
+  "minApp": "1.0.1",
+  "summary": "压缩预设、目标格式与水印模板（全部在手机上执行）",
+  "provides": ["data/image-presets.json"],
+  "about": "处理本身是像素运算，不上电脑；包里只有预设，改预设不必发新版 App。"
+}

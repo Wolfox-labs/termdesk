@@ -27,6 +27,7 @@ import { loadOrCreateToken, tokenPath } from './auth.js';
 import { allowedRoots } from './files.js';
 import { handleTransferRequest } from './transfer.js';
 import { handleLocalKernelRequest } from './localkernel.js';
+import { handleFeatureRequest } from './features.js';
 import { TerminalManager } from './terminal.js';
 import { listKernels, probeKernels } from './kernels/registry.js';
 import { ChatManager } from './chat.js';
@@ -780,6 +781,9 @@ const server = http.createServer((req, res) => {
   const verifyCredential = (presented) => Boolean(deviceRegistry.verify(presented, { address: req.socket.remoteAddress }));
   const kernelHandled = handleLocalKernelRequest(req, res, url, verifyCredential);
   if (kernelHandled) return;
+
+  // Feature packs ride the same surface as the local kernel: one token, one port.
+  if (handleFeatureRequest(req, res, url, verifyCredential)) return;
 
   handleTransferRequest(req, res, url, verifyCredential).then((handled) => {
     if (!handled) {

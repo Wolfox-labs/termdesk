@@ -94,6 +94,7 @@ import dev.termdesk.app.data.WorkspaceInfo
 import dev.termdesk.app.ui.theme.MeterChars
 import dev.termdesk.app.ui.theme.Palette
 import dev.termdesk.app.ui.theme.ThemeMode
+import dev.termdesk.app.data.FeatureState
 
 /** Sections of the app. */
 enum class Section(val label: String, val icon: ImageVector) {
@@ -241,6 +242,10 @@ fun AppShell(
     onLayoutChange: (UiLayout) -> Unit,
     palette: Palette,
     onPaletteChange: (Palette) -> Unit,
+    features: Map<String, FeatureState>,
+    onRefreshFeatures: () -> Unit,
+    onInstallFeature: (String) -> Unit,
+    onRemoveFeature: (String) -> Unit,
     engines: List<KernelInfo>,
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
@@ -433,6 +438,10 @@ fun AppShell(
                     onLayoutChange = onLayoutChange,
                     palette = palette,
                     onPaletteChange = onPaletteChange,
+                    features = features,
+                    onRefreshFeatures = onRefreshFeatures,
+                    onInstallFeature = onInstallFeature,
+                    onRemoveFeature = onRemoveFeature,
                     defaultEngine = defaultEngine,
                     onSetDefaultEngine = onSetDefaultEngine,
                     onRefreshEngines = onRefreshEngines,
@@ -805,6 +814,10 @@ private fun SectionBody(
     onLayoutChange: (UiLayout) -> Unit,
     palette: Palette,
     onPaletteChange: (Palette) -> Unit,
+    features: Map<String, FeatureState>,
+    onRefreshFeatures: () -> Unit,
+    onInstallFeature: (String) -> Unit,
+    onRemoveFeature: (String) -> Unit,
     engines: List<KernelInfo>,
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
@@ -982,12 +995,17 @@ private fun SectionBody(
             onSetKernelTarget = onSetKernelTarget,
             codex = codexTarget,
             targets = codexTargets,
+            connected = connected,
             themeMode = themeMode,
             onThemeModeChange = onThemeModeChange,
             layout = layout,
             onLayoutChange = onLayoutChange,
             palette = palette,
             onPaletteChange = onPaletteChange,
+            features = features,
+            onRefreshFeatures = onRefreshFeatures,
+            onInstallFeature = onInstallFeature,
+            onRemoveFeature = onRemoveFeature,
             engines = engines,
             defaultEngine = defaultEngine,
             onSetDefaultEngine = onSetDefaultEngine,

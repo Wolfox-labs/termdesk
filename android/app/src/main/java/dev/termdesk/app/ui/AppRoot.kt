@@ -104,6 +104,7 @@ fun AppRoot(
     val themeMode by vm.themeMode.collectAsState()
     val uiLayout by vm.uiLayout.collectAsState()
     val palette by vm.palette.collectAsState()
+    val featurePacks by vm.featurePacks.collectAsState()
     val engines by vm.engines.collectAsState()
     val defaultEngine by vm.defaultEngine.collectAsState()
     val sessionSort by vm.sessionSort.collectAsState()
@@ -531,6 +532,10 @@ fun AppRoot(
                 onLayoutChange = vm::setUiLayout,
                 palette = palette,
                 onPaletteChange = vm::setPalette,
+                features = featurePacks,
+                onRefreshFeatures = vm::refreshFeatures,
+                onInstallFeature = vm::installFeature,
+                onRemoveFeature = vm::removeFeature,
                 engines = engines,
                 defaultEngine = defaultEngine,
                 onSetDefaultEngine = vm::setDefaultEngine,

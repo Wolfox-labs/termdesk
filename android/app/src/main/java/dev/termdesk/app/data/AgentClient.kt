@@ -264,6 +264,60 @@ class AgentClient(
         scope.launch { installer.remove() }
     }
 
+    // ---- feature packs (the five chat families, downloaded on demand) ----
+
+    private val featureInstaller = appContext?.let { FeatureInstaller(it, client) }
+
+    /** 已安装的包在哪、能读到什么。null 只出现在没有 Context 的单测里。 */
+    internal val featureStore: FeatureStore? = appContext?.let { FeatureStore(it.filesDir) }
+
+    /** 电脑上有哪些包、本机装了哪些、正在装的那个到哪一步了。 */
+    val featurePacks: StateFlow<Map<String, FeatureState>> =
+        featureInstaller?.state ?: MutableStateFlow<Map<String, FeatureState>>(emptyMap()).asStateFlow()
+
+    /** 读模板 / 底图时的统一入口：只读已安装的包。 */
+    val featureSource: FeatureSource = featureStore?.source() ?: FeatureSource.none
+
+    fun refreshFeatures() {
+        val installer = featureInstaller ?: return
+        val base = httpBaseUrl()
+        val tok = lastToken
+        scope.launch(Dispatchers.IO) {
+            installer.refresh()
+            if (base != null && tok != null) installer.loadIndex(base, tok)
+        }
+    }
+
+    fun installFeature(id: String) {
+        val installer = featureInstaller ?: return
+        val base = httpBaseUrl()
+        val tok = lastToken
+        if (base == null || tok == null) {
+            _lastAction.value = ActionResult("feature.$id", "install", false, "offline", "未连接到电脑")
+            return
+        }
+        val info = featurePacks.value[id]?.available
+        if (info == null) {
+            _lastAction.value = ActionResult("feature.$id", "install", false, "no_manifest", "电脑上还没有这个包")
+            return
+        }
+        scope.launch {
+            installer.install(base, tok, info)
+            val after = featurePacks.value[id]
+            _lastAction.value = ActionResult(
+                "feature.$id",
+                "install",
+                after?.installed == true,
+                if (after?.installed == true) "ready" else "failed",
+                after?.note.orEmpty(),
+            )
+        }
+    }
+
+    fun removeFeature(id: String) {
+        featureInstaller?.remove(id)
+    }
+
     // ---- kernels (the PC kernel table: one source of truth) ----
 
     private val _engines = MutableStateFlow<List<KernelInfo>>(emptyList())

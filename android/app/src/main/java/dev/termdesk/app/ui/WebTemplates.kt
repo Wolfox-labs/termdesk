@@ -1,6 +1,6 @@
 package dev.termdesk.app.ui
 
-import android.content.res.AssetManager
+import dev.termdesk.app.data.FeatureSource
 
 // 除了读资源包要用的 AssetManager，这个文件只用 Kotlin 标准库。
 // 位置要求：和 ChatSection.kt 放在同一个文件夹（app/src/main/java/dev/termdesk/app/ui/），
@@ -194,10 +194,11 @@ internal object WebTemplates {
      * 读不到就返回空串——那时 [instruction] 会退回「让模型自己写」，而不是
      * 发出一段半截骨架。宁可退化成"没模板"，也不要产出"坏模板"。
      */
-    fun readSkeleton(assets: AssetManager, template: PageTemplate): String =
+    fun readSkeleton(source: FeatureSource, template: PageTemplate): String =
         runCatching {
-            assets.open(template.assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
-        }.getOrDefault("")
+            // 骨架随「网页生成」功能包下发，不在 APK 里；读不到就是没装包。
+            source.open(template.assetPath)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+        }.getOrNull().orEmpty()
 
     fun byId(id: String): PageTemplate? = all.firstOrNull { it.id == id }
 

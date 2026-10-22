@@ -64,6 +64,7 @@ import dev.termdesk.app.data.CodexApplyRequest
 import dev.termdesk.app.data.CodexConfig
 import dev.termdesk.app.data.CodexProviderTemplate
 import dev.termdesk.app.data.CodexTargetState
+import dev.termdesk.app.data.FeatureState
 import dev.termdesk.app.data.PairedComputer
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.LocalKernelState
@@ -85,6 +86,11 @@ fun SettingsSection(
     onLayoutChange: (UiLayout) -> Unit,
     palette: Palette,
     onPaletteChange: (Palette) -> Unit,
+    features: Map<String, FeatureState>,
+    connected: Boolean,
+    onRefreshFeatures: () -> Unit,
+    onInstallFeature: (String) -> Unit,
+    onRemoveFeature: (String) -> Unit,
     engines: List<KernelInfo>,
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
@@ -139,6 +145,11 @@ fun SettingsSection(
     var page by remember { mutableStateOf<String?>(null) }
     val pageScroll = remember(page) { ScrollState(0) }
     BackHandler(enabled = page != null) { page = null }
+
+    // 功能包页一打开就去问电脑有什么；关掉再开会重问，因为电脑上的包随时可能重新构建过。
+    LaunchedEffect(page) {
+        if (page == "featurepacks") onRefreshFeatures()
+    }
 
     // The Codex page owns a short-lived connection to the computer it edits, so
     // this can be opened without moving the app's working target.
@@ -199,6 +210,7 @@ fun SettingsSection(
                     "kernel" -> "运行设备与助手"
                     "appearance" -> "外观"
                     "storage" -> "存储"
+                    "featurepacks" -> "功能包"
                     else -> "电脑 Agent 配置"
                 },
                 onBack = { page = null },
@@ -220,6 +232,8 @@ fun SettingsSection(
             SettingsRootRow("运行设备与助手", kernelSummary) { page = "kernel" }
             SettingsRootRow("外观", "$themeLabel · ${palette.label}") { page = "appearance" }
             SettingsRootRow("存储", storageLabel) { page = "storage" }
+            val installedPacks = features.values.count { it.installed }
+            SettingsRootRow("功能包", "$installedPacks / 5 已安装") { page = "featurepacks" }
             // Hidden until phone Agent settings have their own contract. The
             // existing Codex editor writes a computer's config and is not that feature.
             Spacer(Modifier.height(12.dp))
@@ -234,6 +248,13 @@ fun SettingsSection(
 
         when (page) {
             null -> Unit
+            "featurepacks" -> FeaturePacksPage(
+                packs = features,
+                connected = connected,
+                onRefresh = onRefreshFeatures,
+                onInstall = onInstallFeature,
+                onRemove = onRemoveFeature,
+            )
             "kernel" -> {
                 KernelTargetRow(kernelTarget, onSetKernelTarget)
                 if (kernelTarget == "local") {

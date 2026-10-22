@@ -4,6 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import androidx.compose.runtime.rememberCoroutineScope
+import dev.termdesk.app.data.FeatureStore
 import dev.termdesk.app.data.ImageTools
 import dev.termdesk.app.data.PosterRenderer
 import dev.termdesk.app.data.PosterStyles
@@ -167,10 +168,11 @@ internal fun Conversation(
     // its end, never at a leftover scroll offset from the previous one.
     val listState = key(chat.id) { rememberLazyListState() }
     // ── 「@网页生成」这条路的界面状态 ──────────────────────────────────
-    // 骨架资源包内嵌在 APK 里（assets/templates/web/），发消息时把选中的那一份
-    // 整份装配进指令。读它要 Context（上面已取过一次），所以在这里记住，别在每次重组时重读。
-    val skeletonOf: (PageTemplate) -> String = remember(context) {
-        { template -> WebTemplates.readSkeleton(context.assets, template) }
+    // 骨架不再内嵌在 APK 里，它随「网页生成」功能包下载。读取统一走 FeatureStore：
+    // 装了包就读得到，没装就是空串（调用方退回"让内核自己写"）。
+    val featureSource = remember(context) { FeatureStore(context.filesDir).source() }
+    val skeletonOf: (PageTemplate) -> String = remember(featureSource) {
+        { template -> WebTemplates.readSkeleton(featureSource, template) }
     }
     // 选完 @网页生成 之后要挑的那套骨架；非 null 就是面板开着。
     var templatePanel by remember(chat.id) { mutableStateOf<List<PageTemplate>?>(null) }
@@ -186,10 +188,9 @@ internal fun Conversation(
     var themeAsked by remember(chat.id) { mutableStateOf(false) }
 
     // ── 「@PPT生成」那条路的界面状态 ────────────────────────────────────
-    // 蓝图资源包同样内嵌在 APK 里（assets/templates/ppt/），读它也要 Context，
-    // 所以和骨架一样在这里取一次、记住。
-    val blueprintOf: (DeckTemplate) -> String = remember(context) {
-        { deck -> DeckTemplates.readBlueprint(context.assets, deck) }
+    // 蓝图同样随「PPT 生成」功能包下载，和骨架共用一个 FeatureSource。
+    val blueprintOf: (DeckTemplate) -> String = remember(featureSource) {
+        { deck -> DeckTemplates.readBlueprint(featureSource, deck) }
     }
     // 选完 @PPT生成 之后要挑的那套蓝图；非 null 就是面板开着。
     var deckPanel by remember(chat.id) { mutableStateOf<List<DeckTemplate>?>(null) }
