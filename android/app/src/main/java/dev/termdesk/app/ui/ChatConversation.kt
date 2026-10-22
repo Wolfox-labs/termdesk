@@ -112,6 +112,10 @@ internal fun Conversation(
     onPreviewFile: ((String, String) -> Unit)? = null,
     /** 「产出文件」卡片上的下载：把这一份存到手机上。 */
     onDownloadPath: ((String, String) -> Unit)? = null,
+    /** 还有更早的历史没取回来。 */
+    hasOlder: Boolean = false,
+    /** 用户拉到顶了：再要一页更早的。 */
+    onLoadOlder: () -> Unit = {},
 ) {
     // What this conversation can run as, both of them the kernel's own words:
     // the model list and the permission / agent modes it declared.
@@ -169,6 +173,14 @@ internal fun Conversation(
     // Fresh state per chat: opening or switching a conversation always lands at
     // its end, never at a leftover scroll offset from the previous one.
     val listState = key(chat.id) { rememberLazyListState() }
+
+    // 拉到顶就要更早的一页。分页是 agent 的能力（chat.page），它会在每页的
+    // eventSync 里说还有没有；没有这个能力时 hasOlder 恒为 false，这段就不做事。
+    LaunchedEffect(listState, hasOlder) {
+        if (!hasOlder) return@LaunchedEffect
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .collect { index -> if (index <= 1 && hasOlder) onLoadOlder() }
+    }
     // ── 「@网页生成」这条路的界面状态 ──────────────────────────────────
     // 骨架不再内嵌在 APK 里，它随「网页生成」功能包下载。读取统一走 FeatureStore：
     // 装了包就读得到，没装就是空串（调用方退回"让内核自己写"）。

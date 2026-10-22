@@ -104,6 +104,7 @@ fun AppRoot(
     val themeMode by vm.themeMode.collectAsState()
     val uiLayout by vm.uiLayout.collectAsState()
     val palette by vm.palette.collectAsState()
+    val chatHasOlder by vm.chatHasOlder.collectAsState()
     val featurePacks by vm.featurePacks.collectAsState()
     val engines by vm.engines.collectAsState()
     val defaultEngine by vm.defaultEngine.collectAsState()
@@ -523,6 +524,8 @@ fun AppRoot(
                 },
                 pendingSends = pendingSends,
                 pendingDropped = pendingDropped,
+                chatHasOlder = chatHasOlder,
+                onLoadOlderChat = vm::loadOlderChat,
                 onOpenSession = { session -> vm.openSession(session) },
                 onResumeSession = vm::resumeSession,
                 connected = connected,

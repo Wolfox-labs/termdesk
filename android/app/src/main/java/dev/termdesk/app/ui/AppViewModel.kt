@@ -315,6 +315,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun claimChat(chatId: String, force: Boolean) = client.claimChat(chatId, force)
     fun syncChat(chatId: String) = client.syncChat(chatId)
 
+    /** 这个会话还有没有更早的历史；界面在列表顶部据此决定要不要再要一页。 */
+    val chatHasOlder: StateFlow<Boolean> = client.chatHasOlder
+
+    fun loadOlderChat() = client.loadOlderChat()
+
     val chatModels: StateFlow<Map<String, ChatModels>> = client.chatModels    /** Slash commands each conversation offers, as the PC declared them. */
     val chatCommands: StateFlow<Map<String, ChatCommands>> = client.chatCommands
 

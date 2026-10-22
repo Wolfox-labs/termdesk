@@ -298,6 +298,38 @@ export class Chat {
       eventSync: { mode: 'full', complete: true },
     };
   }
+
+  /**
+   * One page of history, newest first.
+   *
+   * `before` is a sequence number, not an array index: events get revised and
+   * removed without renumbering, so an index would drift and skip or repeat rows.
+   * A `before` of 0 means "the newest page".
+   *
+   * The phone opens a long conversation with one page instead of the whole
+   * transcript — a 400-event chat used to be parsed and laid out in full before
+   * the first pixel appeared, which is what made opening feel slow.
+   */
+  page({ before = 0, limit = 40 } = {}) {
+    const size = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 200) : 40;
+    const all = this.events;
+    // Everything strictly older than `before`; the end of the newest page is the tail.
+    const older = before > 0 ? all.filter((e) => e.seq < before) : all;
+    const slice = older.slice(Math.max(0, older.length - size));
+    const hasMore = older.length > slice.length;
+    return {
+      ...this.summary(),
+      events: slice,
+      eventSync: {
+        mode: 'page',
+        complete: !hasMore,
+        hasMore,
+        // 下一页的 before：本页最旧那一条的 seq。
+        oldest: slice.length > 0 ? slice[0].seq : 0,
+        total: all.length,
+      },
+    };
+  }
 }
 
 /**

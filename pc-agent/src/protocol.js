@@ -67,6 +67,8 @@ export const C2S = {
   CHAT_CLAIM: 'chat.claim',
   CHAT_RELEASE: 'chat.release',
   CHAT_SYNC: 'chat.sync',
+  /** 只要一页历史：长会话在手机上先看最新一轮，往上拉再要更早的。 */
+  CHAT_PAGE: 'chat.page',
   CHAT_CANCEL: 'chat.cancel',
   CHAT_CLOSE: 'chat.close',
   CHAT_APPROVE: 'chat.approve',

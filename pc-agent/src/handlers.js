@@ -921,6 +921,21 @@ export function createFrameHandler(ctx) {
         break;
       }
 
+      // 分页取历史：手机先要最新一页，用户往上拉时用 before 序列号要更早的那一页。
+      // 之所以按 seq 而不是按数组下标：事件可能被修订或删除，下标会漂。
+      case C2S.CHAT_PAGE: {
+        const chat = chats.get(frame.chatId);
+        if (!chat) { send(S2C.ERROR, { code: 'no_chat', message: '会话不存在' }); break; }
+        continuity.touch(frame.chatId, identity);
+        await chats.refreshStaleDsh(chat);
+        const page = chat.page({
+          before: Number(frame.before) || 0,
+          limit: Number(frame.limit) || 40,
+        });
+        send(S2C.CHAT, decorateChat(page));
+        break;
+      }
+
       case C2S.CHAT_CREATE: {
         // A disabled kernel is still installed, but the console turned it off on
         // this machine; starting a chat on it would silently undo that choice.

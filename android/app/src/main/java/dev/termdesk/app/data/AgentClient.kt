@@ -201,6 +201,14 @@ class AgentClient(
     private var terminalOpenPending = false
     private var terminalClosedByUser = false
     private var chatSyncSupported = false
+    private var chatPageSupported = false
+
+    /** 这个会话还有没有更早的历史没取回来；界面据此决定要不要在顶部拦一次。 */
+    private val _chatHasOlder = MutableStateFlow(false)
+    val chatHasOlder: StateFlow<Boolean> = _chatHasOlder.asStateFlow()
+
+    /** 正在要更早那一页，避免一次滑动发出好几次请求。 */
+    private var chatLoadingOlder = false
     val termUnavailable: StateFlow<String?> = _termUnavailable.asStateFlow()
 
     // ---- Codex provider configuration ----
@@ -424,6 +432,14 @@ class AgentClient(
         const val PREFS = "termdesk"
         const val KEY_KERNEL_TARGET = "kernelTarget"
         const val KEY_DEVICE_ID = "deviceId"
+
+        /**
+         * 一页历史多少条。
+         *
+         * 40 是"一屏多一点"的量：小到打开快，大到往上拉一次能看很久。上限由 agent
+         * 那侧再夹一次（200），这里给大数也没用。
+         */
+        const val CHAT_PAGE_SIZE = 40
 
         /** Characters of one command's output the panel keeps in memory. */
         const val TERMINAL_TEXT_LIMIT = 48 * 1024
@@ -690,6 +706,9 @@ class AgentClient(
     fun disconnect() {
         terminalOpenPending = false
         chatSyncSupported = false
+        chatPageSupported = false
+        _chatHasOlder.value = false
+        chatLoadingOlder = false
         generation += 1
         manuallyClosed = true
         reconnectJob?.cancel()
@@ -1028,7 +1047,38 @@ class AgentClient(
         // opening one must clear the other or the wrong transcript stays up.
         _sessionDetail.value = null
         clearChatTranscript()
-        sendFrame(JSONObject().put("type", "chat.read").put("chatId", chatId))
+        if (chatPageSupported) {
+            // 长会话先只要最新一页：整份拉回来再排版，正是"打开很慢"的来源。
+            _chatHasOlder.value = false
+            sendFrame(
+                JSONObject()
+                    .put("type", "chat.page")
+                    .put("chatId", chatId)
+                    .put("limit", CHAT_PAGE_SIZE),
+            )
+        } else {
+            sendFrame(JSONObject().put("type", "chat.read").put("chatId", chatId))
+        }
+    }
+
+    /**
+     * 用户拉到顶了：把更早的一页要回来。
+     *
+     * 只在还有更早的历史、且没有正在请求时发，免得一次滑动排队好几次。
+     */
+    fun loadOlderChat() {
+        if (!chatPageSupported || chatLoadingOlder) return
+        if (!_chatHasOlder.value) return
+        val chatId = _activeChat.value?.id ?: return
+        val oldest = _chatEvents.value.firstOrNull()?.seq ?: return
+        chatLoadingOlder = true
+        sendFrame(
+            JSONObject()
+                .put("type", "chat.page")
+                .put("chatId", chatId)
+                .put("before", oldest)
+                .put("limit", CHAT_PAGE_SIZE),
+        )
     }
 
     /** Ask the PC for the write lease of this conversation. */
@@ -1619,6 +1669,7 @@ class AgentClient(
                 }
                 "auth.ok" -> {
                     chatSyncSupported = supportsChatSync(frame)
+                    chatPageSupported = supportsChatPage(frame)
                     terminalOpenPending = false
                     if (frame.has("nodeOnline") && !frame.optBoolean("nodeOnline")) {
                         _link.value = LinkState.NodeOffline(frame.optString("hostname", "电脑"))
@@ -1998,10 +2049,22 @@ class AgentClient(
                     // chat's own opening lines.
                     if (frame.has("events")) {
                         val local = info?.let { phoneChatEvents.read(phoneEventScope(), phoneChatIdentity(it)) }.orEmpty()
-                        _chatEvents.value = withPhoneChatEvents(reconcileChatEvents(frame), local)
+                        val incoming = reconcileChatEvents(frame)
+                        val paged = chatPageMode(frame) == "page"
+                        if (paged) {
+                            // 一页历史：并进现有内容，而不是替换——替换会把用户已经看见的
+                            // 后半段抹掉。首次打开时 current 是空的，效果就是"只有这一页"。
+                            val merged = mergeChatPage(_chatEvents.value, incoming)
+                            _chatEvents.value = withPhoneChatEvents(merged, local)
+                            _chatHasOlder.value = chatPageHasMore(frame)
+                        } else {
+                            _chatEvents.value = withPhoneChatEvents(incoming, local)
+                            _chatHasOlder.value = false
+                        }
                         chatEventIndex = LinkedHashMap(
                             _chatEvents.value.associateBy { it.seq },
                         )
+                        chatLoadingOlder = false
                     } else if (info != null) {
                         sendFrame(JSONObject().put("type", "chat.read").put("chatId", info.id))
                     }

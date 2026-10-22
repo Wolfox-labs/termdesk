@@ -145,6 +145,9 @@ fun ChatSection(
     onDownloadPath: ((String, String) -> Unit)? = null,
     pendingSends: Int = 0,
     pendingDropped: Int = 0,
+    /** 这个会话还有更早的历史没取回来（agent 支持 chat.page 时才可能为 true）。 */
+    chatHasOlder: Boolean = false,
+    onLoadOlderChat: () -> Unit = {},
     onLoadKernelRuns: () -> Unit = {},
     /**
      * The order conversations inside a workspace are listed in, and how to change it.
@@ -399,6 +402,8 @@ fun ChatSection(
                                 connected = connected,
                                 pendingSends = pendingSends,
                                 pendingDropped = pendingDropped,
+                                hasOlder = chatHasOlder,
+                                onLoadOlder = onLoadOlderChat,
                                 // 产出物先给「看效果」：在当前页打开它；右侧文件夹图标仍可跳到目录。
                                 onOpenFile = onOpenFiles,
                                 onPreviewFile = onPreviewFile,
