@@ -180,7 +180,7 @@ internal object ChatMentions {
      */
     private val IMG = ChatMention(
         id = "图片处理",
-        pack = "image",
+        // 图片的预设还没有随包下发（P3-e），先不门控：门控一个装不上的包等于把功能下线。
         title = "图片处理",
         hint = "选图 + 压缩质量 + 格式 + 水印，在手机上直接处理并存进相册",
         badge = "IMG",
@@ -218,7 +218,7 @@ internal object ChatMentions {
      */
     private val XLS = ChatMention(
         id = "表格生成",
-        pack = "table",
+        // 体裁数据同样还没随包下发（P3-d）；等那一包能构建出来再打开门控。
         title = "表格生成",
         hint = "问一句主题，直接生成一份能下载的 .xlsx（表头、格式都排好）",
         badge = "XLS",
