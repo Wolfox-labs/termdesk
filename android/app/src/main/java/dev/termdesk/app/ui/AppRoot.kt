@@ -102,6 +102,8 @@ fun AppRoot(
     val pendingSends by vm.pendingCount.collectAsState()
     val pendingDropped by vm.pendingDropped.collectAsState()
     val themeMode by vm.themeMode.collectAsState()
+    val uiLayout by vm.uiLayout.collectAsState()
+    val palette by vm.palette.collectAsState()
     val engines by vm.engines.collectAsState()
     val defaultEngine by vm.defaultEngine.collectAsState()
     val sessionSort by vm.sessionSort.collectAsState()
@@ -525,6 +527,10 @@ fun AppRoot(
                 connected = connected,
                 themeMode = themeMode,
                 onThemeModeChange = vm::setThemeMode,
+                layout = uiLayout,
+                onLayoutChange = vm::setUiLayout,
+                palette = palette,
+                onPaletteChange = vm::setPalette,
                 engines = engines,
                 defaultEngine = defaultEngine,
                 onSetDefaultEngine = vm::setDefaultEngine,

@@ -45,6 +45,7 @@ import dev.termdesk.app.data.TransferState
 import dev.termdesk.app.data.KernelRun
 import dev.termdesk.app.data.AgentNotification
 import dev.termdesk.app.data.WorkspaceInfo
+import dev.termdesk.app.ui.theme.Palette
 import dev.termdesk.app.ui.theme.ThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -374,6 +375,36 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putString(KEY_THEME, mode.name).apply()
     }
 
+    // ---- 界面布局与配色 ----
+    //
+    // 两件事分开存：布局决定面板在哪一侧，配色决定用什么色板。它们可以在设置里
+    // 任意组合，所以不合成一个枚举——那样会变成四选一，用户想「经典布局 + 数媒配色」
+    // 就做不到。
+
+    private val defaultUiLayout = UiLayout.Modern
+    private val _uiLayout = MutableStateFlow(
+        runCatching { UiLayout.valueOf(prefs.getString(KEY_UI_LAYOUT, defaultUiLayout.name)!!) }
+            .getOrDefault(defaultUiLayout),
+    )
+    val uiLayout: StateFlow<UiLayout> = _uiLayout.asStateFlow()
+
+    fun setUiLayout(layout: UiLayout) {
+        _uiLayout.value = layout
+        prefs.edit().putString(KEY_UI_LAYOUT, layout.name).apply()
+    }
+
+    private val defaultPalette = Palette.Classic
+    private val _palette = MutableStateFlow(
+        runCatching { Palette.valueOf(prefs.getString(KEY_PALETTE, defaultPalette.name)!!) }
+            .getOrDefault(defaultPalette),
+    )
+    val palette: StateFlow<Palette> = _palette.asStateFlow()
+
+    fun setPalette(palette: Palette) {
+        _palette.value = palette
+        prefs.edit().putString(KEY_PALETTE, palette.name).apply()
+    }
+
     /**
      * Where the file browser starts, and the agent address it defaults to.
      *
@@ -650,6 +681,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_TOKEN = "token"
         const val KEY_START_PATH = "startPath"
         const val KEY_THEME = "themeMode"
+        const val KEY_UI_LAYOUT = "uiLayout"
+        const val KEY_PALETTE = "palette"
         const val KEY_ENGINE = "defaultEngine"
         const val KEY_SESSION_SORT = "sessionSort"
 

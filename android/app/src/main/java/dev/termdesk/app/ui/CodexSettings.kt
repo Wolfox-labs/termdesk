@@ -71,6 +71,7 @@ import dev.termdesk.app.data.LocalKernelStage
 import dev.termdesk.app.data.Storage
 import dev.termdesk.app.data.StorageEntry
 import dev.termdesk.app.data.StorageUse
+import dev.termdesk.app.ui.theme.Palette
 import dev.termdesk.app.ui.theme.Semantic
 import dev.termdesk.app.ui.theme.ThemeMode
 
@@ -80,6 +81,10 @@ fun SettingsSection(
     targets: List<PairedComputer>,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    layout: UiLayout,
+    onLayoutChange: (UiLayout) -> Unit,
+    palette: Palette,
+    onPaletteChange: (Palette) -> Unit,
     engines: List<KernelInfo>,
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
@@ -213,7 +218,7 @@ fun SettingsSection(
         val storageLabel = storage?.let { (if (it.truncated) "≥ " else "") + Storage.format(it.totalBytes) } ?: "—"
         if (page == null) {
             SettingsRootRow("运行设备与助手", kernelSummary) { page = "kernel" }
-            SettingsRootRow("外观", themeLabel) { page = "appearance" }
+            SettingsRootRow("外观", "$themeLabel · ${palette.label}") { page = "appearance" }
             SettingsRootRow("存储", storageLabel) { page = "storage" }
             // Hidden until phone Agent settings have their own contract. The
             // existing Codex editor writes a computer's config and is not that feature.
@@ -328,6 +333,53 @@ fun SettingsSection(
                     )
                 }
             }
+
+            // 配色与布局是两条独立的维度：想「经典布局 + 数媒配色」也成立，所以不合成四选一。
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "配色",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Palette.entries.forEach { option ->
+                    ChoiceChip(
+                        label = option.label,
+                        selected = option == palette,
+                        onClick = { onPaletteChange(option) },
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = palette.hint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "布局",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                UiLayout.entries.forEach { option ->
+                    ChoiceChip(
+                        label = option.label,
+                        selected = option == layout,
+                        onClick = { onLayoutChange(option) },
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "只影响侧边面板从哪一侧滑进来；页面结构不变。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
             }
             "storage" -> {

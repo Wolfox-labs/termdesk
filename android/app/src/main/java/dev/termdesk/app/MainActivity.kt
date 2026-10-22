@@ -60,9 +60,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val mode by vm.themeMode.collectAsState()
+            val palette by vm.palette.collectAsState()
             val pair by pairRequest.collectAsState()
             val open by openRequest.collectAsState()
-            TermDeskTheme(mode = mode) {
+            TermDeskTheme(mode = mode, palette = palette) {
                 val background = MaterialTheme.colorScheme.background
                 SideEffect {
                     val light = background.luminance() > 0.5f

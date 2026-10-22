@@ -92,6 +92,7 @@ import dev.termdesk.app.data.TermLine
 import dev.termdesk.app.data.TransferState
 import dev.termdesk.app.data.WorkspaceInfo
 import dev.termdesk.app.ui.theme.MeterChars
+import dev.termdesk.app.ui.theme.Palette
 import dev.termdesk.app.ui.theme.ThemeMode
 
 /** Sections of the app. */
@@ -236,6 +237,10 @@ fun AppShell(
     connected: Boolean,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    layout: UiLayout,
+    onLayoutChange: (UiLayout) -> Unit,
+    palette: Palette,
+    onPaletteChange: (Palette) -> Unit,
     engines: List<KernelInfo>,
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
@@ -424,6 +429,10 @@ fun AppShell(
                     connectionLabel = connectionLabel,
                     themeMode = themeMode,
                     onThemeModeChange = onThemeModeChange,
+                    layout = layout,
+                    onLayoutChange = onLayoutChange,
+                    palette = palette,
+                    onPaletteChange = onPaletteChange,
                     defaultEngine = defaultEngine,
                     onSetDefaultEngine = onSetDefaultEngine,
                     onRefreshEngines = onRefreshEngines,
@@ -468,9 +477,12 @@ fun AppShell(
 
         AnimatedVisibility(
             visible = panelOpen,
-            enter = slideInHorizontally { it },
-            exit = slideOutHorizontally { it },
-            modifier = Modifier.align(Alignment.CenterEnd),
+            // 面板从哪一侧滑进来，是两套布局唯一的差别（见 UiLayout）。
+            enter = slideInHorizontally { if (layout.panelAtStart) -it else it },
+            exit = slideOutHorizontally { if (layout.panelAtStart) -it else it },
+            modifier = Modifier.align(
+                if (layout.panelAtStart) Alignment.CenterStart else Alignment.CenterEnd,
+            ),
         ) {
             ContextPanel(
                 status = status,
@@ -789,6 +801,10 @@ private fun SectionBody(
     connectionLabel: String,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    layout: UiLayout,
+    onLayoutChange: (UiLayout) -> Unit,
+    palette: Palette,
+    onPaletteChange: (Palette) -> Unit,
     engines: List<KernelInfo>,
     defaultEngine: String?,
     onSetDefaultEngine: (String?) -> Unit,
@@ -968,6 +984,10 @@ private fun SectionBody(
             targets = codexTargets,
             themeMode = themeMode,
             onThemeModeChange = onThemeModeChange,
+            layout = layout,
+            onLayoutChange = onLayoutChange,
+            palette = palette,
+            onPaletteChange = onPaletteChange,
             engines = engines,
             defaultEngine = defaultEngine,
             onSetDefaultEngine = onSetDefaultEngine,
