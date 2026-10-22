@@ -567,6 +567,13 @@ internal fun Conversation(
     val deliverableDone = deliverableTask && !chat.isRunning && !sending &&
         events.any { it.isDeliverable }
 
+    // 会话目录：每一轮用户提问算一章。作品对话头部可能多一行「作品已完成」，
+    // 它占一个 item，所以序号要跟着挪一位，否则跳转会差一行。
+    val outline = remember(shownRows, deliverableDone) {
+        turnOutline(shownRows, offset = if (deliverableDone) 1 else 0)
+    }
+    var outlineOpen by remember(chat.id) { mutableStateOf(false) }
+
     // Open / switch: snap to the last item's bottom (not merely its top).
     LaunchedEffect(chat.id) {
         programmaticScroll = true
@@ -605,7 +612,22 @@ internal fun Conversation(
             onPosterDownload = { downloadPoster(it) },
             onPosterTweak = { tweakPoster(it) },
             onDownloadPath = onDownloadPath,
+            outline = outline,
+            onOpenOutline = { outlineOpen = true },
         )
+
+        if (outlineOpen) {
+            OutlineDialog(
+                outline = outline,
+                onJump = { turn ->
+                    outlineOpen = false
+                    // 跳过去之后不要再被"跟随最新"拽回底部。
+                    stickToBottom = false
+                    posterScope.launch { listState.animateScrollToItem(turn.index) }
+                },
+                onDismiss = { outlineOpen = false },
+            )
+        }
 
         run {
             Row(
@@ -1882,8 +1904,22 @@ private fun TranscriptPane(
     onPosterDownload: (String) -> Unit,
     onPosterTweak: ((PosterRenderer.Tweak) -> Unit)?,
     onDownloadPath: ((String, String) -> Unit)?,
+    outline: List<TurnOutline>,
+    onOpenOutline: () -> Unit,
 ) {
     Box(modifier) {
+        // 长会话才给目录入口：两三轮的对话不需要一张地图。
+        if (outline.size >= 3) {
+            TextButton(
+                onClick = onOpenOutline,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 2.dp, end = 4.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+            ) {
+                Text("目录 ${outline.size}", style = MaterialTheme.typography.labelSmall)
+            }
+        }
         if (events.isEmpty()) {
             Text(
                 "发送消息开始对话",
