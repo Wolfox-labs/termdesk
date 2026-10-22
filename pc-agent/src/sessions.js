@@ -377,13 +377,43 @@ function dshLineToEvent(obj) {
   }
 
   // todo/write is the agent's own plan for the turn; keep it as engine output.
+  //
+  // 状态必须留下来：手机上要画成"3 完成 / 1 进行中 / 7 待办"的任务表，只留下光秃秃
+  // 的条目文本就只能显示一串行。`[x]` 完成、`[~]` 进行中、`[ ]` 待办，三种记号是
+  // ACP 的 plan 已经在用的写法，手机端按同一套解析。
   if (t === 'todo/write') {
     const items = d.todos ?? d.items ?? [];
+    const mark = (status) => {
+      const s = String(status ?? '').toLowerCase();
+      if (s === 'completed' || s === 'done' || s === 'complete') return '[x]';
+      if (s === 'in_progress' || s === 'in-progress' || s === 'running' || s === 'active') return '[~]';
+      return '[ ]';
+    };
     const text = Array.isArray(items)
-      ? items.map((x) => `- ${x?.text ?? x?.content ?? JSON.stringify(x)}`).join('\n')
+      ? items
+        .map((x) => {
+          const label = x?.text ?? x?.content ?? (typeof x === 'string' ? x : JSON.stringify(x));
+          if (!label) return null;
+          return `${mark(x?.status)} ${label}`;
+        })
+        .filter(Boolean)
+        .join('\n')
       : '';
     if (!text.trim()) return null;
-    return makeEvent({ kind: 'engine_plan', role: 'engine', text, at });
+    return makeEvent({
+      kind: 'engine_plan',
+      role: 'engine',
+      text,
+      at,
+      meta: {
+        items: Array.isArray(items)
+          ? items.map((x) => ({
+            text: String(x?.text ?? x?.content ?? '').trim(),
+            status: String(x?.status ?? 'pending'),
+          })).filter((x) => x.text.length > 0)
+          : [],
+      },
+    });
   }
 
   /**

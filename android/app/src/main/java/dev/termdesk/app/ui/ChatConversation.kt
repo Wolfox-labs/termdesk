@@ -1662,6 +1662,8 @@ internal fun Conversation(
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+        // 内核的任务表贴在输入框上方：跑长活时一眼看出还剩多少、正在做哪一条。
+        planOf(events)?.let { plan -> TaskStrip(plan) }
         Composer(
             draft = draft,
             onDraftChange = { updateDraftValue(it) },
