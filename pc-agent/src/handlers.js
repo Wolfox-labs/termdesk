@@ -534,6 +534,27 @@ export function createFrameHandler(ctx) {
         break;
       }
 
+      case C2S.DEVICES_PRUNE: {
+        if (!ctx.deviceAdmin) {
+          send(S2C.ERROR, { code: 'devices_unavailable', message: '这个代理版本还不支持设备管理' });
+          break;
+        }
+        try {
+          const result = await ctx.deviceAdmin.prune(Number(frame.days ?? 7));
+          send(S2C.ACTION_RESULT, { action: 'devices.prune', target: '', ...result });
+          send(S2C.DEVICES, { devices: await ctx.deviceAdmin.list() });
+        } catch (err) {
+          send(S2C.ACTION_RESULT, {
+            action: 'devices.prune',
+            target: '',
+            ok: false,
+            code: 'devices_failed',
+            message: String(err?.message ?? err),
+          });
+        }
+        break;
+      }
+
       case C2S.DEVICE_RENAME:
       case C2S.DEVICE_REVOKE:
       case C2S.DEVICE_REMOVE: {

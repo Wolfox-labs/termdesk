@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -45,6 +46,7 @@ internal fun DevicesPage(
     onPair: () -> Unit,
     onRename: (DeviceRow) -> Unit,
 ) {
+    var confirmPrune by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(top = 14.dp)) {
         if (store.phones.isEmpty()) {
             EmptyState(
@@ -158,7 +160,34 @@ internal fun DevicesPage(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
+            // 反复配对之后名单里会攒下十几条从没用过的记录，逐条点删除是手工活；
+            // 这个按钮一次清掉"从没上线过"和"一周没上线"的那些。
+            TextButton(onClick = { confirmPrune = true }) {
+                Text("清理不用的手机", style = MaterialTheme.typography.labelSmall)
+            }
             TextButton(onClick = { store.loadPhones() }) { Text("刷新", style = MaterialTheme.typography.labelSmall) }
+        }
+
+        if (confirmPrune) {
+            AlertDialog(
+                onDismissRequest = { confirmPrune = false },
+                title = { Text("清理不用的手机") },
+                text = {
+                    Text(
+                        "会删掉两类记录：从来没有连上过的，以及 7 天没上线的。\n" +
+                            "这台电脑自己的令牌（旧版令牌）不受影响；正在用的手机不在清理范围内。",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmPrune = false
+                        store.prunePhones(7)
+                    }) { Text("清理") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmPrune = false }) { Text("取消") }
+                },
+            )
         }
     }
 }

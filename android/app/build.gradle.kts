@@ -167,6 +167,9 @@ dependencies {
     // WebSocket client used to talk to the TermDesk PC agent.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // 自带相机界面的二维码扫描：配对时不必先退出 App、打开系统相机、再切回来。
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // The phone side had no automated checks at all until now: every change was

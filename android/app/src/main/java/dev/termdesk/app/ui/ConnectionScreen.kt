@@ -19,6 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -58,6 +59,8 @@ fun ConnectionScreen(
     onClose: () -> Unit,
     onDisconnect: () -> Unit,
     onForget: () -> Unit,
+    /** 在 App 内扫电脑上的配对二维码；扫到就等同于用户手打地址和配对码。 */
+    onScan: () -> Unit = {},
 ) {
     BackHandler(onBack = onClose)
     var confirmForgetCurrent by remember { mutableStateOf(false) }
@@ -115,6 +118,20 @@ fun ConnectionScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(8.dp))
+
+        // 扫码优先：配对码是 43 位随机串，手打一次就是一次出错的机会。
+        OutlinedButton(
+            onClick = onScan,
+            enabled = !connecting,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(46.dp),
+        ) {
+            Text("扫电脑上的配对二维码")
+        }
+
+        Spacer(Modifier.height(12.dp))
 
         OutlinedTextField(
             value = url,

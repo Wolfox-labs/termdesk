@@ -1,6 +1,7 @@
 package dev.termdesk.app.data
 
 import android.content.Intent
+import android.net.Uri
 
 /**
  * A pairing request that arrived as a `termdesk://pair` link.
@@ -35,6 +36,17 @@ data class PairRequest(
 
 fun parsePairIntent(intent: Intent?): PairRequest? {
     val data = intent?.data ?: return null
+    return parsePairUri(data.toString())
+}
+
+/**
+ * 从一串配对链接里取出地址和凭据。
+ *
+ * 两种来源共用这一段：系统相机扫完把链接当 intent 交给 App，或者 App 自己扫完
+ * 直接把字符串交过来。解析只写一份，两条路就不会解析出两种结果。
+ */
+fun parsePairUri(raw: String): PairRequest? {
+    val data = runCatching { Uri.parse(raw.trim()) }.getOrNull() ?: return null
     if (data.scheme?.lowercase() != "termdesk") return null
     if (data.host?.lowercase() != "pair") return null
     val url = data.getQueryParameter("url").orEmpty().trim()

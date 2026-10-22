@@ -40,6 +40,8 @@ export const C2S = {
   DEVICE_RENAME: 'devices.rename',
   DEVICE_REVOKE: 'devices.revoke',
   DEVICE_REMOVE: 'devices.remove',
+  /** 批量清掉不用的手机：从没上线过的，或最后在线早于 N 天前的。 */
+  DEVICES_PRUNE: 'devices.prune',
   KERNELS_MANAGE: 'kernels.manage',
   // Agent processes running on this machine that THIS agent did not start. The
   // phone asks when it wants to show "what is actually running over there",

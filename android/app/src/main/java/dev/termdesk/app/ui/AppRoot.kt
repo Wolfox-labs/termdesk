@@ -1,6 +1,11 @@
 package dev.termdesk.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+import dev.termdesk.app.data.parsePairUri
+import kotlinx.coroutines.launch
 
 import android.app.NotificationManager
 import android.util.Log
@@ -21,6 +26,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -146,9 +152,26 @@ fun AppRoot(
 
     // A scanned pairing link carries everything the app needs: address and
     // token. It is the only path that does not involve typing a secret.
-    LaunchedEffect(pairRequest) {
-        val request = pairRequest ?: return@LaunchedEffect
-        onPairHandled()
+    //
+    // 两条来源汇合到这里：系统相机把链接当 intent 交进来（pairRequest），
+    // 或者 App 自己扫完（scannedPair）。解析同一个函数，后续处理也同一段。
+    var scannedPair by remember { mutableStateOf<PairRequest?>(null) }
+    val scanScope = rememberCoroutineScope()
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val text = result.contents
+        val parsed = text?.let { parsePairUri(it) }
+        if (parsed == null) {
+            if (text != null) {
+                scanScope.launch { snackbarHostState.showSnackbar("这不是 TermDesk 的配对码") }
+            }
+        } else {
+            scannedPair = parsed
+        }
+    }
+    val effectivePair = pairRequest ?: scannedPair
+    LaunchedEffect(effectivePair) {
+        val request = effectivePair ?: return@LaunchedEffect
+        if (pairRequest != null) onPairHandled() else scannedPair = null
         if (!request.isUsable) return@LaunchedEffect
         connectionOpen = false
         // The PC hands over its own LAN/Tailscale addresses at pairing time; once
@@ -403,6 +426,15 @@ fun AppRoot(
                 onClose = { connectionOpen = false },
                 onDisconnect = vm::disconnect,
                 onForget = { vm.forgetDevice(); connectionOpen = true },
+                onScan = {
+                    scanLauncher.launch(
+                        ScanOptions()
+                            .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                            .setPrompt("对准电脑上的配对二维码")
+                            .setBeepEnabled(false)
+                            .setOrientationLocked(false),
+                    )
+                },
             )
 
             openFile != null -> FileEditor(

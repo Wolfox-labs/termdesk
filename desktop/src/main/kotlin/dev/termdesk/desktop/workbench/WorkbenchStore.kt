@@ -309,6 +309,14 @@ class WorkbenchStore(
 
     fun removePhone(id: String) = send("devices.remove", buildJsonObject { put("id", id) })
 
+    /**
+     * 一次清掉不用的手机。
+     *
+     * 反复配对之后名单会越攒越多，逐条删除是手工活；按"从没上线过"和"N 天没上线"
+     * 两条规则批量清，本机记录和中转记录一起处理。
+     */
+    fun prunePhones(days: Int = 7) = send("devices.prune", buildJsonObject { put("days", days) })
+
     fun manageKernel(action: String, id: String, entry: JsonObject? = null) {
         send("kernels.manage", buildJsonObject {
             put("action", action)

@@ -638,7 +638,7 @@ const server = http.createServer((req, res) => {
       // revoke a row, so the UI never guesses.
       const local = deviceRegistry.list().map((d) => ({ ...d, source: 'local' }));
       const relay = relayConnector
-        ? (await relayConnector.devices().catch(() => [])).map((d) => ({ ...d, source: 'relay' }))
+        ? (await relayDevices(relayConnector)).map((d) => ({ ...d, source: 'relay' }))
         : [];
       const devices = [...local, ...relay];
       if (url.pathname === '/devices.json') {
@@ -803,11 +803,26 @@ const server = http.createServer((req, res) => {
  * the relay's list. Each result says which side owns the row, so a UI does not
  * offer "revoke" on a record the relay will ignore.
  */
+/**
+ * 中转上那几台设备，最多等这么久。
+ *
+ * 设备管理页要把"本机名单"和"中转名单"拼成一张表，而中转一次不回话，整页就卡死——
+ * 用户看到的是"管理页面打不开、也没法清理"。中转慢或断线时按空名单处理，
+ * 本机记录照常显示，清理也照常能做。
+ */
+async function relayDevices(connector, timeoutMs = 3000) {
+  if (!connector) return [];
+  const listing = connector.devices().catch(() => []);
+  const expiry = new Promise((resolve) => setTimeout(() => resolve([]), timeoutMs).unref?.());
+  const result = await Promise.race([listing, expiry]);
+  return Array.isArray(result) ? result : [];
+}
+
 const deviceAdmin = {
   async list() {
     const local = deviceRegistry.list().map((d) => ({ ...d, source: 'local' }));
     const relay = relayConnector
-      ? (await relayConnector.devices().catch(() => [])).map((d) => ({ ...d, source: 'relay' }))
+      ? (await relayDevices(relayConnector)).map((d) => ({ ...d, source: 'relay' }))
       : [];
     return [...local, ...relay];
   },
@@ -858,6 +873,57 @@ const deviceAdmin = {
       }
     }
     return { ok: false, code: 'not_found', message: '没有这个设备' };
+  },
+
+  /**
+   * 一次清掉那些不用的手机：从没连上过的，或者最后在线早于 N 天前的。
+   *
+   * 为什么要批量：一台电脑反复配对之后名单里会攒下十几条从来没用过的记录，
+   * 逐条点"删除"是手工活，而且哪些该删肉眼也判断不出来。
+   * 主令牌那条（legacy）永远保留——它就是这台电脑本身。
+   */
+  async prune(days = 7) {
+    const span = Math.max(0, Number(days) || 0) * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - span;
+    const stale = (d) => {
+      if (!d || d.legacy || String(d.id) === 'legacy') return false;
+      const seen = d.lastSeenAt ? Date.parse(d.lastSeenAt) : 0;
+      return !seen || seen < cutoff;
+    };
+
+    let local = 0;
+    for (const device of deviceRegistry.list()) {
+      if (!stale(device) && !device.revoked) continue;
+      if (deviceRegistry.remove(device.id)) {
+        disconnectCredential(String(device.id));
+        local += 1;
+      }
+    }
+
+    let relay = 0;
+    if (relayConnector) {
+      const listed = await relayDevices(relayConnector);
+      for (const device of listed) {
+        if (!stale(device)) continue;
+        try {
+          await relayConnector.remove(device.id);
+          relay += 1;
+        } catch {
+          // 单台失败不该挡住其它记录，继续清下一台。
+        }
+      }
+    }
+
+    const parts = [];
+    if (local > 0) parts.push(`${local} 台本机记录`);
+    if (relay > 0) parts.push(`${relay} 台中转记录`);
+    return {
+      ok: true,
+      code: 'pruned',
+      message: parts.length > 0 ? `已清理 ${parts.join('、')}` : '没有需要清理的手机',
+      local,
+      relay,
+    };
   },
 };
 
