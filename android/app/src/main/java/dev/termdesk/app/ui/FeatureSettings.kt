@@ -46,9 +46,10 @@ internal fun FeaturePacksPage(
     }
 
     Column(
+        // 不要再加 verticalScroll：外面那一层（SettingsSection 的页面容器）已经在滚了，
+        // 套两层会让内层量到无穷高约束，Compose 直接抛异常——真机上就是一点「功能包」就闪退。
         Modifier
             .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
