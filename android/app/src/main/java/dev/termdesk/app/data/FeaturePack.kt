@@ -230,6 +230,40 @@ internal class FeatureInstaller(
     private val _state = MutableStateFlow<Map<String, FeatureState>>(emptyMap())
     val state: StateFlow<Map<String, FeatureState>> = _state.asStateFlow()
 
+    /**
+     * 走连接传输时用：开场、报进度、报失败。
+     *
+     * 之所以要这三个小方法：字节是从 WebSocket 上来的，进度由 [AgentClient] 收到
+     * 分块时推给这里，安装器自己不碰网络。
+     */
+    fun markDownloading(info: FeaturePackInfo) {
+        val prev = _state.value[info.id] ?: FeatureState(id = info.id, name = info.name)
+        _state.value = _state.value + (info.id to prev.copy(
+            stage = FeatureStage.DOWNLOADING,
+            progress = 0f,
+            note = "下载中…",
+            available = info,
+        ))
+    }
+
+    fun reportProgress(id: String, fraction: Float, note: String) {
+        val prev = _state.value[id] ?: return
+        _state.value = _state.value + (id to prev.copy(
+            stage = FeatureStage.DOWNLOADING,
+            progress = fraction.coerceIn(0f, 1f),
+            note = note,
+        ))
+    }
+
+    fun fail(id: String, message: String) {
+        val prev = _state.value[id] ?: FeatureState(id = id, name = id)
+        _state.value = _state.value + (id to prev.copy(
+            stage = FeatureStage.FAILED,
+            progress = 0f,
+            note = message,
+        ))
+    }
+
     /** 磁盘上已经装了什么，先把状态摆对，再去问电脑有什么。 */
     fun refresh() {
         val installed = store.installed()
@@ -270,7 +304,16 @@ internal class FeatureInstaller(
             Log.i(TAG, "features: 读不到清单：${err.message}")
             emptyList()
         }
-        // 电脑上有什么就更新哪些；电脑上没有的保留已安装记录，不能因为一次失败就"卸载"。
+        applyCatalog(catalog)
+    }
+
+    /**
+     * 电脑把清单给我的时候用它（走 WebSocket 那条路，不用 HTTP）。
+     *
+     * 和老 agent 的 HTTP 清单走同一段合并逻辑：电脑上有什么就更新哪些；
+     * 电脑上没有的保留已安装记录，不能因为一次失败就"卸载"。
+     */
+    fun applyCatalog(catalog: List<FeaturePackInfo>) {
         val merged = LinkedHashMap(_state.value)
         for (pack in catalog) {
             val prev = merged[pack.id]
@@ -395,29 +438,73 @@ internal class FeatureInstaller(
             return@withContext
         }
 
-        // 3. 解包到临时目录，成功后再整体改名——中途失败不会留下一个"看起来装了"的包。
-        put(FeatureStage.EXTRACTING, 1f, "解包中…")
+        // 3+4. 解包 → 落位。WebSocket 那条路也走这一段，别让两条路各写一份。
+        place(info, manifest, zip) { stage, progress, note, error -> put(stage, progress, note, error) }
+    }
+
+    /**
+     * 收到整包字节之后落盘——WebSocket 那条路用它。
+     *
+     * 字节从连接上来（中继也能到），所以不需要 HTTP 地址，也不需要先有直连。
+     */
+    suspend fun installBytes(
+        info: FeaturePackInfo,
+        manifest: FeaturePackManifest,
+        bytes: ByteArray,
+    ) = withContext(Dispatchers.IO) {
+        // 这里不能再用「正在装就退出」那道闸：字节刚收完时状态还停在 DOWNLOADING，
+        // 那道闸会把它当成"另一次安装"直接挡掉——包明明收齐了却永远不落地。
+        // 真正的并发保护靠传输侧：同一个 id 的分块缓冲只有一份。
+        fun put(stage: FeatureStage, progress: Float, note: String, error: String? = null) {
+            val next = (_state.value[info.id] ?: FeatureState(id = info.id, name = info.name)).copy(
+                stage = stage,
+                progress = progress,
+                note = if (error != null) error else note,
+                available = info,
+            )
+            _state.value = _state.value + (info.id to next)
+        }
+
+        put(FeatureStage.VERIFYING, 1f, "校验完整性…")
+        val zip = File(context.cacheDir, "${info.id}-${manifest.version}.pkg")
+        runCatching { zip.writeBytes(bytes) }.onFailure {
+            put(FeatureStage.FAILED, 0f, "", "写不了临时文件：${it.message}")
+            return@withContext
+        }
+        place(info, manifest, zip) { stage, progress, note, error -> put(stage, progress, note, error) }
+    }
+
+    /**
+     * 校验一份已经落盘的包体，然后解包、落位。
+     *
+     * HTTP 下载和 WebSocket 传输都收敛到这里：校验规则（哈希、大小、zip-slip、
+     * manifest 里点名的文件）只有一份，两条路不会各自漂。
+     */
+    private fun place(
+        info: FeaturePackInfo,
+        manifest: FeaturePackManifest,
+        zip: File,
+        put: (FeatureStage, Float, String, String?) -> Unit,
+    ) {
+        put(FeatureStage.VERIFYING, 1f, "校验完整性…", null)
+        if (manifest.sizeBytes > 0 && zip.length() != manifest.sizeBytes) {
+            val length = zip.length()
+            zip.delete()
+            put(
+                FeatureStage.FAILED, 0f, "",
+                "校验不通过：大小不符（期望 ${manifest.sizeBytes}，实际 $length）",
+            )
+            return
+        }
+
+        // 解包到临时目录，成功后再整体改名——中途失败不会留下一个"看起来装了"的包。
+        put(FeatureStage.EXTRACTING, 1f, "解包中…", null)
         store.root().mkdirs()
         val staging = File(store.root(), "${info.id}.tmp")
         staging.deleteRecursively()
         val unpackError = runCatching {
             staging.mkdirs()
-            ZipInputStream(zip.inputStream().buffered()).use { entries ->
-                while (true) {
-                    val entry = entries.nextEntry ?: break
-                    val name = entry.name
-                    // zip-slip：包里的路径只能是相对路径，且不许跳出包目录。
-                    if (!featureEntryPathIsSafe(name)) error("包里有非法路径：$name")
-                    val target = File(staging, name)
-                    if (entry.isDirectory) {
-                        target.mkdirs()
-                    } else {
-                        target.parentFile?.mkdirs()
-                        target.outputStream().use { out -> entries.copyTo(out) }
-                    }
-                    entries.closeEntry()
-                }
-            }
+            unpackZip(zip.inputStream(), staging)
             if (manifest.files.isNotEmpty()) {
                 val missing = manifest.files.filterNot { File(staging, it).isFile }
                 if (missing.isNotEmpty()) error("解包后少了 ${missing.size} 个文件，例如 ${missing.first()}")
@@ -426,17 +513,17 @@ internal class FeatureInstaller(
         zip.delete()
         if (unpackError != null) {
             staging.deleteRecursively()
-            put(FeatureStage.EXTRACTING, 0f, "", "解包失败：${unpackError.message}")
-            return@withContext
+            put(FeatureStage.FAILED, 0f, "", "解包失败：${unpackError.message}")
+            return
         }
 
-        // 4. 落位：先删旧版再改名。顺序反过来会让"装新版"变成"两个版本并存"。
+        // 落位：先删旧版再改名。顺序反过来会让"装新版"变成"两个版本并存"。
         val target = store.dirOf(info.id)
         target.deleteRecursively()
         if (!staging.renameTo(target)) {
             staging.deleteRecursively()
-            put(FeatureStage.EXTRACTING, 0f, "", "解包完成，但装不进 ${target.absolutePath}")
-            return@withContext
+            put(FeatureStage.FAILED, 0f, "", "解包完成，但装不进 ${target.absolutePath}")
+            return
         }
         val previous = _state.value[info.id] ?: FeatureState(id = info.id, name = info.name)
         _state.value = _state.value + (info.id to previous.copy(
@@ -450,8 +537,7 @@ internal class FeatureInstaller(
         InstalledFeatures.refresh(store)
     }
 
-    fun remove(id: String) {
-        store.remove(id)
+    fun remove(id: String) {        store.remove(id)
         InstalledFeatures.refresh(store)
         val prev = _state.value[id]
         _state.value = _state.value + (id to (prev ?: FeatureState(id = id, name = id)).copy(
@@ -465,5 +551,25 @@ internal class FeatureInstaller(
 
     private companion object {
         const val TAG = "FeatureInstaller"
+    }
+}
+
+/**
+ * 把一个 zip 铺到 [dest]。安装器与 WebSocket 传输共用同一套规矩：不许 zip-slip。
+ */
+internal fun unpackZip(input: java.io.InputStream, dest: File) {
+    java.util.zip.ZipInputStream(input.buffered()).use { entries ->
+        while (true) {
+            val entry = entries.nextEntry ?: break
+            if (!featureEntryPathIsSafe(entry.name)) error("包里有非法路径：${entry.name}")
+            val target = File(dest, entry.name)
+            if (entry.isDirectory) {
+                target.mkdirs()
+            } else {
+                target.parentFile?.mkdirs()
+                target.outputStream().use { out -> entries.copyTo(out) }
+            }
+            entries.closeEntry()
+        }
     }
 }

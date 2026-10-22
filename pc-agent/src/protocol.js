@@ -80,6 +80,10 @@ export const C2S = {
   CHAT_TERMINAL_READ: 'chat.terminal.read',
   CHAT_TERMINAL_INPUT: 'chat.terminal.input',
   CHAT_TERMINAL_STOP: 'chat.terminal.stop',
+  /** 要功能包清单。 */
+  FEATURES: 'features',
+  /** 要一个包的全部字节，分块回来。 */
+  FEATURE_GET: 'feature.get',
   /**
    * The phone confirming it has these notifications.
    *
@@ -140,6 +144,15 @@ export const S2C = {
   ACTION_RESULT: 'action.result',
   ERROR: 'error',
   PONG: 'pong',
+  /**
+   * 功能包清单与包体，走聊天同一条 WebSocket。
+   *
+   * 为什么不走 HTTP：HTTP 地址是从 WebSocket 地址推出来的，中继连接下那个地址指向
+   * 中继、不是电脑，手机永远拉不到——「功能包」页就停在"正在读取电脑上的功能包…"。
+   * 走这条已建立的连接，中继能到的地方功能包就能到。
+   */
+  FEATURES: 'features',
+  FEATURE_CHUNK: 'feature.chunk',
 };
 
 /** WebSocket close code used when authentication fails. */

@@ -1027,7 +1027,7 @@ wss.on('connection', (socket, req) => {
         // What we require of a client, so a phone can say which side to update.
         minV: compat.minV,
         agent: `termdesk-pc-agent/${AGENT_VERSION}`,
-        capabilities: ['chat.sync', 'chat.page', 'chat.ownership'],
+        capabilities: ['chat.sync', 'chat.page', 'chat.ownership', 'feature.ws'],
       });
       send(S2C.HELLO, { hostname: os.hostname(), platform: `${os.platform()} ${os.release()}` });
       client.credentialId = verified.id;

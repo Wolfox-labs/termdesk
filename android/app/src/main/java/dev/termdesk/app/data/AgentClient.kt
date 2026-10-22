@@ -291,31 +291,87 @@ class AgentClient(
         featureStore?.let { InstalledFeatures.refresh(it) }
     }
 
+    /** 传输中的包体：id → 已经收到的字节。 */
+    private val packChunks = java.util.concurrent.ConcurrentHashMap<String, java.io.ByteArrayOutputStream>()
+
     fun refreshFeatures() {
         val installer = featureInstaller ?: return
-        val base = httpBaseUrl()
-        val tok = lastToken
-        scope.launch(Dispatchers.IO) {
-            installer.refresh()
-            if (base != null && tok != null) installer.loadIndex(base, tok)
-        }
+        // 先按磁盘摆好状态（离线也看得到"已安装"），再问电脑上有什么。
+        installer.refresh()
+        // 清单走聊天这条连接：中继连接下 HTTP 地址不是电脑，那条路走不通。
+        sendFrame(JSONObject().put("type", "features"))
     }
 
     fun installFeature(id: String) {
         val installer = featureInstaller ?: return
-        val base = httpBaseUrl()
-        val tok = lastToken
-        if (base == null || tok == null) {
-            _lastAction.value = ActionResult("feature.$id", "install", false, "offline", "未连接到电脑")
-            return
-        }
         val info = featurePacks.value[id]?.available
         if (info == null) {
             _lastAction.value = ActionResult("feature.$id", "install", false, "no_manifest", "电脑上还没有这个包")
             return
         }
+        if (!info.present) {
+            _lastAction.value = ActionResult("feature.$id", "install", false, "not_built", "电脑上还没构建这个包")
+            return
+        }
+        packChunks[id] = java.io.ByteArrayOutputStream()
+        installer.markDownloading(info)
+        sendFrame(
+            JSONObject()
+                .put("type", "feature.get")
+                .put("id", id)
+                .put("requestId", "f-" + java.util.UUID.randomUUID()),
+        )
+    }
+
+    /**
+     * 一段包体到了；`eof` 时校验哈希并落盘。
+     *
+     * 哈希算的是真正收到的字节，和 HTTP 那条路同一个判据——两条路不能各有一套
+     * "装好了"的标准。
+     */
+    private fun applyFeatureChunk(frame: JSONObject) {
+        val id = frame.optString("id")
+        if (id.isEmpty()) return
+        val sink = packChunks[id] ?: return
+        val info = featurePacks.value[id]?.available ?: return
+        val installer = featureInstaller ?: return
+        val bytes = runCatching {
+            android.util.Base64.decode(frame.optString("data"), android.util.Base64.NO_WRAP)
+        }.getOrNull() ?: return
+        sink.write(bytes)
+
+        val total = frame.optLong("total", info.sizeBytes)
+        val done = sink.size().toLong()
+        installer.reportProgress(
+            id,
+            if (total > 0) done.toFloat() / total else 0f,
+            "下载中 ${Storage.format(done)} / ${Storage.format(total)}",
+        )
+        if (!frame.optBoolean("eof")) return
+
+        val all = sink.toByteArray()
+        packChunks.remove(id)
+        val expected = frame.optString("sha256").ifBlank { info.sha256 }.lowercase()
+        val actual = java.security.MessageDigest.getInstance("SHA-256").digest(all)
+            .joinToString("") { "%02x".format(it) }
+        if (expected.isNotBlank() && actual != expected) {
+            installer.fail(
+                id,
+                "校验不通过：内容与电脑上的不一致（期望 ${expected.take(12)}…，实际 ${actual.take(12)}…）",
+            )
+            return
+        }
+        val manifest = FeaturePackManifest(
+            id = info.id,
+            version = info.version,
+            minApp = info.minApp,
+            packageName = info.packageName.ifBlank { "${info.id}.pkg" },
+            sizeBytes = info.sizeBytes,
+            sha256 = expected,
+            files = emptyList(),
+        )
         scope.launch {
-            installer.install(base, tok, info)
+            installer.installBytes(info, manifest, all)
             val after = featurePacks.value[id]
             _lastAction.value = ActionResult(
                 "feature.$id",
@@ -2070,6 +2126,18 @@ class AgentClient(
                     }
                 }
                 "chat.event" -> applyChatEvent(frame)
+                // 功能包清单与包体：走同一条连接，中继下也能到。
+                "features" -> {
+                    val packs = frame.optJSONArray("packs") ?: org.json.JSONArray()
+                    val catalog = (0 until packs.length()).mapNotNull { index ->
+                        packs.optJSONObject(index)?.let { FeaturePackInfo.from(it) }
+                    }
+                    featureInstaller?.applyCatalog(catalog)
+                    frame.optString("error").takeIf { it.isNotBlank() }?.let { message ->
+                        Log.i("FeaturePacks", "清单读取失败：$message")
+                    }
+                }
+                "feature.chunk" -> applyFeatureChunk(frame)
                 "chat.status" -> {
                     val chatId = frame.optString("chatId")
                     val status = frame.optString("status")

@@ -7,6 +7,8 @@
  * or two well-typed frames.
  */
 import path from 'node:path';
+import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
 import { C2S, S2C, encodeFrame } from './protocol.js';
@@ -33,6 +35,7 @@ import {
   PROVIDER_TEMPLATES,
 } from './codexconfig.js';
 import { listSessions, readSession, deleteSession, sessionRoots } from './sessions.js';
+import { listPacks, readPack } from './features.js';
 import {
   clearKernelPath,
   getKernel,
@@ -933,6 +936,59 @@ export function createFrameHandler(ctx) {
           limit: Number(frame.limit) || 40,
         });
         send(S2C.CHAT, decorateChat(page));
+        break;
+      }
+
+      // 功能包清单。手机打开「功能包」页先要这个——走这条连接，中继连接下也能到。
+      case C2S.FEATURES: {
+        const listing = listPacks();
+        if (!listing.ok) {
+          send(S2C.FEATURES, { packs: [], error: listing.message });
+          break;
+        }
+        send(S2C.FEATURES, {
+          packs: listing.packs.map((pack) => ({
+            id: pack.id,
+            name: pack.name,
+            version: pack.version,
+            minApp: pack.minApp,
+            summary: pack.summary,
+            sizeBytes: pack.sizeBytes,
+            sha256: pack.sha256,
+            // present=false：清单有、包体还没构建，手机端不该开始一次注定失败的下载。
+            present: pack.present,
+          })),
+        });
+        break;
+      }
+
+      // 包体分块回去。96 KB 一块：够快，又不至于让一条帧把连接顶住。
+      case C2S.FEATURE_GET: {
+        const id = String(frame.id ?? '');
+        const found = readPack(id);
+        if (!found.ok || !found.present) {
+          send(S2C.ERROR, {
+            code: 'no_pack',
+            requestId: frame.requestId ?? null,
+            message: found.message ?? `功能包 ${id} 还没有构建出来`,
+          });
+          break;
+        }
+        const bytes = fs.readFileSync(found.packagePath);
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const CHUNK = 96 * 1024;
+        for (let offset = 0; offset < bytes.length; offset += CHUNK) {
+          const slice = bytes.subarray(offset, Math.min(offset + CHUNK, bytes.length));
+          send(S2C.FEATURE_CHUNK, {
+            id,
+            requestId: frame.requestId ?? null,
+            offset,
+            total: bytes.length,
+            sha256,
+            data: slice.toString('base64'),
+            eof: offset + slice.length >= bytes.length,
+          });
+        }
         break;
       }
 
