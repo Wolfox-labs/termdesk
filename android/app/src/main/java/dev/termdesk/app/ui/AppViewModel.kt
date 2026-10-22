@@ -23,6 +23,7 @@ import dev.termdesk.app.data.CodexTargetState
 import dev.termdesk.app.data.DirectoryListing
 import dev.termdesk.app.data.KernelInfo
 import dev.termdesk.app.data.LocalAgentState
+import dev.termdesk.app.data.InstalledFeatures
 import dev.termdesk.app.data.LocalKernelState
 import dev.termdesk.app.data.FeatureState
 import dev.termdesk.app.data.PairedComputer
@@ -187,9 +188,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val featurePacks: StateFlow<Map<String, FeatureState>> = client.featurePacks
 
     /** 已安装的功能包 id；@ 菜单据此决定哪些条目现在真的能用。 */
-    val installedFeatures: StateFlow<Set<String>> = featurePacks
-        .map { packs -> packs.filterValues { it.installed }.keys }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+    val installedFeatures: StateFlow<Set<String>> = InstalledFeatures.ids
 
     fun refreshFeatures() = client.refreshFeatures()
     fun installFeature(id: String) = client.installFeature(id)

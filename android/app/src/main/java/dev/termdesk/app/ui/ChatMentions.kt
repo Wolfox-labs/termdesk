@@ -26,6 +26,13 @@ internal data class ChatMention(
     val badge: String,
     /** 额外的搜索词。 */
     val keywords: List<String>,
+    /**
+     * 这一条要靠哪个功能包才能用；null 表示不需要包（纯提示词条目）。
+     *
+     * 五个带模板/体裁/风格的功能都在这条线上：包没装时菜单里不出现，装了才出现。
+     * 这样"没装"不会伪装成"点了没反应"。
+     */
+    val pack: String? = null,
     /** 真正发给内核的完整指令。带 [templates] 的条目不读它——那种由 App 现场装配。 */
     val body: String,
     /**
@@ -124,6 +131,7 @@ internal object ChatMentions {
      */
     private val WEB = ChatMention(
         id = "网页生成",
+        pack = "web",
         title = "网页生成",
         hint = "挑一套骨架 + 一套配色，生成能直接双击打开的 HTML 页面",
         badge = "WEB",
@@ -148,6 +156,7 @@ internal object ChatMentions {
      */
     private val PPT = ChatMention(
         id = "PPT生成",
+        pack = "ppt",
         title = "PPT生成",
         hint = "挑一套版式 + 一套配色，按页数生成真正能打开的 .pptx",
         badge = "PPT",
@@ -171,6 +180,7 @@ internal object ChatMentions {
      */
     private val IMG = ChatMention(
         id = "图片处理",
+        pack = "image",
         title = "图片处理",
         hint = "选图 + 压缩质量 + 格式 + 水印，在手机上直接处理并存进相册",
         badge = "IMG",
@@ -208,6 +218,7 @@ internal object ChatMentions {
      */
     private val XLS = ChatMention(
         id = "表格生成",
+        pack = "table",
         title = "表格生成",
         hint = "问一句主题，直接生成一份能下载的 .xlsx（表头、格式都排好）",
         badge = "XLS",
@@ -246,6 +257,7 @@ internal object ChatMentions {
      */
     private val ART = ChatMention(
         id = "海报生成",
+        pack = "poster",
         title = "海报生成",
         hint = "挑一个风格、写标题，直接画出海报并存进相册",
         badge = "ART",
@@ -305,14 +317,20 @@ internal object ChatMentions {
     }
 
     /** 按关键词筛选，空查询给全部。 */
-    fun match(q: String): List<ChatMention> {
-        if (q.isBlank()) return all
-        return all.filter { m: ChatMention ->
+    fun match(q: String, installed: Set<String>? = null): List<ChatMention> {
+        // installed 为 null 表示"不按包过滤"（单测和文案用）；有值时只留下装得上的条目。
+        val pool = if (installed == null) all else all.filter { it.pack == null || it.pack in installed }
+        if (q.isBlank()) return pool
+        return pool.filter { m: ChatMention ->
             m.id.contains(q, ignoreCase = true) ||
                 m.title.contains(q, ignoreCase = true) ||
                 m.keywords.any { k: String -> k.contains(q, ignoreCase = true) }
         }
     }
+
+    /** 因为没装包而暂时看不到的条目，菜单底部据此提示一句。 */
+    fun hiddenByPacks(installed: Set<String>): List<ChatMention> =
+        all.filter { it.pack != null && it.pack !in installed }
 
     /**
      * 把正在输入的那个 @ 词换成「@标记 + 一个空格」，并把**光标位置**一并算好。

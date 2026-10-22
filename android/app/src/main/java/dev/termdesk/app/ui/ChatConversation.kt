@@ -5,6 +5,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import androidx.compose.runtime.rememberCoroutineScope
 import dev.termdesk.app.data.FeatureStore
+import dev.termdesk.app.data.InstalledFeatures
 import dev.termdesk.app.data.ImageTools
 import dev.termdesk.app.data.PosterRenderer
 import dev.termdesk.app.data.PosterStyles
@@ -56,6 +57,7 @@ import android.content.Context
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -648,9 +650,12 @@ internal fun Conversation(
         // 模板是纯文本的：选中哪一项，输入框里就出现 @标记；发送时在 onSend 里
         // 展开成完整指令发给内核。没有隐藏状态——删掉 @标记，下面的提示行自己消失。
         val mentionQuery = remember(draft.text) { ChatMentions.query(draft.text) }
-        val mentionMatches = remember(mentionQuery) {
-            mentionQuery?.let { ChatMentions.match(it) }.orEmpty()
+        // 哪些功能包装了：没装的条目不出现在菜单里，底部给一句"去下载"，而不是点了没反应。
+        val installedPacks by InstalledFeatures.ids.collectAsState()
+        val mentionMatches = remember(mentionQuery, installedPacks) {
+            mentionQuery?.let { ChatMentions.match(it, installedPacks) }.orEmpty()
         }
+        val hiddenMentions = remember(installedPacks) { ChatMentions.hiddenByPacks(installedPacks) }
         val appliedMentions = remember(draft.text) { ChatMentions.applied(draft.text) }
         // 这一段文本将被装配成什么，只算一次。展开是纯字符串操作，但骨架有好几 KB，
         // 放在每次重组里重算是白烧电。
@@ -1088,6 +1093,16 @@ internal fun Conversation(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(start = 12.dp, top = 6.dp),
                     )
+                    // 没装包的功能不装死：说清它们在哪、怎么装，而不是让菜单悄悄少几项。
+                    if (hiddenMentions.isNotEmpty()) {
+                        Text(
+                            text = "还有 " + hiddenMentions.size + " 个功能未安装（设置 → 功能包）：" +
+                                hiddenMentions.joinToString("、") { it.title },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 12.dp, top = 2.dp),
+                        )
+                    }
                     mentionMatches.forEach { mention ->
                         // 光标跟着插入内容走：不指定的话它会留在用户敲 @ 的地方，
                         // 下一句主题就打到 @ 和标记之间去了。

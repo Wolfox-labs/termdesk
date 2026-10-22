@@ -278,6 +278,11 @@ class AgentClient(
     /** 读模板 / 底图时的统一入口：只读已安装的包。 */
     val featureSource: FeatureSource = featureStore?.source() ?: FeatureSource.none
 
+    init {
+        // 开机先把磁盘上的包登记一次，`@` 菜单第一帧就是对的。
+        featureStore?.let { InstalledFeatures.refresh(it) }
+    }
+
     fun refreshFeatures() {
         val installer = featureInstaller ?: return
         val base = httpBaseUrl()

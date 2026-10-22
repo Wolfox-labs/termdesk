@@ -109,6 +109,35 @@ internal data class FeaturePackManifest(
 
 enum class FeatureStage { ABSENT, DOWNLOADING, VERIFYING, EXTRACTING, READY, FAILED }
 
+/** 包内路径是否安全：只许相对路径，不许跳出包目录（zip-slip）。 */
+internal fun featureEntryPathIsSafe(name: String): Boolean =
+    name.isNotBlank() && !name.startsWith("/") && !name.contains("..") && !name.contains('\\')
+
+/** `1.2.3-dev` 这种版本号比大小用；解析不出来就当 0，别把坏版本当成"新"。 */
+internal fun featureVersionCode(version: String): Int {
+    val parts = version.trim().substringBefore('-').split('.')
+    val major = parts.getOrNull(0)?.toIntOrNull() ?: 0
+    val minor = parts.getOrNull(1)?.toIntOrNull() ?: 0
+    val patch = parts.getOrNull(2)?.toIntOrNull() ?: 0
+    return major * 1_000_000 + minor * 1_000 + patch
+}
+
+
+/**
+ * 手机上此刻装了哪些包，供界面观察。
+ *
+ * 安装器写完磁盘就刷新这里，`@` 菜单订阅它——所以装完包回到会话，那一条就出现了，
+ * 不需要重启 App，也不用把状态一层层往下传。
+ */
+internal object InstalledFeatures {
+    private val _ids = MutableStateFlow<Set<String>>(emptySet())
+    val ids: StateFlow<Set<String>> = _ids.asStateFlow()
+
+    fun refresh(store: FeatureStore) {
+        _ids.value = store.installedIds()
+    }
+}
+
 /** 一个功能包此刻的样子，界面直接照着画。 */
 data class FeatureState(
     val id: String,
@@ -221,6 +250,7 @@ internal class FeatureInstaller(
             if (prev.busy && !merged.containsKey(id)) merged[id] = prev
         }
         _state.value = merged
+        InstalledFeatures.refresh(store)
     }
 
     suspend fun loadIndex(base: String, token: String) = withContext(Dispatchers.IO) {
@@ -298,7 +328,7 @@ internal class FeatureInstaller(
         val appVersion = runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
         }.getOrDefault("")
-        if (manifest.minApp.isNotBlank() && versionCodeOf(appVersion) < versionCodeOf(manifest.minApp)) {
+        if (manifest.minApp.isNotBlank() && featureVersionCode(appVersion) < featureVersionCode(manifest.minApp)) {
             put(
                 FeatureStage.FAILED, 0f, "",
                 "这个包要求 App ≥ ${manifest.minApp}，这台手机是 ${appVersion.ifBlank { "未知" }}，请先升级 App",
@@ -377,7 +407,7 @@ internal class FeatureInstaller(
                     val entry = entries.nextEntry ?: break
                     val name = entry.name
                     // zip-slip：包里的路径只能是相对路径，且不许跳出包目录。
-                    if (name.startsWith("/") || name.contains("..")) error("包里有非法路径：$name")
+                    if (!featureEntryPathIsSafe(name)) error("包里有非法路径：$name")
                     val target = File(staging, name)
                     if (entry.isDirectory) {
                         target.mkdirs()
@@ -417,10 +447,12 @@ internal class FeatureInstaller(
             installedVersion = store.installedVersion(info.id) ?: manifest.version,
             installedBytes = store.sizeOf(info.id),
         ))
+        InstalledFeatures.refresh(store)
     }
 
     fun remove(id: String) {
         store.remove(id)
+        InstalledFeatures.refresh(store)
         val prev = _state.value[id]
         _state.value = _state.value + (id to (prev ?: FeatureState(id = id, name = id)).copy(
             stage = FeatureStage.ABSENT,
@@ -429,14 +461,6 @@ internal class FeatureInstaller(
             installedBytes = 0L,
             note = "已移除",
         ))
-    }
-
-    private fun versionCodeOf(version: String): Int {
-        val parts = version.substringBefore('-').split('.')
-        val major = parts.getOrNull(0)?.toIntOrNull() ?: 0
-        val minor = parts.getOrNull(1)?.toIntOrNull() ?: 0
-        val patch = parts.getOrNull(2)?.toIntOrNull() ?: 0
-        return major * 1_000_000 + minor * 1_000 + patch
     }
 
     private companion object {
