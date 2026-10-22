@@ -180,7 +180,7 @@ internal object ChatMentions {
      */
     private val IMG = ChatMention(
         id = "图片处理",
-        // 图片的预设还没有随包下发（P3-e），先不门控：门控一个装不上的包等于把功能下线。
+        pack = "image",
         title = "图片处理",
         hint = "选图 + 压缩质量 + 格式 + 水印，在手机上直接处理并存进相册",
         badge = "IMG",

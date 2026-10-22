@@ -331,6 +331,9 @@ internal fun ImageFormDialog(
     watermark: String,
     busy: Boolean,
     progress: Pair<Int, Int>,
+    /** 可选格式来自「图片处理」功能包；空表示没装包（入口本来也被门控挡着）。 */
+    formats: List<String> = emptyList(),
+    watermarkHint: String = "",
     onPickImages: () -> Unit,
     onQuality: (Int) -> Unit,
     onFormat: (String) -> Unit,
@@ -393,7 +396,7 @@ internal fun ImageFormDialog(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
-            listOf("JPG", "PNG", "WEBP").forEach { option ->
+            formats.forEach { option ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -426,7 +429,10 @@ internal fun ImageFormDialog(
             enabled = !busy,
             singleLine = true,
             placeholder = {
-                Text("例如：© 数智融媒", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    watermarkHint.ifBlank { "例如：© 数智融媒" },
+                    style = MaterialTheme.typography.bodySmall,
+                )
             },
             keyboardOptions = MentionFieldKeyboard,
             textStyle = MaterialTheme.typography.bodySmall,

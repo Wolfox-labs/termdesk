@@ -1,0 +1,6 @@
+{
+  "formats": ["JPG", "PNG", "WEBP"],
+  "defaultQuality": 80,
+  "defaultFormat": "JPG",
+  "watermarkHint": "例如：© 数智融媒"
+}

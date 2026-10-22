@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.compose.runtime.rememberCoroutineScope
 import dev.termdesk.app.data.FeatureStore
 import dev.termdesk.app.data.InstalledFeatures
+import dev.termdesk.app.data.ImagePresets
 import dev.termdesk.app.data.ImageTools
 import dev.termdesk.app.data.PosterRenderer
 import dev.termdesk.app.data.PosterStyles
@@ -347,10 +348,13 @@ internal fun Conversation(
     }
 
     // ── 「@图片处理」那条路：全程在手机上做完，不走内核 ──────────────────
+    // 可选格式与默认质量来自「图片处理」功能包（data/image-presets.json）；
+    // 没装包时它不存在，那条 @ 菜单本来也被门控挡着。
+    val imagePresets = remember(featureSource) { ImagePresets.load(featureSource) }
     var imageFormOpen by remember(chat.id) { mutableStateOf(false) }
     var imageUris by remember(chat.id) { mutableStateOf<List<Uri>>(emptyList()) }
-    var imageQuality by remember(chat.id) { mutableStateOf(80) }
-    var imageFormat by remember(chat.id) { mutableStateOf("JPG") }
+    var imageQuality by remember(chat.id) { mutableStateOf(imagePresets?.defaultQuality ?: 80) }
+    var imageFormat by remember(chat.id) { mutableStateOf(imagePresets?.safeDefaultFormat.orEmpty()) }
     var imageWatermark by remember(chat.id) { mutableStateOf("") }
     var imageBusy by remember(chat.id) { mutableStateOf(false) }
     var imageProgress by remember(chat.id) { mutableStateOf(0 to 0) }
@@ -1490,6 +1494,8 @@ internal fun Conversation(
                 watermark = imageWatermark,
                 busy = imageBusy,
                 progress = imageProgress,
+                formats = imagePresets?.formats.orEmpty(),
+                watermarkHint = imagePresets?.watermarkHint.orEmpty(),
                 onPickImages = { imagePicker.launch(arrayOf("image/*")) },
                 onQuality = { imageQuality = it },
                 onFormat = { imageFormat = it },
