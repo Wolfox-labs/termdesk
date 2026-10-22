@@ -186,7 +186,7 @@ class PosterTest {
         assertEquals("本地操作不能有写死的指令", "", poster.body)
         assertTrue(poster.templates.isEmpty())
         assertTrue(poster.decks.isEmpty())
-        assertTrue(poster.tables.isEmpty())
+        assertFalse(poster.table)
         assertNull(poster.copy)
         assertFalse(poster.image)
         assertTrue("本地操作没有要问的东西", poster.localAsks.isEmpty())

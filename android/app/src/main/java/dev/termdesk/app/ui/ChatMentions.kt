@@ -51,12 +51,12 @@ internal data class ChatMention(
      */
     val decks: List<DeckTemplate> = emptyList(),
     /**
-     * 这一类产出物可选的**表格体裁**资源。
+     * 这一类产出物是**表格**：按主题自己挑一种体裁，把表头摆好再交给模型。
      *
-     * 和 [templates]/[decks] 并列的第三条路。表格没有"挑一套模板"这一步——
-     * App 直接按主题自己挑一种体裁（[TableKinds.pick]），把表头摆好再交给模型。
+     * 只是一个开关而不是一份体裁列表：体裁本身在「表格生成」功能包里，
+     * 由 [TableKinds.load] 在装配时读，所以补一种体裁不用改这里。
      */
-    val tables: List<TableKind> = emptyList(),
+    val table: Boolean = false,
     /**
      * 这一类产出物要用**悬浮表单**收需求时的字段定义；null 表示不用表单。
      *
@@ -218,13 +218,13 @@ internal object ChatMentions {
      */
     private val XLS = ChatMention(
         id = "表格生成",
-        // 体裁数据同样还没随包下发（P3-d）；等那一包能构建出来再打开门控。
+        pack = "table",
         title = "表格生成",
         hint = "问一句主题，直接生成一份能下载的 .xlsx（表头、格式都排好）",
         badge = "XLS",
         keywords = listOf("表格", "excel", "xlsx", "csv", "数据", "统计", "清单", "台账", "报表"),
         body = "",
-        tables = TableKinds.all,
+        table = true,
         needsColors = false,
         localAsks = listOf(MentionDraft.LOCAL_THEME),
     )
@@ -368,11 +368,14 @@ internal object ChatMentions {
      *                   单测里传一个假骨架就能把整条装配链钉死。返回空串表示没读到，
      *                   那时指令会退回「让模型自己写」，而不是发出一段空骨架。
      * @param blueprintOf 取 PPT 蓝图正文，同一套道理。
+     * @param tablesOf 取表格体裁表；它同样在功能包里，所以也从外面传。空表表示没装包，
+     *                 那时表格这条不装配，用户的话原样发出去。
      */
     fun expand(
         text: String,
         skeletonOf: (PageTemplate) -> String = { "" },
         blueprintOf: (DeckTemplate) -> String = { "" },
+        tablesOf: () -> List<TableKind> = { emptyList() },
     ): String {
         val draft: MentionDraft = MentionDraft.parse(text)
         val mention: ChatMention = draft.mention ?: return text
@@ -416,16 +419,22 @@ internal object ChatMentions {
                 free = draft.free,
                 askBudget = draft.askBudget(),
             )
-        } else if (mention.tables.isNotEmpty()) {
+        } else if (mention.table) {
             // 表格这条路的装配：按主题自己挑一种体裁，把**表头和格式规矩**先摆好。
             // 这里没有任何"等用户确认"的步骤——表格是一次点击就该出东西的东西，
             // 所以它只问主题，问完直接装配出完整指令。
-            out = TableKinds.instruction(
-                kind = TableKinds.pick(text, mention.tables),
-                theme = draft.theme.ifBlank { shortTheme(draft.free) },
-                free = draft.free,
-                askBudget = draft.askBudget(),
-            )
+            //
+            // 体裁数据在「表格生成」功能包里；没装包时 pick 给 null，这里就不装配，
+            // 原样把用户的话发出去（菜单那条本来也被门控挡住了，走到这里是兜底）。
+            val picked = TableKinds.pick(text, tablesOf())
+            if (picked != null) {
+                out = TableKinds.instruction(
+                    kind = picked,
+                    theme = draft.theme.ifBlank { shortTheme(draft.free) },
+                    free = draft.free,
+                    askBudget = draft.askBudget(),
+                )
+            }
         } else if (mention.copy != null) {
             // 文案这条路：表单填的三栏以 `类型：/卖点：/语气：` 的形式躺在正文里，
             // 这里用和其它指令段同一套机制把它们取回来——所以用户手改那一行同样生效。
@@ -448,7 +457,7 @@ internal object ChatMentions {
         // 把刚拼好的整段指令抹掉。
         for (m in all) {
             if (m.templates.isNotEmpty() || m.decks.isNotEmpty() ||
-                m.tables.isNotEmpty() || m.copy != null || m.image || m.poster
+                m.table || m.copy != null || m.image || m.poster
             ) {
                 continue
             }

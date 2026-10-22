@@ -1,7 +1,11 @@
 package dev.termdesk.app.ui
 
-// 这个文件只用 Kotlin 标准库：表格这条路不需要读资源包（表头就几列，直接写在数据里），
-// 也不需要碰 Android API，所以整套逻辑能在纯 JVM 单测里钉死。
+import dev.termdesk.app.data.FeatureSource
+import org.json.JSONArray
+import org.json.JSONObject
+
+// 这个文件只用 Kotlin 标准库 + org.json：表格这条路不碰 Android API，
+// 所以整套逻辑能在纯 JVM 单测里钉死。
 
 /**
  * 一种常见表格的"经验"：这类表格通常有哪些表头、行怎么排、格式怎么定。
@@ -30,135 +34,51 @@ internal data class TableKind(
 /**
  * 常见表格体裁表 + 指令装配。
  *
- * 加一种体裁 = 在这里加一条数据，界面和别的代码都不用动。
+ * 体裁数据不再编在 APK 里：它随「表格生成」功能包下发（`data/table-kinds.json`），
+ * 所以补一种体裁不用发新版 App。读不到包就是空列表——那条 @ 菜单本来也被门控挡着。
+ *
+ * 加一种体裁 = 在包里加一条数据，界面和别的代码都不用动。
  */
 internal object TableKinds {
 
-    private val LEDGER = TableKind(
-        id = "台账",
-        badge = "台账",
-        hint = "一行一件事，按日期排，能一眼看出谁办的、办到哪一步",
-        keywords = listOf("台账", "记录", "登记", "流水", "明细", "日志"),
-        headers = listOf("序号", "日期", "事项", "经办人", "数量", "金额", "状态", "备注"),
-        conventions = listOf(
-            "按日期升序排，同一天的排在一起；",
-            "「金额」右对齐、千分位两位小数；「状态」只用少量固定取值（如 已完成/进行中/待办）；",
-            "「序号」从 1 连续编到底。",
-        ),
-    )
+    /** 包内相对路径，和 pack 里 `data/` 的布局一致。 */
+    const val PACK_PATH = "data/table-kinds.json"
 
-    private val LIST = TableKind(
-        id = "清单",
-        badge = "清单",
-        hint = "一批东西逐条列清：名称、规格、数量、单价、金额、供应商",
-        keywords = listOf("清单", "采购", "物料", "备件", "盘点", "库存", "报价"),
-        headers = listOf("序号", "名称", "规格型号", "数量", "单位", "单价", "金额", "供应商", "备注"),
-        conventions = listOf(
-            "「金额」= 数量 × 单价，写成公式或至少与两列对得上；",
-            "最后加一行「合计」，只合计金额与数量；",
-            "数量、单价、金额三列都是数字格式（金额两位小数）。",
-        ),
-    )
-
-    private val SCHEDULE = TableKind(
-        id = "排期",
-        badge = "排期",
-        hint = "分阶段排任务：谁负责、什么时候开始结束、依赖谁",
-        keywords = listOf("排期", "进度", "计划", "里程碑", "工期", "甘特", "任务"),
-        headers = listOf("序号", "阶段", "任务", "负责人", "开始日期", "结束日期", "工期(天)", "前置任务", "状态"),
-        conventions = listOf(
-            "按开始日期升序；「工期(天)」用日期相减或直接写数字；",
-            "日期统一 yyyy-mm-dd；「前置任务」写序号，便于看出依赖；",
-            "同一阶段的任务连着放，阶段之间留一行或加浅色底分组。",
-        ),
-    )
-
-    private val BUDGET = TableKind(
-        id = "预算",
-        badge = "预算",
-        hint = "钱花在哪：科目、明细、预算、实际、差额、占比",
-        keywords = listOf("预算", "费用", "报销", "开支", "成本", "经费", "决算"),
-        headers = listOf("序号", "费用科目", "明细项", "预算金额", "实际支出", "差额", "占比", "备注"),
-        conventions = listOf(
-            "「差额」= 预算 − 实际；「占比」= 该项 / 合计，写成百分比一位小数；",
-            "金额全部千分位两位小数，负差额标红或加负号；",
-            "末尾加「合计」行，合计预算、实际、差额三列。",
-        ),
-    )
-
-    private val STATS = TableKind(
-        id = "统计汇总",
-        badge = "统计",
-        hint = "同一批指标横向比：本期、上期、环比、累计、目标、完成率",
-        keywords = listOf("统计", "汇总", "报表", "同比", "环比", "分析", "指标", "数据"),
-        headers = listOf("项目", "本期", "上期", "环比", "累计", "目标", "完成率", "说明"),
-        conventions = listOf(
-            "「环比」= (本期 − 上期) / 上期，写成百分比一位小数，上升下降要有正负号；",
-            "「完成率」= 本期 / 目标，百分比格式；",
-            "指标按重要性排序，最重要的放最上面。",
-        ),
-    )
-
-    private val ROSTER = TableKind(
-        id = "人员名单",
-        badge = "名单",
-        hint = "谁在里面：姓名、编号、部门班级、职务、联系方式",
-        keywords = listOf("名单", "通讯录", "人员", "成员", "学生", "员工", "花名册", "分工"),
-        headers = listOf("序号", "姓名", "学号/工号", "部门/班级", "职务", "联系方式", "加入日期", "状态"),
-        conventions = listOf(
-            "「学号/工号」「联系方式」按文本存——它们不参与计算，存成数字会丢前导零；",
-            "同部门的排在一起；",
-            "联系方式这一列列宽给足，别显示成 ####。",
-        ),
-    )
-
-    private val CHECKLIST = TableKind(
-        id = "检查表",
-        badge = "检查",
-        hint = "逐项对照标准：查什么、标准是什么、现状如何、不合格怎么办",
-        keywords = listOf("检查", "巡检", "验收", "自查", "整改", "安全", "点检", "核对"),
-        headers = listOf("序号", "检查项", "标准要求", "现状/实测", "是否合格", "问题描述", "整改措施", "责任人", "期限"),
-        conventions = listOf(
-            "「是否合格」只用 合格/不合格/不适用 三种取值；",
-            "不合格的行整行加浅红底，方便一眼抓出来；",
-            "按检查项的重要性排序，安全相关的排最前面。",
-        ),
-    )
-
-    private val COMPARE = TableKind(
-        id = "对照表",
-        badge = "对照",
-        hint = "几个方案横向比：一个维度一行，最后一列给结论",
-        keywords = listOf("对照", "对比", "选型", "评比", "优缺点", "比较", "差异"),
-        headers = listOf("对比维度", "方案一", "方案二", "方案三", "结论/推荐", "说明"),
-        conventions = listOf(
-            "第一列是维度，后面每列一个方案，最后一列给倾向性结论；",
-            "每格只写短句，写不下就换行，不要塞整段；",
-            "关键差异（价格、工期、风险）用加粗或底色标出来。",
-        ),
-    )
-
-    /**
-     * 全部体裁，顺序就是自动选型打平时的优先序。
-     *
-     * 第一条是缺省：主题里什么线索都没有时用它——"台账"是最通用的一种，
-     * 日期 + 事项 + 经办人 + 状态，几乎任何主题都接得住。
-     */
-    val all: List<TableKind> = listOf(LEDGER, LIST, SCHEDULE, BUDGET, STATS, ROSTER, CHECKLIST, COMPARE)
-
-    val fallback: TableKind get() = all.first()
-
-    fun byId(id: String): TableKind? = all.firstOrNull { it.id == id }
+    /** 从功能包读全部体裁；读不到、或 JSON 坏了，都是空列表，不抛异常。 */
+    fun load(source: FeatureSource): List<TableKind> {
+        val text = runCatching {
+            source.open(PACK_PATH)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+        }.getOrNull().orEmpty()
+        if (text.isBlank()) return emptyList()
+        val root = runCatching { JSONObject(text) }.getOrNull() ?: return emptyList()
+        val kinds = root.optJSONArray("kinds") ?: JSONArray()
+        return (0 until kinds.length()).mapNotNull { index ->
+            val json = kinds.optJSONObject(index) ?: return@mapNotNull null
+            val id = json.optString("id").trim()
+            val headers = json.optJSONArray("headers").toStringList()
+            if (id.isEmpty() || headers.isEmpty()) return@mapNotNull null
+            TableKind(
+                id = id,
+                badge = json.optString("badge").ifBlank { id },
+                hint = json.optString("hint"),
+                keywords = json.optJSONArray("keywords").toStringList(),
+                headers = headers,
+                conventions = json.optJSONArray("conventions").toStringList(),
+            )
+        }
+    }
 
     /**
      * 按主题自己挑一种体裁。
      *
      * 和 [DeckTemplates.pick] 同一套规矩：关键词命中算 3 分，最长匹配（也就是同一个词
-     * 命中多条）自然胜出；全不命中就用缺省。纯函数，可测。
+     * 命中多条）自然胜出；全不命中就用第一条。空的体裁表给 null，调用方自己退。
+     * 纯函数，可测。
      */
-    fun pick(text: String, from: List<TableKind> = all): TableKind {
+    fun pick(text: String, from: List<TableKind>): TableKind? {
+        val first = from.firstOrNull() ?: return null
         val hay: String = text.lowercase()
-        var best: TableKind = from.firstOrNull() ?: fallback
+        var best: TableKind = first
         var bestScore: Int = 0
         for (kind in from) {
             var score: Int = 0
@@ -246,5 +166,12 @@ internal object TableKinds {
         }
         sb.append("做完后告诉我文件的完整路径，并用一句话说明我可以改哪些地方。\n")
         return sb.toString()
+    }
+
+    private fun JSONArray?.toStringList(): List<String> {
+        if (this == null) return emptyList()
+        return (0 until length()).mapNotNull { index ->
+            optString(index).trim().takeIf { it.isNotEmpty() }
+        }
     }
 }

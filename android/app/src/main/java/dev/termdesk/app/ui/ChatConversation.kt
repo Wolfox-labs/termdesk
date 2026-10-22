@@ -206,6 +206,10 @@ internal fun Conversation(
     val blueprintOf: (DeckTemplate) -> String = remember(featureSource) {
         { deck -> DeckTemplates.readBlueprint(featureSource, deck) }
     }
+    // 表格体裁同样来自功能包；没装包时是空表，装配那一步会跳过。
+    val tableKindsOf: () -> List<TableKind> = remember(featureSource) {
+        { TableKinds.load(featureSource) }
+    }
     // 选完 @PPT生成 之后要挑的那套蓝图；非 null 就是面板开着。
     var deckPanel by remember(chat.id) { mutableStateOf<List<DeckTemplate>?>(null) }
     // 页数和主题一样是「本地固定问一次」：跳过就用模板的默认页数，不挡发送。
@@ -262,7 +266,7 @@ internal fun Conversation(
     fun submitCopyForm() {
         val mention: ChatMention = copyFormFor ?: return
         val text: String = copyDraftText(mention.id, copyType, copyPoint, copyTone)
-        val expanded: String = ChatMentions.expand(text, skeletonOf, blueprintOf)
+        val expanded: String = ChatMentions.expand(text, skeletonOf, blueprintOf, tableKindsOf)
         onSend(chat.id, expanded)
         updateDraft("")
         copyFormFor = null
@@ -460,7 +464,7 @@ internal fun Conversation(
         // 「@模板」在这里展开：内核读到的就是这段完整指令，
         // transcript 显示的也是同一份内容，所以这个入口决定的是
         // 「内核真的会去写文件」，而不是只往输入框里塞几个字。
-        val expanded = ChatMentions.expand(text, skeletonOf, blueprintOf)
+        val expanded = ChatMentions.expand(text, skeletonOf, blueprintOf, tableKindsOf)
         // The attachment travels as a path in the prompt: every kernel
         // can read a file, and the transcript then shows what was sent.
         val full = attachment?.let { "[附件] ${it.name} → ${it.path}\n$expanded" } ?: expanded
@@ -695,7 +699,7 @@ internal fun Conversation(
         // 放在每次重组里重算是白烧电。
         val mentionDraft = remember(draft.text) { MentionDraft.parse(draft.text) }
         val expandedPreview = remember(draft.text) {
-            ChatMentions.expand(draft.text, skeletonOf, blueprintOf)
+            ChatMentions.expand(draft.text, skeletonOf, blueprintOf, tableKindsOf)
         }
 
         // 明说会展开成什么，不做暗箱：用户按下发送之前就知道内核将收到一整段指令。
@@ -769,7 +773,7 @@ internal fun Conversation(
                 val decks = mentionDraft.mention?.decks.orEmpty()
                 // 表格那条路没有"挑一套模板"这一步：体裁由 App 按主题自己挑。
                 // 这里算出来只是为了在芯片上把它显示给用户看。
-                val tableKinds = mentionDraft.mention?.tables.orEmpty()
+                val tableKinds = if (mentionDraft.mention?.table == true) tableKindsOf() else emptyList()
                 val tableKind = if (tableKinds.isEmpty()) null
                 else TableKinds.pick(draft.text, tableKinds)
                 // 用悬浮表单收需求的那一类（目前只有文案撰写）。

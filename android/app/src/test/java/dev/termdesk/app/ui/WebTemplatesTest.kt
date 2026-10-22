@@ -299,7 +299,7 @@ class WebTemplatesTest {
         val draft = MentionDraft.render(
             MentionDraft.parse("@网页生成 模板：官网首页 配色：科技蓝 主题：开放日"),
         )
-        val out = ChatMentions.expand(draft) { "" }
+        val out = ChatMentions.expand(draft, skeletonOf = { "" })
         assertTrue("要明说资源包没读到", out.contains("资源包没读到"))
         assertFalse("不能出现空的代码块", out.contains("```html\n\n```"))
         assertTrue("配色仍然要给", out.contains("--primary:#00E5FF"))

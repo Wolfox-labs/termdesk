@@ -26,7 +26,7 @@ class ImageMentionTest {
         assertEquals("本地操作不能有写死的指令，否则会把装配结果抹掉", "", img.body)
         assertTrue("不该有骨架", img.templates.isEmpty())
         assertTrue("不该有蓝图", img.decks.isEmpty())
-        assertTrue("不该有表格体裁", img.tables.isEmpty())
+        assertFalse("不该是表格条目", img.table)
         assertEquals("不该有表单字段", null, img.copy)
         assertTrue("本地操作没有要问的东西", img.localAsks.isEmpty())
         assertFalse("不挑配色", img.needsColors)

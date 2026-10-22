@@ -15,19 +15,25 @@ import org.junit.Test
  *  2. 「经验」= 一种常见体裁的表头，按主题自己挑；
  *  3. 指令里必须把表框和格式说死——那正是「常规格式要求」的落点；
  *  4. 指令里必须要求回报完整路径，否则手机端那个下载端口就没有东西可下。
+ *
+ * 体裁数据现在住在「表格生成」功能包里（`packs/table/data/table-kinds.json`），
+ * 所以这里通过 [PackFixtures] 读真包，而不是读一份写死在代码里的副本——
+ * 包坏了、少了一种体裁，这些用例就该红。
  */
 class TableKindsTest {
+
+    private val kinds: List<TableKind> = TableKinds.load(PackFixtures.source())
 
     private val xls: ChatMention = ChatMentions.all.first { it.id == "表格生成" }
 
     // ── 1. 体裁表本身 ──────────────────────────────────────────────────
 
     @Test
-    fun `每种体裁的表头都够用，而且没有重复列`() {
-        assertTrue("体裁不能只有一种", TableKinds.all.size >= 6)
-        val ids = TableKinds.all.map { it.id }
+    fun `包里真的带着八种体裁，每种都够用而且没有重复列`() {
+        assertEquals("八种体裁一个都不能少", 8, kinds.size)
+        val ids = kinds.map { it.id }
         assertEquals("体裁名不能重复", ids.size, ids.toSet().size)
-        for (kind in TableKinds.all) {
+        for (kind in kinds) {
             assertTrue(kind.id + " 没写说明", kind.hint.isNotBlank())
             assertTrue(kind.id + " 没关键词，自动选型会挑不中", kind.keywords.isNotEmpty())
             assertTrue(
@@ -43,32 +49,38 @@ class TableKindsTest {
         }
     }
 
+    @Test
+    fun `读不到包时是空表，不是崩溃`() {
+        assertTrue(TableKinds.load(dev.termdesk.app.data.FeatureSource { null }).isEmpty())
+        assertNull("空表挑不出体裁", TableKinds.pick("随便什么主题", emptyList()))
+    }
+
     // ── 2. 按主题自己挑体裁 ────────────────────────────────────────────
 
     @Test
     fun `按主题挑得出对得上的体裁`() {
-        assertEquals("台账", TableKinds.pick("日常工作台账").id)
-        assertEquals("清单", TableKinds.pick("设备采购清单").id)
-        assertEquals("排期", TableKinds.pick("项目排期").id)
-        assertEquals("预算", TableKinds.pick("部门费用预算").id)
-        assertEquals("统计汇总", TableKinds.pick("数据统计汇总").id)
-        assertEquals("人员名单", TableKinds.pick("参会人员名单").id)
-        assertEquals("检查表", TableKinds.pick("安全巡检检查表").id)
-        assertEquals("对照表", TableKinds.pick("三个方案对比").id)
+        assertEquals("台账", TableKinds.pick("日常工作台账", kinds)!!.id)
+        assertEquals("清单", TableKinds.pick("设备采购清单", kinds)!!.id)
+        assertEquals("排期", TableKinds.pick("项目排期", kinds)!!.id)
+        assertEquals("预算", TableKinds.pick("部门费用预算", kinds)!!.id)
+        assertEquals("统计汇总", TableKinds.pick("数据统计汇总", kinds)!!.id)
+        assertEquals("人员名单", TableKinds.pick("参会人员名单", kinds)!!.id)
+        assertEquals("检查表", TableKinds.pick("安全巡检检查表", kinds)!!.id)
+        assertEquals("对照表", TableKinds.pick("三个方案对比", kinds)!!.id)
     }
 
     @Test
     fun `主题里没有线索时用缺省那一套，而不是空手`() {
-        assertEquals(TableKinds.fallback.id, TableKinds.pick("").id)
-        assertEquals(TableKinds.fallback.id, TableKinds.pick("随便写点什么").id)
-        assertEquals("缺省应当是最通用的台账", "台账", TableKinds.fallback.id)
+        assertEquals(kinds.first().id, TableKinds.pick("", kinds)!!.id)
+        assertEquals(kinds.first().id, TableKinds.pick("随便写点什么", kinds)!!.id)
+        assertEquals("缺省应当是最通用的台账", "台账", kinds.first().id)
     }
 
     // ── 3. 指令：表头、格式、回报路径 ──────────────────────────────────
 
     @Test
     fun `指令里要有表头 格式规矩 和回报完整路径的要求`() {
-        val kind = TableKinds.byId("预算")!!
+        val kind = kinds.first { it.id == "预算" }
         val sent = TableKinds.instruction(
             kind = kind,
             theme = "数字媒体实验室年度经费",
@@ -91,7 +103,7 @@ class TableKindsTest {
         assertTrue("字体要求", sent.contains("微软雅黑"))
         assertTrue("数字别存成文本", sent.contains("真的存成数字"))
         assertTrue("要有一定的行数", sent.contains("12~20 行"))
-        assertTrue("不确定的事实要留占位符", sent.contains("待补充"))
+        assertTrue("不许留占位词，缺的按主题拟", sent.contains("不要写“待补充”"))
         assertTrue(
             "必须要求回报完整路径——手机端就靠它提供下载",
             sent.contains(".xlsx 的完整路径"),
@@ -103,10 +115,9 @@ class TableKindsTest {
     // ── 4. 走一趟：只问主题，答完就能发 ────────────────────────────────
 
     @Test
-    fun `表格是 @ 菜单里的一项，并且带着体裁资源`() {
+    fun `表格是 @ 菜单里的一项，标记为要体裁而不是带着一整份数据`() {
         assertTrue("表格生成必须在菜单里", ChatMentions.match("").any { it.id == "表格生成" })
-        assertTrue("必须带体裁资源", xls.tables.isNotEmpty())
-        assertEquals(TableKinds.all.size, xls.tables.size)
+        assertTrue("必须声明自己是表格条目", xls.table)
         assertFalse("表格不用挑配色", xls.needsColors)
         assertEquals("只问一件事：主题", listOf(MentionDraft.LOCAL_THEME), xls.localAsks)
     }
@@ -134,11 +145,23 @@ class TableKindsTest {
                 "设备采购清单",
             ),
         )
-        val sent = ChatMentions.expand(draft)
+        val sent = ChatMentions.expand(draft, tablesOf = { kinds })
         assertTrue("要装配成表格指令", sent.contains("【任务：生成表格 · 清单】"))
         assertTrue("主题要带上", sent.contains("设备采购清单"))
         assertFalse("@标记必须被替换掉", sent.contains("@表格生成"))
         assertTrue("表头要带上", sent.contains("规格型号"))
+    }
+
+    @Test
+    fun `没装包时不装配，原样发出去`() {
+        val draft = MentionDraft.render(
+            MentionDraft.withTheme(
+                MentionDraft.parse(ChatMentions.insertion("@", xls).text),
+                "设备采购清单",
+            ),
+        )
+        val sent = ChatMentions.expand(draft, tablesOf = { emptyList() })
+        assertFalse("没体裁就不该装配出表格指令", sent.contains("【任务：生成表格"))
     }
 
     @Test
